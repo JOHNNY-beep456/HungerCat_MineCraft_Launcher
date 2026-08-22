@@ -1,6 +1,6 @@
 # HungerCat MineCraft Launcher
 
-跨 **Windows / macOS** 的 Minecraft Java 版启动器，功能对标 **PCL-CE**，界面采用 **Apple Design** 风格，微软登录使用**免申请的 OAuth 设备代码流**。
+跨 **Windows / macOS** 的 Minecraft Java 版启动器，功能对标 **现有开源启动器**，界面采用 **Apple Design** 风格，微软登录使用**免申请的 OAuth 设备代码流**。
 
 ---
 
