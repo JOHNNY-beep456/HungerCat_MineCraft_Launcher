@@ -1,0 +1,524 @@
+@import 'tailwindcss';
+
+/* ------------------------------------------------------------------ */
+/*  iOS 26 "Liquid Glass" design tokens                               */
+/* ------------------------------------------------------------------ */
+
+:root {
+  color-scheme: light;
+
+  --text-primary: rgba(0, 0, 0, 0.9);
+  --text-secondary: rgba(0, 0, 0, 0.58);
+  --text-tertiary: rgba(0, 0, 0, 0.38);
+
+  --glass-bg: rgba(255, 255, 255, 0.52);
+  --glass-bg-strong: rgba(255, 255, 255, 0.64);
+  --glass-bg-soft: rgba(255, 255, 255, 0.34);
+  --glass-border: rgba(255, 255, 255, 0.6);
+  --glass-highlight: rgba(255, 255, 255, 0.8);
+  --glass-shadow: 0 24px 60px -24px rgba(15, 23, 42, 0.35);
+
+  --fill-primary: #0a84ff;
+  --fill-primary-hover: #0a78f0;
+  --fill-secondary: rgba(0, 0, 0, 0.06);
+  --fill-secondary-hover: rgba(0, 0, 0, 0.1);
+  --fill-danger: #ff453a;
+  --fill-success: #30d158;
+
+  --chip-bg: rgba(0, 0, 0, 0.05);
+  --divider: rgba(0, 0, 0, 0.08);
+  --scrim: rgba(0, 0, 0, 0.4);
+
+  /* 极简（二维化）模式的纯色表面与背景 */
+  --surface-flat: #ffffff;
+  --bg-flat: #eef0f4;
+}
+
+[data-theme='dark'] {
+  color-scheme: dark;
+
+  --text-primary: rgba(255, 255, 255, 0.92);
+  --text-secondary: rgba(255, 255, 255, 0.62);
+  --text-tertiary: rgba(255, 255, 255, 0.4);
+
+  --glass-bg: rgba(28, 28, 36, 0.5);
+  --glass-bg-strong: rgba(32, 32, 42, 0.62);
+  --glass-bg-soft: rgba(24, 24, 32, 0.34);
+  --glass-border: rgba(255, 255, 255, 0.14);
+  --glass-highlight: rgba(255, 255, 255, 0.2);
+  --glass-shadow: 0 24px 60px -24px rgba(0, 0, 0, 0.65);
+
+  --fill-secondary: rgba(255, 255, 255, 0.08);
+  --fill-secondary-hover: rgba(255, 255, 255, 0.14);
+  --chip-bg: rgba(255, 255, 255, 0.08);
+  --divider: rgba(255, 255, 255, 0.1);
+  --scrim: rgba(0, 0, 0, 0.55);
+
+  --surface-flat: #1d1d26;
+  --bg-flat: #101015;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  font-family:
+    -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI Variable', 'Segoe UI',
+    'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', system-ui, sans-serif;
+  font-size: 14px;
+  color: var(--text-primary);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  overflow: hidden;
+  user-select: none;
+}
+
+/* --- Animated mesh gradient background (iOS-style wallpaper) --- */
+.app-background {
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  overflow: hidden;
+  background: linear-gradient(160deg, #0b1020 0%, #101731 45%, #1a0f2e 100%);
+}
+
+[data-theme='light'] .app-background {
+  background: linear-gradient(165deg, #eaf3ff 0%, #eef0fb 40%, #f6eef9 100%);
+}
+
+/* 自定义背景预设（data-bg 设置在 <html> 上，故用后代选择器） */
+[data-bg='midnight'] .app-background {
+  background: linear-gradient(160deg, #04060f 0%, #0b1330 45%, #10101c 100%);
+}
+[data-bg='sunset'] .app-background {
+  background: linear-gradient(160deg, #2a0a14 0%, #7a2a1e 50%, #d4762a 100%);
+}
+[data-bg='forest'] .app-background {
+  background: linear-gradient(160deg, #04120f 0%, #0a2e24 50%, #144d3a 100%);
+}
+[data-bg='rose'] .app-background {
+  background: linear-gradient(160deg, #2a0a1c 0%, #6b1740 50%, #c94d6e 100%);
+}
+[data-bg='mono'] .app-background {
+  background: linear-gradient(160deg, #0d0d10 0%, #1c1c22 50%, #2a2a30 100%);
+}
+
+/* 各预设的装饰光斑配色（与背景基调协调） */
+[data-bg='sunset'] .blob-1 {
+  background: radial-gradient(circle, #ff9f45 0%, #ff375f 60%, transparent 72%);
+}
+[data-bg='sunset'] .blob-2 {
+  background: radial-gradient(circle, #ffd23f 0%, #ff7a00 60%, transparent 74%);
+}
+[data-bg='sunset'] .blob-3 {
+  background: radial-gradient(circle, #ff5c8a 0%, #a855f7 62%, transparent 76%);
+}
+[data-bg='forest'] .blob-1 {
+  background: radial-gradient(circle, #34d399 0%, #0ea5e9 60%, transparent 72%);
+}
+[data-bg='forest'] .blob-2 {
+  background: radial-gradient(circle, #22c55e 0%, #14b8a6 60%, transparent 74%);
+}
+[data-bg='forest'] .blob-3 {
+  background: radial-gradient(circle, #84cc16 0%, #10b981 62%, transparent 76%);
+}
+[data-bg='rose'] .blob-1 {
+  background: radial-gradient(circle, #fb7185 0%, #f43f5e 60%, transparent 72%);
+}
+[data-bg='rose'] .blob-2 {
+  background: radial-gradient(circle, #ec4899 0%, #d946ef 60%, transparent 74%);
+}
+[data-bg='rose'] .blob-3 {
+  background: radial-gradient(circle, #f472b6 0%, #a855f7 62%, transparent 76%);
+}
+[data-bg='mono'] .blob-1 {
+  background: radial-gradient(circle, #64748b 0%, #475569 60%, transparent 72%);
+}
+[data-bg='mono'] .blob-2 {
+  background: radial-gradient(circle, #94a3b8 0%, #64748b 60%, transparent 74%);
+}
+[data-bg='mono'] .blob-3 {
+  background: radial-gradient(circle, #cbd5e1 0%, #94a3b8 62%, transparent 76%);
+}
+
+.app-background .blob {
+  position: absolute;
+  border-radius: 50%;
+  filter: blur(90px);
+  opacity: 0.55;
+  will-change: transform;
+}
+
+[data-theme='dark'] .app-background .blob {
+  opacity: 0.4;
+}
+
+.blob-1 {
+  width: 52vw;
+  height: 52vw;
+  left: -14vw;
+  top: -16vw;
+  background: radial-gradient(circle, #4f7cff 0%, #7a5cff 60%, transparent 72%);
+  animation: drift1 26s ease-in-out infinite alternate;
+}
+.blob-2 {
+  width: 44vw;
+  height: 44vw;
+  right: -12vw;
+  top: -8vw;
+  background: radial-gradient(circle, #ff5c8a 0%, #c84dff 60%, transparent 74%);
+  animation: drift2 32s ease-in-out infinite alternate;
+}
+.blob-3 {
+  width: 40vw;
+  height: 40vw;
+  left: 24vw;
+  bottom: -20vw;
+  background: radial-gradient(circle, #2fd0c0 0%, #2f7bff 62%, transparent 76%);
+  animation: drift3 38s ease-in-out infinite alternate;
+}
+
+@keyframes drift1 {
+  from {
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+  to {
+    transform: translate3d(10vw, 8vh, 0) scale(1.18);
+  }
+}
+@keyframes drift2 {
+  from {
+    transform: translate3d(0, 0, 0) scale(1.12);
+  }
+  to {
+    transform: translate3d(-8vw, 12vh, 0) scale(0.96);
+  }
+}
+@keyframes drift3 {
+  from {
+    transform: translate3d(0, 0, 0) scale(0.98);
+  }
+  to {
+    transform: translate3d(-6vw, -10vh, 0) scale(1.16);
+  }
+}
+
+/* --- 像素猫吃鱼加载动画 --- */
+.catfish-bob {
+  animation: catfish-bob 1.4s ease-in-out infinite;
+  transform-box: fill-box;
+  transform-origin: center;
+}
+.catfish-wag {
+  animation: catfish-wag 0.9s ease-in-out infinite;
+  transform-box: fill-box;
+  transform-origin: center;
+}
+@keyframes catfish-bob {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-2px);
+  }
+}
+@keyframes catfish-wag {
+  0%,
+  100% {
+    transform: rotate(0deg);
+  }
+  25% {
+    transform: rotate(10deg);
+  }
+  75% {
+    transform: rotate(-10deg);
+  }
+}
+
+/* --- Glass materials --- */
+.glass {
+  position: relative;
+  isolation: isolate;
+  background: var(--glass-bg);
+  backdrop-filter: blur(36px) saturate(180%);
+  -webkit-backdrop-filter: blur(36px) saturate(180%);
+  border: 1px solid var(--glass-border);
+  box-shadow: var(--glass-shadow);
+}
+
+.glass-strong {
+  position: relative;
+  isolation: isolate;
+  background: var(--glass-bg-strong);
+  backdrop-filter: blur(48px) saturate(200%);
+  -webkit-backdrop-filter: blur(48px) saturate(200%);
+  border: 1px solid var(--glass-border);
+  box-shadow: var(--glass-shadow);
+}
+
+.glass-soft {
+  position: relative;
+  isolation: isolate;
+  background: var(--glass-bg-soft);
+  backdrop-filter: blur(24px) saturate(160%);
+  -webkit-backdrop-filter: blur(24px) saturate(160%);
+  border: 1px solid var(--glass-border);
+}
+
+/* The bright top edge that reads as light catching a glass surface */
+.glass::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  border-radius: inherit;
+  pointer-events: none;
+  background: linear-gradient(
+    180deg,
+    var(--glass-highlight) 0%,
+    rgba(255, 255, 255, 0) 26%
+  );
+  opacity: 0.6;
+}
+
+/* --- 鼠标光晕：跟随光标、亮度自然递减，并以 screen 混合照亮下方元素 --- */
+.cursor-glow {
+  position: fixed;
+  left: 0;
+  top: 0;
+  width: 560px;
+  height: 560px;
+  border-radius: 50%;
+  background: radial-gradient(
+    circle,
+    color-mix(in srgb, var(--fill-primary) 24%, transparent) 0%,
+    color-mix(in srgb, var(--fill-primary) 9%, transparent) 42%,
+    transparent 70%
+  );
+  mix-blend-mode: screen;
+  pointer-events: none;
+  z-index: 9999;
+  will-change: transform;
+  opacity: 0.85;
+}
+
+/* --- Typography helpers --- */
+.display {
+  font-size: 28px;
+  font-weight: 700;
+  line-height: 1.1;
+  letter-spacing: -0.022em;
+}
+.title {
+  font-size: 20px;
+  font-weight: 600;
+  line-height: 1.2;
+  letter-spacing: -0.015em;
+}
+.headline {
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: -0.008em;
+}
+.caption {
+  font-size: 12px;
+  color: var(--text-secondary);
+  letter-spacing: 0.01em;
+}
+
+/* --- Buttons --- */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  height: 38px;
+  padding: 0 18px;
+  border-radius: 12px;
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: -0.008em;
+  cursor: pointer;
+  /* 顶部高光 + 柔和内阴影，模拟玻璃表面对环境光的反射 */
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.28),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.06);
+  transition:
+    transform 100ms ease,
+    background 160ms ease,
+    opacity 160ms ease,
+    box-shadow 160ms ease;
+  -webkit-app-region: no-drag;
+}
+.btn:hover:not(:disabled) {
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.38),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.06);
+}
+.btn:active {
+  transform: scale(0.96);
+}
+.btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+  box-shadow: none;
+}
+.btn-primary {
+  background: var(--fill-primary);
+  color: #fff;
+}
+.btn-primary:hover:not(:disabled) {
+  background: var(--fill-primary-hover);
+}
+.btn-secondary {
+  background: var(--fill-secondary);
+  color: var(--text-primary);
+}
+.btn-secondary:hover:not(:disabled) {
+  background: var(--fill-secondary-hover);
+}
+.btn-danger {
+  background: var(--fill-danger);
+  color: #fff;
+}
+
+/* --- Chips & inputs --- */
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 11px;
+  border-radius: 999px;
+  background: var(--chip-bg);
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-secondary);
+}
+
+@layer components {
+  .input {
+    height: 36px;
+    padding: 0 12px;
+    border-radius: 10px;
+    background: var(--fill-secondary);
+    border: 1px solid var(--divider);
+    color: var(--text-primary);
+    font-size: 14px;
+    outline: none;
+    user-select: text;
+  }
+  .input:focus {
+    border-color: var(--fill-primary);
+    box-shadow: 0 0 0 3px rgba(10, 132, 255, 0.25);
+  }
+}
+
+/* --- Scrollbar --- */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--fill-secondary-hover);
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--text-tertiary);
+  background-clip: content-box;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* --- Drag region for frameless window --- */
+.titlebar-drag {
+  -webkit-app-region: drag;
+}
+.no-drag {
+  -webkit-app-region: no-drag;
+}
+
+/* --- Reduced motion --- */
+@media (prefers-reduced-motion: reduce) {
+  .app-background .blob {
+    animation: none !important;
+  }
+  .catfish-bob,
+  .catfish-wag {
+    animation: none !important;
+  }
+  .btn {
+    transition: opacity 160ms ease;
+  }
+  .btn:active {
+    transform: none;
+  }
+}
+
+@media (prefers-reduced-transparency: reduce) {
+  .glass,
+  .glass-strong,
+  .glass-soft {
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+    background: var(--glass-bg-strong);
+  }
+}
+
+[data-reduced-motion='true'] .app-background .blob {
+  animation: none !important;
+}
+[data-reduced-motion='true'] .catfish-bob,
+[data-reduced-motion='true'] .catfish-wag {
+  animation: none !important;
+}
+[data-reduced-motion='true'] .btn {
+  transition: opacity 160ms ease;
+}
+[data-reduced-motion='true'] .btn:active {
+  transform: none;
+}
+
+/* --- Utility for safe-area / selectable text --- */
+.selectable {
+  user-select: text;
+}
+
+/* ------------------------------------------------------------------ */
+/*  极简模式：所有 UI 二维化（去除玻璃模糊、阴影、动态背景与光晕）        */
+/* ------------------------------------------------------------------ */
+[data-mode='minimal'] .app-background {
+  background: var(--bg-flat) !important;
+}
+[data-mode='minimal'] .app-background .blob {
+  display: none !important;
+}
+[data-mode='minimal'] .glass,
+[data-mode='minimal'] .glass-strong,
+[data-mode='minimal'] .glass-soft {
+  background: var(--surface-flat);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  border: 1px solid var(--divider);
+  box-shadow: none;
+}
+[data-mode='minimal'] .glass::before {
+  display: none;
+}
+[data-mode='minimal'] .btn {
+  box-shadow: none;
+}
+[data-mode='minimal'] .cursor-glow {
+  display: none;
+}

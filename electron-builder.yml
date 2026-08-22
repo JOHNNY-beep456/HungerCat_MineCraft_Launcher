@@ -1,0 +1,36 @@
+appId: com.hungercat.launcher
+productName: Hunger Cat Launcher
+directories:
+  output: release
+  buildResources: build
+files:
+  - out/**
+  - package.json
+extraResources:
+  - from: build/icon.png
+    to: icon.png
+asar: true
+compression: normal
+mac:
+  category: public.app-category.games
+  icon: build/icon.icns
+  target:
+    - dmg
+    - zip
+  darkModeSupport: true
+win:
+  icon: build/icon.ico
+  target:
+    - nsis
+linux:
+  icon: build/icon.png
+  target:
+    - AppImage
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  shortcutName: Hunger Cat Launcher
+  installerIcon: build/icon.ico
+  uninstallerIcon: build/icon.ico
+  installerHeaderIcon: build/icon.ico
