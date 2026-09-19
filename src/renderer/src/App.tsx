@@ -7,6 +7,7 @@ import { Sidebar, type PageId } from './components/Sidebar'
 import { JavaPrompt } from './components/JavaPrompt'
 import { FlyDot } from './components/FlyDot'
 import { AgreementModal } from './components/AgreementModal'
+import { OnboardingModal } from './components/OnboardingModal'
 import { CursorGlow } from './components/CursorGlow'
 import { Button, Icon } from './components/ui'
 import { HomePage } from './pages/HomePage'
@@ -42,7 +43,13 @@ function Shell(): JSX.Element {
   const [page, setPage] = useState<PageId>('home')
   const [managingId, setManagingId] = useState<string | null>(null)
   const [tokenExpiredError, setTokenExpiredError] = useState<string | null>(null)
+  const [onboardingOpen, setOnboardingOpen] = useState(false)
   const needAgreement = !settings.agreementAcceptedAt
+
+  // 首次同意协议后自动弹出新手引导（仅一次；之后通过双击左上角图标再次唤起）。
+  useEffect(() => {
+    if (!needAgreement && !settings.onboardingDone) setOnboardingOpen(true)
+  }, [needAgreement, settings.onboardingDone])
 
   const navigate = (p: PageId): void => {
     setManagingId(null)
@@ -90,7 +97,7 @@ function Shell(): JSX.Element {
           <div className="blob blob-3" />
         </div>
 
-        <TitleBar />
+        <TitleBar onLogoDoubleClick={() => setOnboardingOpen(true)} />
 
         <div className="flex h-full pt-12">
           <div className="w-[224px] shrink-0">
@@ -118,6 +125,7 @@ function Shell(): JSX.Element {
         <FlyDot />
         <CursorGlow />
         {needAgreement && <AgreementModal />}
+        <OnboardingModal open={onboardingOpen} onFinish={() => setOnboardingOpen(false)} />
         {tokenExpiredError && (
           <motion.div
             className="fixed inset-0 z-[110] flex items-center justify-center p-6"

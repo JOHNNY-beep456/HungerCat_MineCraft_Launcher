@@ -24,10 +24,10 @@ import { detectJava, installJava, javaVersionAt, pickJava, pickInstallerJava, re
 import { spawnGame } from './launcher'
 import { loaderVersions, installLoader } from './loaders'
 import { forgeVersions, installForge } from './forge'
-import { searchMods, getVersions as getModVersions, installMod, downloadTo } from './modrinth'
+import { searchMods, getVersions as getModVersions, installMod, downloadTo, findFabricApi } from './modrinth'
 import { listResources, removeResource, openResourceDir } from './resources'
 import { probeModpack, importModpack, importModpackFromUrl, exportModpack, collectExportInventory, downloadModpack } from './modpack'
-import { fetchAbout, fetchAgreement, fetchUpdateInfo, downloadUpdate, compareVersions } from './server'
+import { fetchAbout, fetchAgreement, fetchUpdateInfo, downloadUpdate, runUpdate, compareVersions } from './server'
 import {
   enrichMods,
   listMods,
@@ -228,6 +228,43 @@ function registerIpc(): void {
       }
     }
   )
+  ipcMain.handle('mods:installFabricApi', async (event, mcVersion: string, versionId: string) => {
+    const apiVersion = await findFabricApi(mcVersion)
+    if (!apiVersion) throw new Error(`未在 Modrinth 找到适配 ${mcVersion} 的 Fabric API`)
+    const file = apiVersion.files.find((f) => f.primary) ?? apiVersion.files[0]
+    if (!file) throw new Error('Fabric API 版本缺少可下载文件')
+
+    const s = settings.get()
+    const controller = new AbortController()
+    modAborts.add(controller)
+    const emit = (received: number, total: number): void =>
+      sendToSender(event.sender, 'download:progress', {
+        taskId: file.filename,
+        task: file.filename,
+        current: 0,
+        total: 1,
+        currentBytes: received,
+        totalBytes: total,
+        phase: 'mod',
+        percent: total > 0 ? Math.round((received / total) * 100) : 0
+      })
+    try {
+      const dest = await installMod(file.url, file.filename, s.gameDir, versionId, isIsolated(versionId), 'mod', emit, controller.signal)
+      sendToSender(event.sender, 'download:progress', {
+        taskId: file.filename,
+        task: file.filename,
+        current: 1,
+        total: 1,
+        currentBytes: 0,
+        totalBytes: 0,
+        phase: 'done',
+        percent: 100
+      })
+      return dest
+    } finally {
+      modAborts.delete(controller)
+    }
+  })
   ipcMain.handle('mods:downloadTo', async (event, fileUrl: string, destPath: string) => {
     const filename = destPath.split(/[\\/]/).pop() ?? destPath
     const controller = new AbortController()
@@ -530,6 +567,14 @@ function registerIpc(): void {
     return downloadUpdate(info, s.gameDir, (p) => {
       sendToSender(event.sender, 'update:progress', p)
     })
+  })
+  ipcMain.handle('update:downloadAndRun', async (event, info: UpdateInfo) => {
+    const s = settings.get()
+    const path = await downloadUpdate(info, s.gameDir, (p) => {
+      sendToSender(event.sender, 'update:progress', p)
+    })
+    runUpdate(path)
+    return path
   })
 
   // ---- Window controls ----

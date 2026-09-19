@@ -243,6 +243,8 @@ export interface LauncherSettings {
   isolatedVersions: string[]
   /** epoch ms when the user accepted the privacy/terms agreement (0 = not yet). */
   agreementAcceptedAt: number
+  /** 是否已完成新手引导；完成后仅在双击左上角图标时再次唤起。 */
+  onboardingDone: boolean
   /** Debug 模式：开启后显示启动日志（右侧控制台），关闭则隐藏并以 PCL 风格进度替代。 */
   debugMode: boolean
   /** 已安装模组仅识别 JAR 元数据名称、不联网查询 Modrinth；本地模式下强制生效。 */
@@ -445,6 +447,7 @@ export interface LauncherApi {
     versions: (slug: string, loaders: string[], gameVersions: string[]) => Promise<ModrinthVersion[]>
     install: (fileUrl: string, filename: string, versionId: string, type?: ModrinthType) => Promise<string>
     downloadTo: (fileUrl: string, destPath: string) => Promise<string>
+    installFabricApi: (mcVersion: string, versionId: string) => Promise<string>
   }
   java: {
     detect: () => Promise<JavaRuntime[]>
@@ -492,6 +495,7 @@ export interface LauncherApi {
   update: {
     check: () => Promise<UpdateCheckResult>
     download: (info: UpdateInfo) => Promise<string>
+    downloadAndRun: (info: UpdateInfo) => Promise<string>
     onProgress: (cb: (p: DownloadProgress) => void) => () => void
   }
   window: {

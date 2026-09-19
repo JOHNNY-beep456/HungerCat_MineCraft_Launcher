@@ -108,6 +108,7 @@ export function AppProvider({ children }: { children: ReactNode }): JSX.Element 
         disabledVersions: [],
         isolatedVersions: [],
         agreementAcceptedAt: 0,
+        onboardingDone: false,
         debugMode: false,
         metadataOnlyMods: false
       },

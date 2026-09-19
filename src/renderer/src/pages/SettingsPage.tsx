@@ -1,4 +1,5 @@
 import { useEffect, useState, type ReactNode } from 'react'
+import { AnimatePresence, motion } from 'motion/react'
 import type { DownloadProgress, JavaRuntime, UpdateCheckResult, UpdateInfo } from '@shared/types'
 import { useApp } from '../store'
 import { Button, Icon, ProgressBar, Segmented, Switch } from '../components/ui'
@@ -26,6 +27,7 @@ export function SettingsPage(): JSX.Element {
   const [updateStatus, setUpdateStatus] = useState<'idle' | 'checking' | 'downloading' | 'done' | 'error' | 'opened'>('idle')
   const [updatePath, setUpdatePath] = useState<string | null>(null)
   const [updateError, setUpdateError] = useState<string | null>(null)
+  const [pendingUpdate, setPendingUpdate] = useState<UpdateInfo | null>(null)
 
   const detect = async (): Promise<void> => {
     setDetecting(true)
@@ -54,17 +56,49 @@ export function SettingsPage(): JSX.Element {
     })
   }, [])
 
-  const doDownload = async (info: UpdateInfo): Promise<void> => {
+  const doDownload = async (info: UpdateInfo, run: boolean): Promise<void> => {
     setUpdateStatus('downloading')
     setUpdateProgress(null)
     setUpdateError(null)
     try {
-      const path = await window.api.update.download(info)
+      const path = run ? await window.api.update.downloadAndRun(info) : await window.api.update.download(info)
       setUpdatePath(path)
       setUpdateStatus('done')
     } catch (err) {
       setUpdateStatus('error')
       setUpdateError(err instanceof Error ? err.message : String(err))
+    }
+  }
+
+  /** 判断更新应执行的动作：exe 链接 → 下载并运行；有文件名 → 下载；否则 → 浏览器打开链接。 */
+  const updateAction = (info: UpdateInfo): 'downloadAndRun' | 'download' | 'openLink' => {
+    if (/\.exe(\?|#|$)/i.test(info.url)) return 'downloadAndRun'
+    if (info.filename && info.filename.trim() !== '') return 'download'
+    return 'openLink'
+  }
+
+  const ACTION_LABEL: Record<ReturnType<typeof updateAction>, string> = {
+    downloadAndRun: '确认下载并运行',
+    download: '确认下载',
+    openLink: '确认打开链接'
+  }
+
+  /** 关闭更新日志弹窗后，按链接类型执行下载 / 运行 / 打开。 */
+  const confirmPending = async (): Promise<void> => {
+    const info = pendingUpdate
+    if (!info) return
+    setPendingUpdate(null)
+    const action = updateAction(info)
+    if (action === 'openLink') {
+      try {
+        await window.api.shell.openExternal(info.url)
+        setUpdateStatus('opened')
+      } catch (err) {
+        setUpdateStatus('error')
+        setUpdateError(err instanceof Error ? err.message : String(err))
+      }
+    } else {
+      await doDownload(info, action === 'downloadAndRun')
     }
   }
 
@@ -75,13 +109,9 @@ export function SettingsPage(): JSX.Element {
       const r = await window.api.update.check()
       setUpdateResult(r)
       if (r.hasUpdate && r.latest) {
-        // 文件上传（服务端会写入 filename）→ 直接下载；外链（无 filename）→ 浏览器打开
-        if (r.latest.filename && r.latest.filename.trim() !== '') {
-          await doDownload(r.latest)
-        } else {
-          await window.api.shell.openExternal(r.latest.url)
-          setUpdateStatus('opened')
-        }
+        // 先展示更新日志让用户确认，再执行下载 / 运行 / 打开
+        setPendingUpdate(r.latest)
+        setUpdateStatus('idle')
       } else {
         setUpdateStatus('idle')
       }
@@ -381,6 +411,46 @@ export function SettingsPage(): JSX.Element {
         </Section>
         )}
       </div>
+
+      {/* 更新日志确认弹窗：先展示更新内容，确认后再下载 / 运行 / 打开链接 */}
+      <AnimatePresence>
+        {pendingUpdate && (
+          <motion.div
+            className="fixed inset-0 z-[115] flex items-center justify-center p-6"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+          >
+            <div className="absolute inset-0" style={{ background: 'var(--scrim)' }} />
+            <motion.div
+              className="glass-strong relative z-10 w-full max-w-md rounded-[32px] p-7"
+              initial={{ scale: 0.92, opacity: 0, y: 24 }}
+              animate={{ scale: 1, opacity: 1, y: 0 }}
+              exit={{ scale: 0.94, opacity: 0, y: 16 }}
+              transition={{ type: 'spring', bounce: 0.2, duration: 0.45 }}
+            >
+              <div className="mb-2 flex items-center gap-2">
+                <Icon name="download" size={20} style={{ color: 'var(--fill-primary)' }} />
+                <span className="title">发现新版本 v{pendingUpdate.version}</span>
+              </div>
+              <div className="mb-5 mt-3">
+                <div className="caption mb-2">更新日志</div>
+                <div className="glass-soft max-h-[38vh] selectable overflow-y-auto whitespace-pre-wrap break-words rounded-2xl p-4 text-[13px] leading-relaxed opacity-80">
+                  {pendingUpdate.notes?.trim() || '暂无更新日志。'}
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                <Button className="flex-1" onClick={() => setPendingUpdate(null)}>
+                  取消
+                </Button>
+                <Button variant="primary" className="flex-1" icon="check" onClick={() => void confirmPending()}>
+                  {ACTION_LABEL[updateAction(pendingUpdate)]}
+                </Button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   )
 }

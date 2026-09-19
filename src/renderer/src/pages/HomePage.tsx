@@ -234,7 +234,7 @@ export function HomePage(): JSX.Element {
             {!selectedAccount && (
               <div className="glass-soft mb-3 flex items-center gap-2 rounded-2xl px-3 py-2.5 text-[13px]">
                 <Icon name="user" size={16} />
-                请先在「账号」页登录微软账号
+                请先在「账号」页登录账号
               </div>
             )}
             {running ? (

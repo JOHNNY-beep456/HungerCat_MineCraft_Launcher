@@ -659,7 +659,7 @@ function FilterSelect({
   return (
     <div className="flex items-center gap-2">
       <span className="caption">{label}</span>
-      <select value={value} onChange={(e) => onChange(e.target.value)} className="input">
+      <select value={value} onChange={(e) => onChange(e.target.value)} className="input custom-select">
         {options.map((o) => (
           <option key={o} value={o}>
             {render ? render(o) : o}
