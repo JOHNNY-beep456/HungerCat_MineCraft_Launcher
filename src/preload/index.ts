@@ -80,7 +80,9 @@ const api: LauncherApi = {
       ipcRenderer.invoke('mods:versions', slug, loaders, gameVersions),
     install: (fileUrl: string, filename: string, versionId: string, type?: ModrinthType) =>
       ipcRenderer.invoke('mods:install', fileUrl, filename, versionId, type),
-    downloadTo: (fileUrl: string, destPath: string) => ipcRenderer.invoke('mods:downloadTo', fileUrl, destPath)
+    downloadTo: (fileUrl: string, destPath: string) => ipcRenderer.invoke('mods:downloadTo', fileUrl, destPath),
+    installFabricApi: (mcVersion: string, versionId: string) =>
+      ipcRenderer.invoke('mods:installFabricApi', mcVersion, versionId)
   },
   java: {
     detect: () => ipcRenderer.invoke('java:detect'),
@@ -130,6 +132,7 @@ const api: LauncherApi = {
   update: {
     check: () => ipcRenderer.invoke('update:check'),
     download: (info: UpdateInfo) => ipcRenderer.invoke('update:download', info),
+    downloadAndRun: (info: UpdateInfo) => ipcRenderer.invoke('update:downloadAndRun', info),
     onProgress: subscribe<DownloadProgress>('update:progress')
   },
   window: {

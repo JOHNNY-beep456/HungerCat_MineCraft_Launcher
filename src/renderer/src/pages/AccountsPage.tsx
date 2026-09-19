@@ -5,6 +5,14 @@ import { useApp } from '../store'
 import { Avatar, Button, Icon, Segmented } from '../components/ui'
 
 const LITTLESKIN_SERVER = 'https://littleskin.cn/api/yggdrasil'
+const CHANMAO_SERVER = 'https://skin.johnnyblog.top/api/yggdrasil'
+
+type YggPreset = 'littleskin' | 'chanmao' | 'custom'
+
+const YGG_PRESETS: Array<{ value: YggPreset; server: string }> = [
+  { value: 'littleskin', server: LITTLESKIN_SERVER },
+  { value: 'chanmao', server: CHANMAO_SERVER }
+]
 
 export function AccountsPage(): JSX.Element {
   const { accounts, selectedAccount, selectAccount, removeAccount, reloadAccounts, settings } = useApp()
@@ -19,7 +27,7 @@ export function AccountsPage(): JSX.Element {
   const [offlineError, setOfflineError] = useState<string | null>(null)
 
   const [yggdrasilOpen, setYggdrasilOpen] = useState(false)
-  const [yggPreset, setYggPreset] = useState<'littleskin' | 'custom'>('littleskin')
+  const [yggPreset, setYggPreset] = useState<YggPreset>('littleskin')
   const [yggServer, setYggServer] = useState(LITTLESKIN_SERVER)
   const [yggEmail, setYggEmail] = useState('')
   const [yggPassword, setYggPassword] = useState('')
@@ -102,10 +110,11 @@ export function AccountsPage(): JSX.Element {
     }
   }
 
-  const chooseYggPreset = (v: 'littleskin' | 'custom'): void => {
+  const chooseYggPreset = (v: YggPreset): void => {
     setYggPreset(v)
     setYggError(null)
-    if (v === 'littleskin') setYggServer(LITTLESKIN_SERVER)
+    const preset = YGG_PRESETS.find((p) => p.value === v)
+    if (preset) setYggServer(preset.server)
   }
 
   return (
@@ -131,7 +140,7 @@ export function AccountsPage(): JSX.Element {
             disabled={settings.mode === 'local'}
             title={settings.mode === 'local' ? '本地模式已关闭在线登录' : undefined}
           >
-            添加账号
+            微软账号
           </Button>
         </div>
       </div>
@@ -406,6 +415,7 @@ export function AccountsPage(): JSX.Element {
               <Segmented
                 options={[
                   { value: 'littleskin', label: 'LittleSkin' },
+                  { value: 'chanmao', label: '馋猫认证中心' },
                   { value: 'custom', label: '自定义' }
                 ]}
                 value={yggPreset}
@@ -419,7 +429,7 @@ export function AccountsPage(): JSX.Element {
                   setYggServer(e.target.value)
                   setYggError(null)
                 }}
-                disabled={yggPreset === 'littleskin'}
+                disabled={yggPreset !== 'custom'}
                 placeholder="https://example.com/api/yggdrasil"
                 className="input mb-3 w-full"
               />

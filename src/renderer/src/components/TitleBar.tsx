@@ -2,7 +2,7 @@ import { useEffect, useState, type ReactNode } from 'react'
 import { Icon } from './ui'
 import logo from '../assets/logo.png'
 
-export function TitleBar(): JSX.Element {
+export function TitleBar({ onLogoDoubleClick }: { onLogoDoubleClick?: () => void }): JSX.Element {
   const isMac = window.api.platform === 'darwin'
   const [maximized, setMaximized] = useState(false)
 
@@ -21,8 +21,10 @@ export function TitleBar(): JSX.Element {
           width={22}
           height={22}
           alt=""
-          className="h-[22px] w-[22px] rounded-[6px] object-contain"
+          className="h-[22px] w-[22px] rounded-[6px] object-contain no-drag"
           draggable={false}
+          onDoubleClick={onLogoDoubleClick}
+          title={onLogoDoubleClick ? '双击可重新打开新手引导' : undefined}
         />
         <span className="text-[13px] font-semibold tracking-tight">Hunger Cat Launcher</span>
       </div>

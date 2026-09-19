@@ -68,6 +68,16 @@ export async function getVersions(
   return (await res.json()) as ModrinthVersion[]
 }
 
+/** 查找适配指定 Minecraft 版本的 Fabric API 模组（按最新优先），未找到返回 null。 */
+export async function findFabricApi(mcVersion: string): Promise<ModrinthVersion | null> {
+  try {
+    const versions = await getVersions('fabric-api', ['fabric'], [mcVersion])
+    return versions.find((v) => v.files.some((f) => f.primary) || v.files.length > 0) ?? versions[0] ?? null
+  } catch {
+    return null
+  }
+}
+
 function folderFor(type: ModrinthType): 'mods' | 'resourcepacks' | 'shaderpacks' {
   if (type === 'shader') return 'shaderpacks'
   if (type === 'resourcepack') return 'resourcepacks'

@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { AnimatePresence, motion } from 'motion/react'
 import type { ForgeKind, InstalledVersion, LoaderKind, VersionManifest } from '@shared/types'
 import { useRuntime } from '../runtime'
-import { Button, Icon, LoadingState, ProgressBar, Segmented } from '../components/ui'
+import { Button, Checkbox, Icon, LoadingState, ProgressBar, Segmented } from '../components/ui'
 
 type Filter = 'all' | 'release' | 'snapshot'
 type AnyLoader = LoaderKind | ForgeKind
@@ -42,6 +42,7 @@ export function VersionsPage(): JSX.Element {
   const [loaderLog, setLoaderLog] = useState<string[]>([])
   const [customName, setCustomName] = useState('')
   const [nameTouched, setNameTouched] = useState(false)
+  const [installFabricApi, setInstallFabricApi] = useState(true)
   const logRef = useRef<HTMLDivElement>(null)
 
   const refresh = useCallback(async () => {
@@ -107,6 +108,7 @@ export function VersionsPage(): JSX.Element {
     setLoaderError(null)
     setCustomName(mc)
     setNameTouched(false)
+    setInstallFabricApi(true)
   }
 
   const switchLoaderKind = async (kind: InstallKind): Promise<void> => {
@@ -149,6 +151,13 @@ export function VersionsPage(): JSX.Element {
             ? await window.api.forge.install(loaderKind, loaderTarget, loaderVersion, name)
             : await window.api.loaders.install(loaderKind, loaderTarget, loaderVersion, name)
         await installVersion(id)
+        if (loaderKind === 'fabric' && installFabricApi) {
+          try {
+            await window.api.mods.installFabricApi(loaderTarget, id)
+          } catch (err) {
+            setLoaderError(`Fabric API 安装失败：${err instanceof Error ? err.message : String(err)}`)
+          }
+        }
       }
       void refresh()
     } catch (err) {
@@ -344,7 +353,7 @@ export function VersionsPage(): JSX.Element {
                   <select
                     value={loaderVersion}
                     onChange={(e) => setLoaderVersion(e.target.value)}
-                    className="input w-full"
+                    className="input custom-select w-full"
                     disabled={loaderVersions.length === 0 || loaderBusy}
                   >
                     {loaderVersions.length === 0 && <option>{loaderBusy ? '安装中…' : '加载中…'}</option>}
@@ -354,6 +363,13 @@ export function VersionsPage(): JSX.Element {
                       </option>
                     ))}
                   </select>
+                </div>
+              )}
+
+              {loaderKind === 'fabric' && (
+                <div className="mb-4 flex items-center gap-2">
+                  <Checkbox checked={installFabricApi} onChange={setInstallFabricApi} />
+                  <span className="caption">同时安装对应版本的 Fabric API</span>
                 </div>
               )}
 

@@ -18,6 +18,21 @@ function normalizeServer(server: string): string {
   return server.trim().replace(/\/+$/, '')
 }
 
+/** 请求超时时间（毫秒）。第三方认证服务器良莠不齐，超时避免登录/刷新永久挂起。 */
+const REQUEST_TIMEOUT_MS = 15_000
+
+/** 带超时的 fetch：超时或网络错误时抛出带友好文案的异常，避免界面永久「卡在登录中」。 */
+async function fetchWithTimeout(url: string, init?: RequestInit): Promise<Response> {
+  try {
+    return await fetch(url, { ...init, signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) })
+  } catch (err) {
+    if (err instanceof Error && err.name === 'TimeoutError') {
+      throw new Error('认证服务器连接超时，请检查地址后重试')
+    }
+    throw new Error(`认证服务器连接失败：${err instanceof Error ? err.message : String(err)}`)
+  }
+}
+
 function withoutDashes(uuid: string): string {
   return uuid.replace(/-/g, '')
 }
@@ -104,7 +119,7 @@ export async function loginYggdrasil(
 ): Promise<MinecraftAccount> {
   const base = normalizeServer(server)
   const clientToken = randomUUID().replace(/-/g, '')
-  const res = await fetch(`${base}/authserver/authenticate`, {
+  const res = await fetchWithTimeout(`${base}/authserver/authenticate`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -125,7 +140,7 @@ export async function loginYggdrasil(
 export async function refreshYggdrasil(account: MinecraftAccount): Promise<MinecraftAccount> {
   const base = account.yggdrasilServer ?? ''
   const clientToken = account.clientToken ?? account.id
-  const res = await fetch(`${base}/authserver/refresh`, {
+  const res = await fetchWithTimeout(`${base}/authserver/refresh`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -161,12 +176,12 @@ export async function ensureAuthlibInjector(destDir: string): Promise<string> {
   let lastErr: unknown = null
   for (const metaUrl of INJECTOR_META_URLS) {
     try {
-      const metaRes = await fetch(metaUrl)
+      const metaRes = await fetchWithTimeout(metaUrl)
       if (!metaRes.ok) throw new Error(`HTTP ${metaRes.status}`)
       const meta = (await metaRes.json()) as { download_url?: string; downloadUrl?: string }
       const dl = meta.download_url ?? meta.downloadUrl
       if (!dl) throw new Error('元数据缺少下载地址')
-      const fileRes = await fetch(dl)
+      const fileRes = await fetchWithTimeout(dl)
       if (!fileRes.ok) throw new Error(`HTTP ${fileRes.status}`)
       const buf = Buffer.from(await fileRes.arrayBuffer())
       writeFileSync(jar, buf)

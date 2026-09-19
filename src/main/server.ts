@@ -1,5 +1,6 @@
 import { createWriteStream, existsSync, promises as fsp } from 'fs'
 import { join } from 'path'
+import { spawn } from 'child_process'
 import type { AboutGroup, AgreementContent, DownloadProgress, UpdateInfo } from '@shared/types'
 
 /**
@@ -112,4 +113,17 @@ export async function downloadUpdate(
 /** 当前是否已存在更新文件（用于避免重复下载）。 */
 export function updateFileExists(gameDir: string, info: UpdateInfo): boolean {
   return existsSync(join(gameDir, 'updates', filenameFrom(info)))
+}
+
+/** 运行更新程序（安装包 / 便携版 exe），分离进程并立即解绑，不阻塞启动器退出。 */
+export function runUpdate(exePath: string): void {
+  try {
+    const child = spawn(exePath, [], { detached: true, stdio: 'ignore' })
+    child.on('error', () => {
+      /* 运行失败仅忽略，用户仍可手动打开文件 */
+    })
+    child.unref()
+  } catch {
+    /* 运行失败仅忽略 */
+  }
 }

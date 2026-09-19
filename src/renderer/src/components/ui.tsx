@@ -1,6 +1,7 @@
 import {
   forwardRef,
   useEffect,
+  useId,
   useState,
   type ButtonHTMLAttributes,
   type CSSProperties,
@@ -8,6 +9,7 @@ import {
   type ReactNode
 } from 'react'
 import { motion } from 'motion/react'
+import defaultAvatar from '../assets/stevE.jpg'
 
 /* ------------------------------------------------------------------ */
 /* Icons (SF-Symbols-style stroke icons)                               */
@@ -365,23 +367,24 @@ export function Segmented<T extends string>({
   value: T
   onChange: (v: T) => void
 }): JSX.Element {
+  const layoutId = useId()
   return (
-    <div className="inline-flex rounded-xl p-1 gap-1" style={{ background: 'var(--fill-secondary)' }}>
+    <div className="inline-flex flex-wrap rounded-xl p-1 gap-1" style={{ background: 'var(--fill-secondary)' }}>
       {options.map((o) => {
         const active = o.value === value
         return (
           <button
             key={o.value}
             onClick={() => onChange(o.value)}
-            className="relative rounded-lg px-3 py-1.5 text-[13px] font-medium transition-colors no-drag"
+            className="relative rounded-lg px-3 py-1.5 text-[13px] font-medium transition-colors no-drag whitespace-nowrap"
             style={{ color: active ? 'var(--text-primary)' : 'var(--text-secondary)' }}
           >
             {active && (
               <motion.span
-                className="absolute inset-0 rounded-lg glass-soft"
-                initial={{ opacity: 0, scale: 0.9 }}
-                animate={{ opacity: 1, scale: 1 }}
-                transition={{ type: 'spring', bounce: 0.2, duration: 0.3 }}
+                layoutId={layoutId}
+                className="absolute inset-0 rounded-lg"
+                style={{ background: 'var(--fill-secondary-hover)' }}
+                transition={{ type: 'spring', bounce: 0.2, duration: 0.4 }}
               />
             )}
             <span className="relative z-10">{o.label}</span>
@@ -487,6 +490,20 @@ export function Avatar({
   if (hash) sources.push(`https://mc-heads.net/avatar/${hash}/${Math.round(size * 2)}`)
   if (uuid) sources.push(`https://crafatar.com/avatars/${uuid}?size=${Math.round(size * 2)}&overlay`)
   if (uuid) sources.push(`https://minotar.net/helm/${uuid}/${Math.round(size * 2)}.png`)
+  // 未登录 / 无任何账号信息时，使用本地默认头像（stevE.jpg）
+  if (sources.length === 0) {
+    return (
+      <img
+        src={defaultAvatar}
+        width={size}
+        height={size}
+        alt="默认头像"
+        className="rounded-xl"
+        draggable={false}
+        style={{ objectFit: 'cover', flexShrink: 0 }}
+      />
+    )
+  }
 
   const faceUrl = sources[srcIndex]
   if (faceUrl) {

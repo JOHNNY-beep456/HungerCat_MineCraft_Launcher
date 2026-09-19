@@ -78,6 +78,7 @@ export function getDefaultSettings(): LauncherSettings {
     disabledVersions: [],
     isolatedVersions: [],
     agreementAcceptedAt: 0,
+    onboardingDone: false,
     debugMode: false,
     metadataOnlyMods: false
   }
