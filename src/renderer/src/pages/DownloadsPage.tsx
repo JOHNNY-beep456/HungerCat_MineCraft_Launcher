@@ -1,6 +1,6 @@
 import { useApp } from '../store'
 import { useRuntime } from '../runtime'
-import { Button, Icon, ProgressBar } from '../components/ui'
+import { Button, Icon, ProgressBar, formatSpeed } from '../components/ui'
 
 export function DownloadsPage(): JSX.Element {
   const { settings } = useApp()
@@ -30,6 +30,7 @@ export function DownloadsPage(): JSX.Element {
                 <ProgressBar percent={d.percent} />
                 <div className="mt-2 flex items-center justify-between text-[12px] opacity-70">
                   <span>{d.currentBytes > 0 ? formatBytes(d.currentBytes) : ''}{d.totalBytes > 0 ? ` / ${formatBytes(d.totalBytes)}` : ''}</span>
+                  <span>{d.speed && d.speed > 0 ? formatSpeed(d.speed) : '--'}</span>
                 </div>
               </div>
             ))}

@@ -128,6 +128,8 @@ export interface DownloadProgress {
   totalBytes: number
   phase: DownloadPhase
   percent: number
+  /** 实时下载速度（字节/秒），主进程按两次进度回调计算。 */
+  speed?: number
 }
 
 export interface JavaRuntime {
@@ -254,6 +256,14 @@ export interface LauncherSettings {
 /* ------------------------------------------------------------------ */
 /* 关于页 / 协议 / 更新（来自服务端）                                    */
 /* ------------------------------------------------------------------ */
+
+/** 主进程日志窗口的单条日志。 */
+export interface DebugLogEntry {
+  /** epoch ms */
+  ts: number
+  level: 'info' | 'warn' | 'error'
+  message: string
+}
 
 export interface AboutLink {
   name: string
@@ -401,6 +411,18 @@ export interface LauncherApi {
   platform: string
   /** 当前启动器版本号。 */
   getVersion: () => Promise<string>
+  debug: {
+    /** 读取主进程日志滚动缓冲。 */
+    getLogs: () => Promise<DebugLogEntry[]>
+    /** 订阅增量日志，返回退订函数。 */
+    onLog: (cb: (entry: DebugLogEntry) => void) => () => void
+    /** 打开 / 唤起独立日志窗口。 */
+    openWindow: () => Promise<void>
+    /** 关闭独立日志窗口。 */
+    closeWindow: () => Promise<void>
+    /** Debug 模式是否开启。 */
+    isEnabled: () => Promise<boolean>
+  }
   auth: {
     begin: () => Promise<DeviceCodeInfo>
     cancel: () => Promise<void>

@@ -3,6 +3,7 @@ import { existsSync, promises as fsp } from 'fs'
 import { basename, join } from 'path'
 import type { ModEntry, SchematicEntry, VersionDirKind } from '@shared/types'
 import { findProject } from './modrinth'
+import { withLocalTimeout } from './local-timeout'
 
 function runDir(gameDir: string, versionId: string, isolated: boolean): string {
   return isolated ? join(gameDir, 'versions', versionId) : gameDir
@@ -186,14 +187,17 @@ export async function enrichMods(
 
 export async function toggleMod(path: string): Promise<void> {
   if (path.endsWith('.disabled')) {
-    await fsp.rename(path, path.slice(0, -'.disabled'.length))
+    await withLocalTimeout(fsp.rename(path, path.slice(0, -'.disabled'.length)), `切换模组启用 ${path}`)
+    console.info(`[模组] 已启用 ${basename(path.slice(0, -'.disabled'.length))}`)
   } else {
-    await fsp.rename(path, `${path}.disabled`)
+    await withLocalTimeout(fsp.rename(path, `${path}.disabled`), `停用模组 ${path}`)
+    console.info(`[模组] 已停用 ${basename(path)}`)
   }
 }
 
 export async function deleteMod(path: string): Promise<void> {
-  await fsp.rm(path, { force: true })
+  await withLocalTimeout(fsp.rm(path, { force: true }), `删除模组 ${path}`)
+  console.info(`[模组] 已删除 ${basename(path)}`)
 }
 
 export async function installLocalMod(
@@ -203,9 +207,10 @@ export async function installLocalMod(
   sourcePath: string
 ): Promise<string> {
   const modsDir = join(runDir(gameDir, versionId, isolated), 'mods')
-  await fsp.mkdir(modsDir, { recursive: true })
+  await withLocalTimeout(fsp.mkdir(modsDir, { recursive: true }), `创建模组目录 ${modsDir}`)
   const dest = join(modsDir, basename(sourcePath))
-  await fsp.copyFile(sourcePath, dest)
+  await withLocalTimeout(fsp.copyFile(sourcePath, dest), `导入本地模组 ${basename(sourcePath)}`)
+  console.info(`[模组] 已导入本地模组 ${basename(sourcePath)} -> 版本 ${versionId}`)
   return dest
 }
 
@@ -220,6 +225,7 @@ export async function deleteWorld(
   // Safety: worldName must be a single path segment.
   if (basename(worldName) !== worldName) return
   await fsp.rm(worldDir, { recursive: true, force: true })
+  console.info(`[版本] 已删除存档 ${worldName}（版本 ${versionId}）`)
 }
 
 export async function listSchematics(gameDir: string, versionId: string, isolated: boolean): Promise<SchematicEntry[]> {
@@ -244,12 +250,14 @@ export async function listSchematics(gameDir: string, versionId: string, isolate
 }
 
 export async function deleteFile(path: string): Promise<void> {
-  await fsp.rm(path, { force: true })
+  await withLocalTimeout(fsp.rm(path, { force: true }), `删除文件 ${path}`)
+  console.info(`[版本] 已删除文件 ${basename(path)}`)
 }
 
 export async function deleteVersion(gameDir: string, versionId: string): Promise<void> {
   await fsp.rm(join(gameDir, 'versions', versionId), { recursive: true, force: true })
   await fsp.rm(join(gameDir, 'natives', versionId), { recursive: true, force: true })
+  console.info(`[版本] 已删除版本 ${versionId}`)
 }
 
 /** 重命名已安装实例：同时更新文件夹名、JSON 内 id 与 natives 目录。 */
@@ -292,6 +300,7 @@ export async function renameVersion(gameDir: string, versionId: string, newName:
     await fsp.rename(srcNatives, join(gameDir, 'natives', name))
   }
 
+  console.info(`[版本] 已将版本 ${versionId} 重命名为 ${name}`)
   return name
 }
 

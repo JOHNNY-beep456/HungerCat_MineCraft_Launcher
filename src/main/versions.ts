@@ -1,43 +1,20 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import type { VersionJson, VersionManifest } from '@shared/types'
-import { mirrorConfig, mirrorUrl, type MirrorKind } from './mirror'
+import type { MirrorKind } from './mirror'
+import { netRequest } from './broker'
 
-interface RawManifestVersion {
-  id: string
-  type: string
-  releaseTime: string
-  url: string
+/**
+ * 版本清单 / 版本 JSON 的【远程获取核心执行】已迁到网络进程（out/main/network.js）。
+ * 本模块仅保留调用方视角的封装：本地磁盘解析、inheritsFrom 合并仍在主进程完成。
+ */
+export function fetchVersionManifest(kind: MirrorKind): Promise<VersionManifest> {
+  return netRequest<VersionManifest>('versions:manifest', { mirror: kind })
 }
 
-export async function fetchVersionManifest(kind: MirrorKind): Promise<VersionManifest> {
-  const url = mirrorConfig(kind).manifest
-  const res = await fetch(url, { headers: { 'User-Agent': 'HungerCatLauncher/0.1' } })
-  if (!res.ok) throw new Error(`获取版本清单失败 (HTTP ${res.status})`)
-  const data = (await res.json()) as { latest: { release: string; snapshot: string }; versions: RawManifestVersion[] }
-  return {
-    latest: data.latest,
-    versions: data.versions
-      .filter((v) => v.type !== 'old_alpha' && v.type !== 'old_beta')
-      .map((v) => ({ id: v.id, type: v.type as VersionManifest['versions'][number]['type'], releaseTime: v.releaseTime }))
-  }
-}
-
-async function fetchRawVersionJson(id: string, kind: MirrorKind): Promise<VersionJson> {
-  if (kind === 'bmclapi') {
-    const res = await fetch(mirrorConfig('bmclapi').versionJson(id), {
-      headers: { 'User-Agent': 'HungerCatLauncher/0.1' }
-    })
-    if (!res.ok) throw new Error(`获取版本 ${id} 信息失败 (HTTP ${res.status})`)
-    return (await res.json()) as VersionJson
-  }
-  const manifest = await fetch(mirrorConfig(kind).manifest)
-  const data = (await manifest.json()) as { versions: RawManifestVersion[] }
-  const entry = data.versions.find((v) => v.id === id)
-  if (!entry) throw new Error(`未找到版本 ${id}`)
-  const res = await fetch(entry.url, { headers: { 'User-Agent': 'HungerCatLauncher/0.1' } })
-  if (!res.ok) throw new Error(`获取版本 ${id} 信息失败 (HTTP ${res.status})`)
-  return (await res.json()) as VersionJson
+/** 获取单个原版版本 JSON（不含合并），远程部分委托给网络进程。 */
+function fetchRawVersionJson(id: string, kind: MirrorKind): Promise<VersionJson> {
+  return netRequest<VersionJson>('versions:json', { id, mirror: kind })
 }
 
 type VersionArg = string | { rules: unknown[]; value: string | string[] }

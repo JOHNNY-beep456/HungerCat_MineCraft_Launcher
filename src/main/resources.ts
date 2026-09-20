@@ -1,6 +1,7 @@
 import { promises as fsp } from 'fs'
 import { join } from 'path'
 import type { ResourceFile, ResourceKind } from '@shared/types'
+import { withLocalTimeout } from './local-timeout'
 
 function resourceDir(gameDir: string, versionId: string, isolated: boolean, kind: ResourceKind): string {
   const runDir = isolated ? join(gameDir, 'versions', versionId) : gameDir
@@ -36,7 +37,7 @@ export async function listResources(
 }
 
 export async function removeResource(path: string): Promise<void> {
-  await fsp.rm(path, { force: true })
+  await withLocalTimeout(fsp.rm(path, { force: true }), `删除资源 ${path}`)
 }
 
 export async function openResourceDir(

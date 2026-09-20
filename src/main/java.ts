@@ -1,8 +1,10 @@
 import { execFile } from 'child_process'
-import { createWriteStream, existsSync, readdirSync, statSync, promises as fsp } from 'fs'
+import { existsSync, readdirSync, statSync, promises as fsp } from 'fs'
 import { homedir } from 'os'
 import { join } from 'path'
 import type { DownloadPhase, JavaRuntime } from '@shared/types'
+import { netRequest } from './broker'
+import { streamDownload } from './stream-download'
 
 const JAVA_BIN = process.platform === 'win32' ? 'java.exe' : 'java'
 
@@ -264,19 +266,22 @@ interface JreAsset {
   }
 }
 
-/** 通过 Adoptium assets 接口获取 JRE 文件名与候选下载地址（含国内镜像）。 */
+/** 通过 Adoptium assets 接口获取 JRE 文件名与候选下载地址（含国内镜像）。网络执行由网络进程承担。 */
 async function jreDownloadUrls(
   major: number,
   os: string,
   arch: string,
   signal?: AbortSignal
 ): Promise<{ filename: string; urls: string[] }> {
-  const res = await fetch(`https://api.adoptium.net/v3/assets/latest/${major}/hotspot`, {
-    headers: { 'User-Agent': 'HungerCatLauncher/0.1' },
-    signal
-  })
-  if (!res.ok) throw new Error(`获取 Java 版本信息失败 (HTTP ${res.status})`)
-  const assets = (await res.json()) as JreAsset[]
+  const data = await netRequest(
+    'net:fetchJson',
+    {
+      url: `https://api.adoptium.net/v3/assets/latest/${major}/hotspot`,
+      headers: { 'User-Agent': 'HungerCatLauncher/0.1' }
+    },
+    { signal }
+  )
+  const assets = data as JreAsset[]
   const asset = assets.find(
     (a) => a.binary.os === os && a.binary.architecture === arch && a.binary.image_type === 'jre'
   )
@@ -296,26 +301,18 @@ async function downloadJavaBinary(
   signal: AbortSignal | undefined,
   onProgress: (received: number, total: number) => void
 ): Promise<void> {
-  const res = await fetch(url, { headers: { 'User-Agent': 'HungerCatLauncher/0.1' }, signal })
-  if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`)
-  const total = Number(res.headers.get('content-length') ?? 0)
-  const reader = res.body.getReader()
-  const out = createWriteStream(dest)
   let received = 0
-  try {
-    for (;;) {
-      const { done, value } = await reader.read()
-      if (done) break
-      received += value.byteLength
+  let total = 0
+  await streamDownload(url, dest, {
+    signal,
+    onSize: (s) => {
+      total = s
+    },
+    onBytes: (n) => {
+      received += n
       onProgress(received, total)
-      if (!out.write(Buffer.from(value))) {
-        await new Promise<void>((r) => out.once('drain', r))
-      }
     }
-    await new Promise<void>((resolve, reject) => out.end((e?: Error | null) => (e ? reject(e) : resolve())))
-  } finally {
-    out.destroy()
-  }
+  })
 }
 
 export async function installJava(

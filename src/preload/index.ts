@@ -14,7 +14,8 @@ import type {
   ModpackExportOptions,
   ResourceKind,
   UpdateInfo,
-  VersionDirKind
+  VersionDirKind,
+  DebugLogEntry
 } from '@shared/types'
 
 function subscribe<T>(channel: string): (cb: (payload: T) => void) => () => void {
@@ -28,6 +29,13 @@ function subscribe<T>(channel: string): (cb: (payload: T) => void) => () => void
 const api: LauncherApi = {
   platform: process.platform,
   getVersion: () => ipcRenderer.invoke('app:version'),
+  debug: {
+    getLogs: () => ipcRenderer.invoke('debug:getLogs'),
+    onLog: subscribe<DebugLogEntry>('debug:log'),
+    openWindow: () => ipcRenderer.invoke('debug:open'),
+    closeWindow: () => ipcRenderer.invoke('debug:close'),
+    isEnabled: () => ipcRenderer.invoke('debug:isEnabled')
+  },
   auth: {
     begin: () => ipcRenderer.invoke('auth:begin'),
     cancel: () => ipcRenderer.invoke('auth:cancel'),

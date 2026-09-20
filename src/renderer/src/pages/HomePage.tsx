@@ -23,10 +23,14 @@ export function HomePage(): JSX.Element {
 
   useEffect(() => {
     void (async () => {
-      const list = await window.api.installed.list()
-      setInstalled(list)
-      // 默认选中第一个已下载的版本（启动页只能启动已下载版本）
-      setVersionId((prev) => (prev && list.some((v) => v.id === prev) ? prev : list[0]?.id ?? ''))
+      try {
+        const list = await window.api.installed.list()
+        setInstalled(list)
+        // 默认选中第一个已下载的版本（启动页只能启动已下载版本）
+        setVersionId((prev) => (prev && list.some((v) => v.id === prev) ? prev : list[0]?.id ?? ''))
+      } catch {
+        /* installed:list 偶发失败时保持上次状态，不做阻塞 */
+      }
     })()
     refreshMemory()
     // 已用内存每 30 秒更新一次

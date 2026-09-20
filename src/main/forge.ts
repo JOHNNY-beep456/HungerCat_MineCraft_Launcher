@@ -1,7 +1,11 @@
+// 元数据获取（forge 版本清单）已迁至网络进程（forge:versions）；安装器 jar 下载走
+// streamDownload（broker 代理到网络进程）。spawn java 运行安装器属后端编排，仍留本进程。
 import { spawn } from 'child_process'
-import { createWriteStream, existsSync, promises as fsp } from 'fs'
+import { existsSync, promises as fsp } from 'fs'
 import { join } from 'path'
 import type { DownloadProgress, ForgeKind } from '@shared/types'
+import { netRequest } from './broker'
+import { streamDownload } from './stream-download'
 
 /**
  * Forge / NeoForge installation. Unlike Fabric/Quilt (which expose a clean
@@ -11,55 +15,18 @@ import type { DownloadProgress, ForgeKind } from '@shared/types'
 
 const UA = { 'User-Agent': 'HungerCatLauncher/0.1' }
 
-const MAVEN: Record<ForgeKind, { metadata: string; installer: (v: string) => string }> = {
+/** Forge 安装器 jar 的 Maven 下载地址（真实网络 IO 由网络进程承担）。 */
+const INSTALLER: Record<ForgeKind, { installer: (v: string) => string }> = {
   forge: {
-    metadata: 'https://maven.minecraftforge.net/net/minecraftforge/forge/maven-metadata.xml',
     installer: (v) => `https://maven.minecraftforge.net/net/minecraftforge/forge/${v}/forge-${v}-installer.jar`
   },
   neoforge: {
-    metadata: 'https://maven.neoforged.net/releases/net/neoforged/neoforge/maven-metadata.xml',
     installer: (v) => `https://maven.neoforged.net/releases/net/neoforged/neoforge/${v}/neoforge-${v}-installer.jar`
   }
 }
 
-function naturalDesc(a: string, b: string): number {
-  const pa = a.split(/(\d+)/)
-  const pb = b.split(/(\d+)/)
-  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
-    const ca = pa[i] ?? ''
-    const cb = pb[i] ?? ''
-    if (ca === cb) continue
-    const na = Number(ca)
-    const nb = Number(cb)
-    if (Number.isFinite(na) && Number.isFinite(nb)) return nb - na
-    return cb.localeCompare(ca)
-  }
-  return 0
-}
-
-function matchesMc(version: string, mcVersion: string, kind: ForgeKind): boolean {
-  if (version.startsWith(`${mcVersion}-`)) return true
-  if (kind === 'neoforge') {
-    // NeoForge moved to standalone versioning for 1.20.5+: "1.21" -> "21.0.x",
-    // "1.21.1" -> "21.1.x", "1.20.6" -> "20.6.x".
-    const parts = mcVersion.split('.')
-    if (parts.length >= 2 && parts[0] === '1') {
-      const prefix = parts[2] ? `${parts[1]}.${parts[2]}.` : `${parts[1]}.`
-      if (version.startsWith(prefix)) return true
-    }
-  }
-  return false
-}
-
-export async function forgeVersions(kind: ForgeKind, mcVersion: string): Promise<string[]> {
-  const res = await fetch(MAVEN[kind].metadata, { headers: UA })
-  if (!res.ok) throw new Error(`获取 ${kind} 版本列表失败 (HTTP ${res.status})`)
-  const xml = await res.text()
-  const versions = [...xml.matchAll(/<version>([^<]+)<\/version>/g)].map((m) => m[1])
-  const matched = versions.filter((v) => matchesMc(v, mcVersion, kind))
-  const stable = matched.filter((v) => !/-(pre|rc|beta|alpha|snapshot)/i.test(v))
-  const pre = matched.filter((v) => /-(pre|rc|beta|alpha|snapshot)/i.test(v))
-  return [...stable.sort(naturalDesc), ...pre.sort(naturalDesc)].slice(0, 200)
+export function forgeVersions(kind: ForgeKind, mcVersion: string): Promise<string[]> {
+  return netRequest<string[]>('forge:versions', { kind, mcVersion })
 }
 
 /** Snapshot the set of installed version ids (directories under `versions/`). */
@@ -82,7 +49,7 @@ export async function installForge(
   customId?: string,
   onProgress?: (p: DownloadProgress) => void
 ): Promise<string> {
-  const installerUrl = MAVEN[kind].installer(version)
+  const installerUrl = INSTALLER[kind].installer(version)
   const installerDir = join(gameDir, '.installers')
   await fsp.mkdir(installerDir, { recursive: true })
   const installerPath = join(installerDir, `${kind}-${version}-installer.jar`)
@@ -91,17 +58,12 @@ export async function installForge(
   const label = `${kind === 'neoforge' ? 'NeoForge' : 'Forge'} ${version}`
 
   onLog(`下载 ${kind} 安装器 ${version}…\n`)
-  const res = await fetch(installerUrl, { headers: UA })
-  if (!res.ok || !res.body) throw new Error(`下载 ${kind} 安装器失败 (HTTP ${res.status})`)
-  const totalBytes = Number(res.headers.get('content-length') ?? 0)
-  const reader = res.body.getReader()
-  const out = createWriteStream(installerPath)
+  // 安装器下载委托给网络进程（stream:download），进度经 onBytes/onSize 回流。
   let received = 0
-  try {
-    for (;;) {
-      const { done, value } = await reader.read()
-      if (done) break
-      received += value.byteLength
+  let totalBytes = 0
+  await streamDownload(installerUrl, installerPath, {
+    onBytes: (n) => {
+      received += n
       onProgress?.({
         taskId,
         task: `下载安装器 ${label}`,
@@ -112,16 +74,11 @@ export async function installForge(
         phase: 'mod',
         percent: totalBytes > 0 ? Math.min(100, Math.round((received / totalBytes) * 100)) : 0
       })
-      if (!out.write(Buffer.from(value))) {
-        await new Promise<void>((r) => out.once('drain', r))
-      }
+    },
+    onSize: (s) => {
+      totalBytes = s
     }
-    await new Promise<void>((resolve, reject) => {
-      out.end((err?: Error | null) => (err ? reject(err) : resolve()))
-    })
-  } finally {
-    out.destroy()
-  }
+  })
 
   onLog(`运行安装器 (Java ${javaPath})…\n`)
   onProgress?.({ taskId, task: `运行安装器 ${label}`, current: 0, total: 1, currentBytes: 0, totalBytes: 0, phase: 'mod', percent: 0 })

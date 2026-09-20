@@ -1,3 +1,5 @@
+// TODO(网络进程迁移): modpack.ts 的下载部分（downloadModpack / importModpackFromUrl 的远程拉取）
+// 待迁入网络进程，进度经 progress 事件回传并保住 phase:'done'。本模块暂保留主进程路径，不退化。
 import { execFile } from 'child_process'
 import { createHash } from 'crypto'
 import { createReadStream, existsSync, promises as fsp } from 'fs'
@@ -15,6 +17,7 @@ import type {
 } from '@shared/types'
 import type { MirrorKind } from './mirror'
 import { streamDownload } from './stream-download'
+import { netRequest } from './broker'
 import { resolveVersionJson, createVanillaInstance } from './versions'
 import { installVersion } from './downloader'
 import { loaderVersions, installLoader } from './loaders'
@@ -119,17 +122,9 @@ function sha1File(path: string): Promise<string> {
   })
 }
 
-/** 带超时的中止信号（默认 15s），并叠加外部取消信号。 */
-function abortWithTimeout(signal?: AbortSignal, ms = 15000): AbortSignal {
-  const t = AbortSignal.timeout(ms)
-  return signal ? AbortSignal.any([signal, t]) : t
-}
-
+/** 网络执行由网络进程承担（net:fetchJson，合并取消信号与 10s 超时）。 */
 function fetchJson(url: string, signal?: AbortSignal): Promise<Record<string, unknown>> {
-  return fetch(url, { headers: BROWSER_UA, signal: abortWithTimeout(signal) }).then((r) => {
-    if (!r.ok) throw new Error(`HTTP ${r.status}`)
-    return r.json() as Promise<Record<string, unknown>>
-  })
+  return netRequest<Record<string, unknown>>('net:fetchJson', { url, headers: BROWSER_UA }, { signal })
 }
 
 /** 清理探测到的文件名，防止路径穿越。 */
@@ -138,33 +133,13 @@ function sanitizeFileName(n: string): string {
   return clean || ''
 }
 
-/** 从下载链接的重定向 / Content-Disposition 中探测文件名（HMCL 的 detectFileName）。 */
+/** 从下载链接的重定向 / Content-Disposition 中探测文件名（HMCL 的 detectFileName，网络执行在网络进程）。 */
 async function detectFileNameFromUrl(url: string): Promise<string | null> {
-  for (const method of ['HEAD', 'GET'] as const) {
-    const ac = new AbortController()
-    try {
-      const res = await fetch(url, { method, headers: BROWSER_UA, redirect: 'follow', signal: ac.signal })
-      const cd = res.headers.get('content-disposition')
-      if (cd) {
-        const m = /filename\*?=(?:UTF-8''|")?([^";]+)/i.exec(cd)
-        if (m) {
-          const name = sanitizeFileName(decodeURIComponent(m[1].replace(/["']/g, '')))
-          if (name) return name
-        }
-      }
-      const finalUrl = res.url || url
-      const seg = new URL(finalUrl).pathname.split('/').filter(Boolean).pop() ?? ''
-      if (seg && !/\/file$/i.test(finalUrl)) {
-        const name = sanitizeFileName(seg)
-        if (name) return name
-      }
-    } catch {
-      /* 尝试下一种方法 */
-    } finally {
-      ac.abort()
-    }
+  try {
+    return await netRequest<string | null>('net:detectFilename', { url, headers: BROWSER_UA })
+  } catch {
+    return null
   }
-  return null
 }
 
 /**
@@ -385,8 +360,10 @@ async function parseMcbbs(archive: string): Promise<ParsedPack> {
   // 未标注 type 的条目按 AddonFile 处理，兼容旧版清单。
   const fileApi = g('fileApi').replace(/\/+$/, '')
   const normRel = (p: string): string => p.replace(/\\/g, '/').replace(/^\.?\/+/, '').replace(/\/+$/, '')
+  // CurseForge 页面直链需要浏览器跳转，脚本直连会返回 404；改用其 API 下载端点（302 到真实 CDN，
+  // fetch 自动跟随重定向）。download-with-ip 同时规避文件名带 IP 后缀的文件。
   const curseUrl = (projectID: number, fileID: number): string =>
-    `https://www.curseforge.com/minecraft/mc-mods/${projectID}/download/${fileID}/file`
+    `https://www.curseforge.com/api/v1/mods/${projectID}/files/${fileID}/download-with-ip`
   const files: PackFile[] = []
   for (const raw of (manifest['files'] as Array<Record<string, unknown>> | undefined) ?? []) {
     if (!raw || typeof raw !== 'object') continue
@@ -497,6 +474,12 @@ async function installInstance(
   onLog: (l: string) => void,
   signal?: AbortSignal
 ): Promise<void> {
+  // 实例名不能等于 Minecraft 版本号：否则会触发自继承 / 与基础版本目录冲突，
+  // 尤其整合包被命名为版本号（如 26.2）时会被静默合并进原版，导致「看似未安装」。
+  if (instanceName === mcVersion) {
+    throw new Error(`实例名不能与 Minecraft 版本号相同（${mcVersion}），请重新设置实例名`)
+  }
+
   if (!loader) {
     await createVanillaInstance(gameDir, mcVersion, instanceName)
     await downloadInstance(instanceName, gameDir, kind, onProgress, signal)
@@ -586,8 +569,29 @@ async function applyModpackFiles(
     if (f.optional && existsSync(dest)) continue
     await fsp.mkdir(dirname(dest), { recursive: true })
     onProgress({ taskId: 'modpack', task: rel, current: i, total: files.length, currentBytes: 0, totalBytes: 0, phase: 'mod', percent: Math.round((i / Math.max(1, files.length)) * 100) })
+    // CurseForge 文件：主用解析出的地址/API download-with-ip，失败回退 API download；多个源顺序尝试
+    const candidates = f.curseFile
+      ? Array.from(
+          new Set([
+            f.url,
+            `https://www.curseforge.com/api/v1/mods/${f.curseFile.projectID}/files/${f.curseFile.fileID}/download-with-ip`,
+            `https://www.curseforge.com/api/v1/mods/${f.curseFile.projectID}/files/${f.curseFile.fileID}/download`
+          ])
+        )
+      : [f.url]
+    let lastErr: unknown = null
+    for (const candidate of candidates) {
+      if (candidate !== candidates[0]) await fsp.rm(dest, { force: true }).catch(() => {})
+      try {
+        await streamDownload(candidate, dest, { signal, headers: f.headers })
+        lastErr = null
+        break
+      } catch (e) {
+        lastErr = e
+      }
+    }
     try {
-      await streamDownload(f.url, dest, { signal, headers: f.headers })
+      if (lastErr) throw lastErr
       // AddonFile 的 SHA-1 完整性校验（对照 HMCL 的 FileDownloadTask.IntegrityCheck）
       if (f.hash) {
         const actual = await sha1File(dest)

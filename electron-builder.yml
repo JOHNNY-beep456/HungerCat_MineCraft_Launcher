@@ -13,7 +13,6 @@ asar: true
 compression: normal
 mac:
   category: public.app-category.games
-  icon: build/icon.icns
   target:
     - dmg
     - zip

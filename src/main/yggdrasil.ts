@@ -1,7 +1,13 @@
+// authenticate / refresh 的【网络执行】已迁至网络进程（yggdrasil:authenticate / :refresh），
+// 本模块保留认证流程编排与解析：生成 clientToken、把网络进程返回的原始响应组装成账号对象。
+// authlib-injector 的 jar 下载走 streamDownload（broker 代理网络进程）；
+// latest.json 元数据获取走网络进程（net:fetchJson）。
 import { randomUUID } from 'crypto'
-import { existsSync, mkdirSync, writeFileSync } from 'fs'
+import { existsSync, mkdirSync } from 'fs'
 import { join } from 'path'
 import type { MinecraftAccount } from '@shared/types'
+import { netRequest } from './broker'
+import { streamDownload } from './stream-download'
 
 /**
  * Yggdrasil 认证（authlib-injector 兼容），用于 LittleSkin 等第三方正版认证服务器。
@@ -18,21 +24,6 @@ function normalizeServer(server: string): string {
   return server.trim().replace(/\/+$/, '')
 }
 
-/** 请求超时时间（毫秒）。第三方认证服务器良莠不齐，超时避免登录/刷新永久挂起。 */
-const REQUEST_TIMEOUT_MS = 15_000
-
-/** 带超时的 fetch：超时或网络错误时抛出带友好文案的异常，避免界面永久「卡在登录中」。 */
-async function fetchWithTimeout(url: string, init?: RequestInit): Promise<Response> {
-  try {
-    return await fetch(url, { ...init, signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) })
-  } catch (err) {
-    if (err instanceof Error && err.name === 'TimeoutError') {
-      throw new Error('认证服务器连接超时，请检查地址后重试')
-    }
-    throw new Error(`认证服务器连接失败：${err instanceof Error ? err.message : String(err)}`)
-  }
-}
-
 function withoutDashes(uuid: string): string {
   return uuid.replace(/-/g, '')
 }
@@ -43,6 +34,7 @@ interface YggdrasilProfile {
   properties?: Array<{ name: string; value: string; signature?: string }>
 }
 
+/** 与 shared/net-protocol 网络进程 `yggdrasil:*` 返回结构的原始响应对应。 */
 interface YggdrasilAuthResponse {
   accessToken: string
   clientToken: string
@@ -76,20 +68,6 @@ function extractSkin(profile?: YggdrasilProfile): {
   }
 }
 
-async function yggdrasilError(res: Response): Promise<string> {
-  try {
-    const data = (await res.json()) as { error?: string; errorMessage?: string; message?: string }
-    if (data.error === 'ForbiddenOperationException') {
-      return data.errorMessage || '用户名或密码错误'
-    }
-    if (data.errorMessage) return data.errorMessage
-    if (data.message) return data.message
-  } catch {
-    /* fall through */
-  }
-  return `认证失败 (HTTP ${res.status})`
-}
-
 function toAccount(
   profile: YggdrasilProfile | undefined,
   data: YggdrasilAuthResponse,
@@ -118,46 +96,49 @@ export async function loginYggdrasil(
   password: string
 ): Promise<MinecraftAccount> {
   const base = normalizeServer(server)
-  const clientToken = randomUUID().replace(/-/g, '')
-  const res = await fetchWithTimeout(`${base}/authserver/authenticate`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      agent: { name: 'Minecraft', version: 1 },
-      username: email,
+  // 只记认证服务器与邮箱，绝不打印密码。
+  console.info(`[登录] 开始第三方登录：${base} / ${email}`)
+  try {
+    const clientToken = randomUUID().replace(/-/g, '')
+    // authenticate 的网络执行由网络进程承担；邮箱/密码经 IPC 内部通道传递。
+    const data = await netRequest<YggdrasilAuthResponse>('yggdrasil:authenticate', {
+      server: base,
+      email,
       password,
-      clientToken,
-      requestUser: false
+      clientToken
     })
-  })
-  if (!res.ok) throw new Error(await yggdrasilError(res))
-  const data = (await res.json()) as YggdrasilAuthResponse
-  const profile = data.selectedProfile ?? data.availableProfiles?.[0]
-  if (!profile) throw new Error('该账号没有可用的角色档案')
-  return toAccount(profile, data, base)
+    const profile = data.selectedProfile ?? data.availableProfiles?.[0]
+    if (!profile) throw new Error('该账号没有可用的角色档案')
+    console.info(`[登录] 第三方登录成功：${base} / ${email}`)
+    return toAccount(profile, data, base)
+  } catch (err) {
+    console.error(`[登录] 第三方登录失败：${base} / ${email} ${err instanceof Error ? err.message : String(err)}`)
+    throw err
+  }
 }
 
 export async function refreshYggdrasil(account: MinecraftAccount): Promise<MinecraftAccount> {
-  const base = account.yggdrasilServer ?? ''
-  const clientToken = account.clientToken ?? account.id
-  const res = await fetchWithTimeout(`${base}/authserver/refresh`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
+  console.info(`[登录] 开始刷新第三方账号令牌：${account.name}`)
+  try {
+    const base = account.yggdrasilServer ?? ''
+    const clientToken = account.clientToken ?? account.id
+    const data = await netRequest<YggdrasilAuthResponse>('yggdrasil:refresh', {
+      server: base,
       accessToken: account.accessToken,
-      clientToken,
-      requestUser: false
+      clientToken
     })
-  })
-  if (!res.ok) throw new Error(await yggdrasilError(res))
-  const data = (await res.json()) as YggdrasilAuthResponse
-  const profile = data.selectedProfile ?? data.availableProfiles?.[0] ?? {
-    id: account.id,
-    name: account.name
-  }
-  return {
-    ...toAccount(profile, { ...data, clientToken: data.clientToken ?? clientToken }, base),
-    addedAt: account.addedAt
+    const profile = data.selectedProfile ?? data.availableProfiles?.[0] ?? {
+      id: account.id,
+      name: account.name
+    }
+    console.info(`[登录] 刷新第三方账号令牌成功：${account.name}`)
+    return {
+      ...toAccount(profile, { ...data, clientToken: data.clientToken ?? clientToken }, base),
+      addedAt: account.addedAt
+    }
+  } catch (err) {
+    console.error(`[登录] 刷新第三方账号令牌失败：${account.name} ${err instanceof Error ? err.message : String(err)}`)
+    throw err
   }
 }
 
@@ -176,15 +157,14 @@ export async function ensureAuthlibInjector(destDir: string): Promise<string> {
   let lastErr: unknown = null
   for (const metaUrl of INJECTOR_META_URLS) {
     try {
-      const metaRes = await fetchWithTimeout(metaUrl)
-      if (!metaRes.ok) throw new Error(`HTTP ${metaRes.status}`)
-      const meta = (await metaRes.json()) as { download_url?: string; downloadUrl?: string }
+      // 元数据获取委托给网络进程（net:fetchJson，统一 10s 超时在其内部）。
+      const meta = await netRequest<{ download_url?: string; downloadUrl?: string }>('net:fetchJson', {
+        url: metaUrl
+      })
       const dl = meta.download_url ?? meta.downloadUrl
       if (!dl) throw new Error('元数据缺少下载地址')
-      const fileRes = await fetchWithTimeout(dl)
-      if (!fileRes.ok) throw new Error(`HTTP ${fileRes.status}`)
-      const buf = Buffer.from(await fileRes.arrayBuffer())
-      writeFileSync(jar, buf)
+      // jar 文件下载委托给网络进程（stream:download）。
+      await streamDownload(dl, jar)
       return jar
     } catch (err) {
       lastErr = err

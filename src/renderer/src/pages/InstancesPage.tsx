@@ -16,7 +16,11 @@ export function InstancesPage({ onManage }: { onManage: (versionId: string) => v
   const [dragOver, setDragOver] = useState(false)
 
   const refresh = useCallback(async () => {
-    setInstalled(await window.api.installed.list())
+    try {
+      setInstalled(await window.api.installed.list())
+    } catch {
+      /* installed:list 失败时保持上次列表 */
+    }
   }, [])
 
   useEffect(() => {
@@ -49,18 +53,30 @@ export function InstancesPage({ onManage }: { onManage: (versionId: string) => v
     })
   }
 
+  const renameTaken =
+    renameProbe !== null && renameValue.trim() !== '' && (installed ?? []).some((v) => v.id === renameValue.trim())
+
+  // 在既有实例中取一个不重名、且不等于其 MC 版本号的实例名
+  // （避免打开弹窗时默认值被占用、导入按钮置灰，或与版本号同名时静默合并进原版）。
+  const uniqueInstanceName = (base: string, mcVersion?: string): string => {
+    const list = installed ?? []
+    const taken = (n: string): boolean => list.some((v) => v.id === n) || (!!mcVersion && mcVersion === n)
+    if (!taken(base)) return base
+    for (let i = 2; i < 10000; i++) {
+      const cand = `${base}-${i}`
+      if (!taken(cand)) return cand
+    }
+    return `${base}-${Date.now()}`
+  }
+
   const beginImport = async (filePath: string): Promise<void> => {
     if (!filePath) return
     setImportMsg(null)
     try {
       const probe = await window.api.modpack.probe(filePath)
-      const taken = (installed ?? []).some((v) => v.id === probe.name)
-      if (taken) {
-        setRenameProbe({ probe, filePath })
-        setRenameValue(probe.name + '-副本')
-      } else {
-        await window.api.modpack.import(filePath, probe.name)
-      }
+      // 总是弹出弹窗，让用户自定义实例名（默认取不重名的实例名，可再手动修改）
+      setRenameProbe({ probe, filePath })
+      setRenameValue(uniqueInstanceName(probe.name, probe.mcVersion))
     } catch (err) {
       setImportMsg(`导入失败：${err instanceof Error ? err.message : String(err)}`)
     }
@@ -70,6 +86,10 @@ export function InstancesPage({ onManage }: { onManage: (versionId: string) => v
     if (!renameProbe) return
     const name = renameValue.trim()
     if (!name) return
+    if ((installed ?? []).some((v) => v.id === name)) {
+      setImportMsg(`实例名「${name}」已存在，请更换`)
+      return
+    }
     const probe = renameProbe.probe
     const filePath = renameProbe.filePath
     setRenameProbe(null)
@@ -172,23 +192,28 @@ export function InstancesPage({ onManage }: { onManage: (versionId: string) => v
               exit={{ scale: 0.94, opacity: 0, y: 12 }}
               transition={{ type: 'spring', bounce: 0.18, duration: 0.4 }}
             >
-              <h2 className="title mb-1">实例名已存在</h2>
+              <h2 className="title mb-1">设置实例名</h2>
               <p className="caption mb-4">
-                整合包「{renameProbe.probe.name}」的名称已被占用，请输入新的实例名：
+                整合包「{renameProbe.probe.name}」，请输入实例名（不能与已有实例重名）：
               </p>
               <input
                 autoFocus
                 value={renameValue}
                 onChange={(e) => setRenameValue(e.target.value)}
-                onKeyDown={(e) => e.key === 'Enter' && renameValue.trim() && void confirmImport()}
-                placeholder="新的实例名"
+                onKeyDown={(e) => e.key === 'Enter' && renameValue.trim() && !renameTaken && void confirmImport()}
+                placeholder="实例名"
                 className="input mb-5 w-full"
               />
+              {renameTaken && (
+                <p className="mb-4 -mt-3 text-[12px]" style={{ color: 'var(--fill-danger)' }}>
+                  实例名「{renameValue.trim()}」已存在
+                </p>
+              )}
               <div className="flex gap-2">
                 <Button className="flex-1" onClick={() => setRenameProbe(null)}>
                   取消
                 </Button>
-                <Button variant="primary" className="flex-1" disabled={!renameValue.trim()} onClick={() => void confirmImport()}>
+                <Button variant="primary" className="flex-1" disabled={!renameValue.trim() || renameTaken} onClick={() => void confirmImport()}>
                   导入
                 </Button>
               </div>

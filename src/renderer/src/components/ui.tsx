@@ -201,6 +201,24 @@ export function ProgressBar({ percent, className = '' }: { percent: number; clas
 }
 
 /* ------------------------------------------------------------------ */
+/* 下载速度格式化                                                        */
+/* ------------------------------------------------------------------ */
+
+/** 把字节/秒速度格式化为人类可读形式（自动选单位，低位数 2 位）。 */
+export function formatSpeed(bytesPerSecond: number): string {
+  if (!Number.isFinite(bytesPerSecond) || bytesPerSecond <= 0) return '--'
+  const units = ['B/s', 'KB/s', 'MB/s', 'GB/s']
+  let i = 0
+  let v = bytesPerSecond
+  while (v >= 1024 && i < units.length - 1) {
+    v /= 1024
+    i++
+  }
+  // B/s 用整数，KB/s 及以上保留 2 位小数。
+  return i === 0 ? `${Math.round(v)} ${units[i]}` : `${v.toFixed(2)} ${units[i]}`
+}
+
+/* ------------------------------------------------------------------ */
 /* Spinner（像素猫吃鱼加载动画）                                         */
 /* ------------------------------------------------------------------ */
 
@@ -411,100 +429,50 @@ export function Avatar({
   uuid?: string
   /** textures.minecraft.net/texture/<hash> URL, preferred over uuid lookup. */
   skinUrl?: string
-  /** 账号认证类型；yggdrasil 账号会绕过官方头像服务，直接用皮肤纹理渲染。 */
+  /** 账号认证类型；yggdrasil 账号优先走认证站面像 API。 */
   authType?: 'microsoft' | 'offline' | 'yggdrasil'
   /** Yggdrasil 认证服务器地址，用于识别 LittleSkin 等第三方皮肤站的头像接口。 */
   yggdrasilServer?: string
   size?: number
 }): JSX.Element {
   const [srcIndex, setSrcIndex] = useState(0)
-  useEffect(() => setSrcIndex(0), [uuid, skinUrl, authType, yggdrasilServer])
+  // skinFailed = 皮肤贴图本身也无法加载时，直接落到内置默认头像，绝不显示问号。
+  const [skinFailed, setSkinFailed] = useState(false)
+  useEffect(() => {
+    setSrcIndex(0)
+    setSkinFailed(false)
+  }, [uuid, skinUrl, authType, yggdrasilServer])
 
-  const initial = (name ?? '?').charAt(0).toUpperCase()
+  const isLittleSkin =
+    (yggdrasilServer ?? '').includes('littleskin.cn') ||
+    (skinUrl ?? '').includes('littleskin.cn')
 
-  // 第三方（Yggdrasil）账号：官方头像服务按 uuid 查不到，minotar 会返回 Steve 占位图
-  // 而非 404，导致显示错误头像。LittleSkin 提供官方头像 API，
-  // 优先通过角色名直取头像，失败时再裁切皮肤纹理渲染头部（含帽子层），
-  // 并以字母占位垫底，皮肤加载失败时也能正常显示。
-  if (authType === 'yggdrasil') {
-    const isLittleSkin =
-      (yggdrasilServer ?? '').includes('littleskin.cn') ||
-      (skinUrl ?? '').includes('littleskin.cn')
-
-    if (isLittleSkin && name && srcIndex === 0) {
-      const src = `https://littleskin.cn/avatar/player/${encodeURIComponent(name)}`
-      return (
-        <img
-          src={src}
-          width={size}
-          height={size}
-          alt={name}
-          className="rounded-xl"
-          draggable={false}
-          onError={() => setSrcIndex(1)}
-          style={{ imageRendering: 'auto', boxShadow: 'inset 0 0 0 1px rgba(0,0,0,0.1)' }}
-        />
-      )
-    }
-
-    const scale = size * 8
-    const layer = (px: number): CSSProperties => ({
-      position: 'absolute',
-      inset: 0,
-      backgroundImage: `url(${skinUrl ?? ''})`,
-      backgroundSize: `${scale}px ${scale}px`,
-      backgroundPosition: `${-px}px ${-size}px`,
-      imageRendering: 'pixelated'
-    })
-    return (
-      <div
-        style={{
-          position: 'relative',
-          width: size,
-          height: size,
-          borderRadius: '0.75rem',
-          overflow: 'hidden',
-          flexShrink: 0,
-          background: 'var(--fill-primary)'
-        }}
-      >
-        <div
-          className="flex h-full w-full items-center justify-center font-bold text-white"
-          style={{ fontSize: size * 0.44 }}
-        >
-          {initial}
-        </div>
-        {skinUrl && (
-          <>
-            <div style={layer(size)} />
-            <div style={layer(size * 5)} />
-          </>
-        )}
-      </div>
-    )
-  }
-
-  // 正版 / 离线账号：依次尝试多个头像源（首个失败后自动回退），保证两类账号都能显示头像。
+  // 按优先级收集在线面像候选；每个失败后通过 srcIndex +1 回退到下一候选项。
   const sources: string[] = []
   const hash = skinUrl?.match(/([0-9a-f]{64})/i)?.[1]
-  if (hash) sources.push(`https://mc-heads.net/avatar/${hash}/${Math.round(size * 2)}`)
-  if (uuid) sources.push(`https://crafatar.com/avatars/${uuid}?size=${Math.round(size * 2)}&overlay`)
-  if (uuid) sources.push(`https://minotar.net/helm/${uuid}/${Math.round(size * 2)}.png`)
-  // 未登录 / 无任何账号信息时，使用本地默认头像（stevE.jpg）
-  if (sources.length === 0) {
-    return (
-      <img
-        src={defaultAvatar}
-        width={size}
-        height={size}
-        alt="默认头像"
-        className="rounded-xl"
-        draggable={false}
-        style={{ objectFit: 'cover', flexShrink: 0 }}
-      />
-    )
+  const base = (yggdrasilServer ?? '').replace(/\/+$/, '')
+
+  if (authType === 'yggdrasil') {
+    // 第三方账号：优先用认证站推导的面像 API，避免官方服务按 uuid 查不到
+    // （很多第三方站按 uuid 查 404，minotar 又只返回 Steve 占位图）。
+    if (name && isLittleSkin) {
+      sources.push(`https://littleskin.cn/avatar/player/${encodeURIComponent(name)}`)
+      if (base) sources.push(`${base}/skin/${encodeURIComponent(name)}`)
+    } else if (name && base) {
+      // 非 LittleSkin 的自定义认证站：按 Yggdrasil 兼容面像接口取头像。
+      sources.push(`${base}/skin/${encodeURIComponent(name)}`)
+    }
+    if (hash) sources.push(`https://mc-heads.net/avatar/${hash}`)
+  } else {
+    // 正版 / 离线账号：Mojang 官方面像源按 uuid 优先，名字兜底，逐级回退。
+    if (uuid) sources.push(`https://mc-heads.net/avatar/${uuid}`)
+    if (uuid) sources.push(`https://minotar.net/helm/${uuid}`)
+    if (uuid) sources.push(`https://crafatar.com/avatars/${uuid}?overlay`)
+    if (hash) sources.push(`https://mc-heads.net/avatar/${hash}`)
+    if (name) sources.push(`https://minotar.net/avatar/${encodeURIComponent(name)}`)
   }
 
+  // 在线面像源（失败逐个回退）。
   const faceUrl = sources[srcIndex]
   if (faceUrl) {
     return (
@@ -515,14 +483,19 @@ export function Avatar({
         alt={name ?? ''}
         className="rounded-xl"
         draggable={false}
-        onError={() => setSrcIndex((i) => i + 1)}
+        onError={() => {
+          // 本候选源加载失败：记录并回退到下一候选。
+          console.warn(`头像源加载失败，回退下一候选：${faceUrl}`)
+          setSrcIndex((i) => i + 1)
+        }}
         style={{ imageRendering: 'auto', boxShadow: 'inset 0 0 0 1px rgba(0,0,0,0.1)' }}
       />
     )
   }
 
-  // 兜底：有皮肤纹理时，裁切皮肤中的头部（脸部 (8,8) + 帽子层 (40,8)）。
-  if (skinUrl) {
+  // 兜底一：在线面像源全部失败后，直接裁切皮肤贴图渲染头部（脸 + 帽子层）。
+  // 皮肤贴图自身加载失败时也会落到默认头像。
+  if (skinUrl && !skinFailed) {
     const scale = size * 8
     const layer = (px: number): CSSProperties => ({
       position: 'absolute',
@@ -533,28 +506,45 @@ export function Avatar({
       imageRendering: 'pixelated'
     })
     return (
-      <div
-        style={{
-          position: 'relative',
-          width: size,
-          height: size,
-          overflow: 'hidden',
-          borderRadius: '0.75rem',
-          flexShrink: 0
-        }}
-      >
-        <div style={layer(size)} />
-        <div style={layer(size * 5)} />
-      </div>
+      <>
+        {/* 不可见的皮肤探测图：加载失败即回退默认头像 */}
+        <img
+          src={skinUrl}
+          alt=""
+          aria-hidden
+          className="hidden"
+          onError={() => {
+            console.warn(`皮肤贴图加载失败，回退默认头像：${skinUrl}`)
+            setSkinFailed(true)
+          }}
+        />
+        <div
+          style={{
+            position: 'relative',
+            width: size,
+            height: size,
+            overflow: 'hidden',
+            borderRadius: '0.75rem',
+            flexShrink: 0
+          }}
+        >
+          <div style={layer(size)} />
+          <div style={layer(size * 5)} />
+        </div>
+      </>
     )
   }
 
+  // 兜底二：一律落到内置默认头像，绝不显示问号/字母占位。
   return (
-    <div
-      className="flex items-center justify-center rounded-xl font-bold text-white"
-      style={{ width: size, height: size, background: 'var(--fill-primary)', fontSize: size * 0.44 }}
-    >
-      {initial}
-    </div>
+    <img
+      src={defaultAvatar}
+      width={size}
+      height={size}
+      alt="默认头像"
+      className="rounded-xl"
+      draggable={false}
+      style={{ objectFit: 'cover', flexShrink: 0 }}
+    />
   )
 }
