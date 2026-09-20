@@ -24,7 +24,7 @@ export function ModsPage(): JSX.Element {
     void window.api.versions.list().then((m) => {
       setManifest(m)
       setMcVersion(m.latest.release || m.versions[0]?.id || '')
-    })
+    }).catch(() => { /* versions:list 失败时保持上次清单 */ })
   }, [])
 
   const doSearch = async (q: string): Promise<void> => {

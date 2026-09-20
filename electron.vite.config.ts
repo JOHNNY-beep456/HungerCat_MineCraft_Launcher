@@ -11,6 +11,15 @@ export default defineConfig({
         '@main': resolve('src/main'),
         '@shared': resolve('src/shared')
       }
+    },
+    build: {
+      // 多入口：index.js = 后端/编排进程入口；network.js = 网络进程（utilityProcess.fork）入口。
+      rollupOptions: {
+        input: {
+          index: resolve('src/main/index.ts'),
+          network: resolve('src/main/network/index.ts')
+        }
+      }
     }
   },
   preload: {

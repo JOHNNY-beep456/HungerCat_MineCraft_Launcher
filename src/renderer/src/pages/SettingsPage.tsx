@@ -251,10 +251,17 @@ export function SettingsPage(): JSX.Element {
             />
           </Row>
           <Row label="Debug 模式（显示启动日志）">
-            <Switch
-              checked={settings.debugMode}
-              onChange={(v) => void updateSettings({ debugMode: v })}
-            />
+            <div className="flex items-center gap-2">
+              <Switch
+                checked={settings.debugMode}
+                onChange={(v) => void updateSettings({ debugMode: v })}
+              />
+              {settings.debugMode && (
+                <Button size="sm" icon="info" onClick={() => void window.api.debug.openWindow()}>
+                  打开日志窗口
+                </Button>
+              )}
+            </div>
           </Row>
           <Row label="模组信息仅识别元数据（不联网查询 Modrinth）">
             <Switch

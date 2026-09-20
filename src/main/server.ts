@@ -1,7 +1,11 @@
-import { createWriteStream, existsSync, promises as fsp } from 'fs'
+// 远程服务端 JSON 请求（about/agreement/update）已迁至网络进程（server:api）；
+// 更新文件网络下载走 streamDownload（broker 代理网络进程）。runUpdate/spawn 仍为本进程编排。
+import { existsSync, promises as fsp } from 'fs'
 import { join } from 'path'
 import { spawn } from 'child_process'
 import type { AboutGroup, AgreementContent, DownloadProgress, UpdateInfo } from '@shared/types'
+import { netRequest } from './broker'
+import { streamDownload } from './stream-download'
 
 /**
  * 远程服务端地址。改成你自己的 PHP 服务端部署地址（不带末尾斜杠）。
@@ -9,12 +13,9 @@ import type { AboutGroup, AgreementContent, DownloadProgress, UpdateInfo } from 
  */
 export const SERVER_BASE = 'https://adhc.johnnyblog.top'
 
-const UA = 'HungerCatLauncher/0.1'
-
 async function apiGet<T>(path: string): Promise<T> {
-  const res = await fetch(`${SERVER_BASE}/api.php?action=${path}`, { headers: { 'User-Agent': UA } })
-  if (!res.ok) throw new Error(`请求失败 (HTTP ${res.status})`)
-  return (await res.json()) as T
+  // 真实网络执行由网络进程承担（统一 10s 超时在其内部）。
+  return netRequest<T>('server:api', { path })
 }
 
 /** 获取关于页分组与人物（服务端返回 { groups: [...] }，这里解出数组）。 */
@@ -64,18 +65,13 @@ export async function downloadUpdate(
   await fsp.mkdir(dir, { recursive: true })
   const dest = join(dir, filename)
 
-  const res = await fetch(info.url, { headers: { 'User-Agent': UA } })
-  if (!res.ok || !res.body) throw new Error(`下载更新失败 (HTTP ${res.status})`)
-  const total = Number(res.headers.get('content-length') ?? 0)
-  const reader = res.body.getReader()
+  // 更新文件的真实下载委托给网络进程（stream:download），进度经 onBytes/onSize 回流。
   const tmp = dest + '.part'
-  const out = createWriteStream(tmp)
   let received = 0
-  try {
-    for (;;) {
-      const { done, value } = await reader.read()
-      if (done) break
-      received += value.byteLength
+  let total = 0
+  await streamDownload(info.url, tmp, {
+    onBytes: (n) => {
+      received += n
       onProgress({
         taskId: 'update',
         task: filename,
@@ -86,16 +82,11 @@ export async function downloadUpdate(
         phase: 'mod',
         percent: total > 0 ? Math.min(100, Math.round((received / total) * 100)) : 0
       })
-      if (!out.write(Buffer.from(value))) {
-        await new Promise<void>((r) => out.once('drain', r))
-      }
+    },
+    onSize: (s) => {
+      total = s
     }
-    await new Promise<void>((resolve, reject) => {
-      out.end((err?: Error | null) => (err ? reject(err) : resolve()))
-    })
-  } finally {
-    out.destroy()
-  }
+  })
   await fsp.rename(tmp, dest)
   onProgress({
     taskId: 'update',

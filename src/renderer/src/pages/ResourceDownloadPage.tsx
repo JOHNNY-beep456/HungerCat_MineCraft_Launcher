@@ -5,7 +5,7 @@ import { useRuntimeActions } from '../runtime'
 import { Button, Icon, LoadingState, Segmented, Spinner } from '../components/ui'
 import { VersionsPage } from './VersionsPage'
 
-type Tab = 'mod' | 'resourcepack' | 'shader' | 'modpack' | 'versions'
+export type Tab = 'mod' | 'resourcepack' | 'shader' | 'modpack' | 'versions'
 type BrowseTab = Exclude<Tab, 'versions'>
 
 const TABS: Array<{ value: Tab; label: string }> = [
@@ -55,8 +55,14 @@ function sortMc(list: string[]): string[] {
   })
 }
 
-export function ResourceDownloadPage(): JSX.Element {
-  const [tab, setTab] = useState<Tab>('mod')
+export function ResourceDownloadPage({
+  initialTab,
+  presetSearch
+}: {
+  initialTab?: Tab
+  presetSearch?: string
+}): JSX.Element {
+  const [tab, setTab] = useState<Tab>(initialTab ?? 'mod')
 
   return (
     <div className="flex h-full flex-col gap-5">
@@ -69,7 +75,7 @@ export function ResourceDownloadPage(): JSX.Element {
       </div>
 
       <div className="min-h-0 flex-1">
-        {tab === 'versions' ? <VersionsPage /> : <Browser key={tab} type={tab} />}
+        {tab === 'versions' ? <VersionsPage presetSearch={presetSearch} /> : <Browser key={tab} type={tab} />}
       </div>
     </div>
   )
@@ -103,6 +109,13 @@ function Browser({ type }: { type: BrowseTab }): JSX.Element {
       setManifest(m)
       setInstalled(i)
       setMcVersion(m.latest.release || m.versions[0]?.id || '')
+    }).catch(() => { /* 拉取清单/已装失败时保持上次状态 */ })
+  }, [])
+
+  // 整合包安装完成后刷新已安装列表，避免改名导入后的实例不显示、重名判断失效。
+  useEffect(() => {
+    return window.api.modpack.onProgress((p) => {
+      if (p.phase === 'done') void window.api.installed.list().then(setInstalled).catch(() => {})
     })
   }, [])
 
@@ -312,14 +325,9 @@ function ProjectDetail({
     try {
       const temp = await window.api.modpack.download(file.url, file.filename)
       const probe = await window.api.modpack.probe(temp)
-      const taken = installed.some((ins) => ins.id === probe.name)
-      if (taken) {
-        setModpackPending({ temp, probe })
-        setModpackRename(`${probe.name}-副本`)
-      } else {
-        await window.api.modpack.import(temp, probe.name)
-        setNotice(`已安装整合包「${probe.name}」，请到「实例」页查看`)
-      }
+      // 先下载并解析，再弹出弹窗让用户自定义实例名（默认取不重名且不等于版本号的名称，可再手动改）
+      setModpackPending({ temp, probe })
+      setModpackRename(uniqueInstanceName(probe.name, probe.mcVersion))
     } catch (err) {
       setNotice(`安装失败：${err instanceof Error ? err.message : String(err)}`)
     } finally {
@@ -327,10 +335,27 @@ function ProjectDetail({
     }
   }
 
+  const modpackNameTaken =
+    modpackPending !== null && modpackRename.trim() !== '' && installed.some((ins) => ins.id === modpackRename.trim())
+
+  const uniqueInstanceName = (base: string, mcVersion?: string): string => {
+    const taken = (n: string): boolean => installed.some((ins) => ins.id === n) || (!!mcVersion && mcVersion === n)
+    if (!taken(base)) return base
+    for (let i = 2; i < 10000; i++) {
+      const cand = `${base}-${i}`
+      if (!taken(cand)) return cand
+    }
+    return `${base}-${Date.now()}`
+  }
+
   const confirmModpackImport = async (): Promise<void> => {
     if (!modpackPending) return
     const name = modpackRename.trim()
     if (!name) return
+    if (installed.some((ins) => ins.id === name)) {
+      setNotice(`实例名「${name}」已存在，请更换`)
+      return
+    }
     const { temp } = modpackPending
     setModpackPending(null)
     setModpackBusy(true)
@@ -447,21 +472,26 @@ function ProjectDetail({
               exit={{ scale: 0.94, opacity: 0, y: 12 }}
               transition={{ type: 'spring', bounce: 0.18, duration: 0.4 }}
             >
-              <h2 className="title mb-1">实例名已存在</h2>
-              <p className="caption mb-4">整合包「{modpackPending.probe.name}」的名称已被占用，请输入新的实例名：</p>
+              <h2 className="title mb-1">设置实例名</h2>
+              <p className="caption mb-4">整合包「{modpackPending.probe.name}」，请输入实例名（不能与已有实例重名）：</p>
               <input
                 autoFocus
                 value={modpackRename}
                 onChange={(e) => setModpackRename(e.target.value)}
-                onKeyDown={(e) => e.key === 'Enter' && modpackRename.trim() && void confirmModpackImport()}
-                placeholder="新的实例名"
+                onKeyDown={(e) => e.key === 'Enter' && modpackRename.trim() && !modpackNameTaken && void confirmModpackImport()}
+                placeholder="实例名"
                 className="input mb-5 w-full"
               />
+              {modpackNameTaken && (
+                <p className="mb-4 -mt-3 text-[12px]" style={{ color: 'var(--fill-danger)' }}>
+                  实例名「{modpackRename.trim()}」已存在
+                </p>
+              )}
               <div className="flex gap-2">
                 <Button className="flex-1" onClick={() => setModpackPending(null)}>
                   取消
                 </Button>
-                <Button variant="primary" className="flex-1" disabled={!modpackRename.trim()} onClick={() => void confirmModpackImport()}>
+                <Button variant="primary" className="flex-1" disabled={!modpackRename.trim() || modpackNameTaken} onClick={() => void confirmModpackImport()}>
                   安装
                 </Button>
               </div>

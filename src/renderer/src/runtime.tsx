@@ -88,17 +88,18 @@ export function RuntimeProvider({ children }: { children: ReactNode }): JSX.Elem
       const id = p.taskId ?? 'main'
       if (p.phase === 'done') {
         pendingProgress.delete(id)
-        if (flushTimer == null) {
-          setDownloads((prev) => prev.filter((t) => (t.taskId ?? 'main') !== id))
-        } else {
-          // 有合并中的批次时，删除其中该任务的进度，随下一批一起清理
-          setDownloads((prev) => prev.filter((t) => (t.taskId ?? 'main') !== id))
-        }
+        // done 即时移除该任务条目（含合并中的批次），保证光球 / 进度条不残留。
+        setDownloads((prev) => prev.filter((t) => (t.taskId ?? 'main') !== id))
         if (id === 'main') setInstallingId(null)
         return
       }
+      const firstForId = !pendingProgress.has(id)
       pendingProgress.set(id, p)
-      if (flushTimer == null) flushTimer = setTimeout(flushProgress, 80)
+      if (flushTimer == null) {
+        // 首个进度立即落库（firstForId 用 0 延迟的下一个宏任务），让光球几乎无延迟出现；
+        // 后续高频进度仍走 80ms 合并节流，避免拖慢高频重渲染。
+        flushTimer = setTimeout(flushProgress, firstForId ? 0 : 80)
+      }
     })
     const offLaunch = window.api.launch.onEvent((e: LaunchEvent) => {
       if (e.state === 'running') {

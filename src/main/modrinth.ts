@@ -1,15 +1,15 @@
+// 元数据（search / getVersions / findProject / findFabricApi）已迁至网络进程；
+// installMod/downloadTo 的下载核心经 streamDownload 走网络进程，此处仅做目标目录编排。
 import { promises as fsp } from 'fs'
 import { join } from 'path'
 import type { ModrinthProject, ModrinthSearchResult, ModrinthType, ModrinthVersion } from '@shared/types'
+import { netRequest } from './broker'
 import { streamDownload } from './stream-download'
 
 /**
  * Modrinth API client. Modrinth provides a keyless REST API;
  * CurseForge requires an API key and is not supported.
  */
-
-const BASE = 'https://api.modrinth.com/v2'
-const UA = { 'User-Agent': 'HungerCatLauncher/0.1 (github: hunger-cat)' }
 
 export async function searchMods(
   query: string,
@@ -21,18 +21,11 @@ export async function searchMods(
   offset = 0,
   signal?: AbortSignal
 ): Promise<ModrinthSearchResult> {
-  const facets: string[][] = [[`project_type:${type}`]]
-  // Modrinth 的搜索接口把「加载器」归入 categories 维度（如 categories:fabric、
-  // categories:forge）。`category`（内容分类）与 `loader`（加载器）各自成组，
-  // 组间为 AND 关系，因此可同时按「分类 + 加载器」筛选。
-  if (category && category !== 'all') facets.push([`categories:${category}`])
-  if (loader && loader !== 'all') facets.push([`categories:${loader}`])
-  if (gameVersion) facets.push([`versions:${gameVersion}`])
-  const url = `${BASE}/search?query=${encodeURIComponent(query)}&facets=${encodeURIComponent(JSON.stringify(facets))}&limit=${limit}&offset=${offset}`
-  const res = await fetch(url, { headers: UA, signal })
-  if (!res.ok) throw new Error(`Modrinth 搜索失败 (HTTP ${res.status})`)
-  const data = (await res.json()) as { hits: ModrinthProject[]; total_hits: number }
-  return { hits: data.hits, totalHits: data.total_hits }
+  return netRequest<ModrinthSearchResult>(
+    'modrinth:search',
+    { query, limit, type, category, gameVersion, loader, offset },
+    { signal }
+  )
 }
 
 /** 根据模组元数据（id / 名称）查找匹配的 Modrinth 项目，未找到或出错返回 null。 */
@@ -57,15 +50,7 @@ export async function getVersions(
   loaders: string[],
   gameVersions: string[]
 ): Promise<ModrinthVersion[]> {
-  const params = new URLSearchParams()
-  // 空数组表示不筛选，需省略参数（Modrinth 将 [] 视为“无匹配”）
-  if (loaders.length > 0) params.set('loaders', JSON.stringify(loaders))
-  if (gameVersions.length > 0) params.set('game_versions', JSON.stringify(gameVersions))
-  const qs = params.toString()
-  const url = `${BASE}/project/${encodeURIComponent(slug)}/version${qs ? `?${qs}` : ''}`
-  const res = await fetch(url, { headers: UA })
-  if (!res.ok) throw new Error(`获取模组版本失败 (HTTP ${res.status})`)
-  return (await res.json()) as ModrinthVersion[]
+  return netRequest<ModrinthVersion[]>('modrinth:versions', { slug, loaders, gameVersions })
 }
 
 /** 查找适配指定 Minecraft 版本的 Fabric API 模组（按最新优先），未找到返回 null。 */

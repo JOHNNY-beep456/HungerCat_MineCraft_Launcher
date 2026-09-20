@@ -39,7 +39,12 @@ const BMCLAPI: MirrorConfig = {
 }
 
 export function mirrorConfig(kind: MirrorKind): MirrorConfig {
-  return kind === 'bmclapi' ? BMCLAPI : MOJANG
+  switch (kind) {
+    case 'bmclapi':
+      return BMCLAPI
+    default:
+      return MOJANG
+  }
 }
 
 /** Client jar URL for a base vanilla version; null means "use the original URL". */
@@ -53,16 +58,17 @@ export function clientJarUrl(baseVersion: string, kind: MirrorKind): string | nu
 /** Rewrite any Mojang download URL through the selected mirror. */
 export function mirrorUrl(url: string, kind: MirrorKind): string {
   if (kind === 'mojang' || !url) return url
+  const mc = mirrorConfig(kind)
   if (url.startsWith('https://libraries.minecraft.net/')) {
-    return BMCLAPI.libraryUrl(url.slice('https://libraries.minecraft.net/'.length))
+    return mc.libraryUrl(url.slice('https://libraries.minecraft.net/'.length))
   }
   if (url.startsWith('https://resources.download.minecraft.net/')) {
     const hash = url.split('/').filter(Boolean).pop()
-    return hash && /^[0-9a-f]{40}$/.test(hash) ? BMCLAPI.assetUrl(hash) : url
+    return hash && /^[0-9a-f]{40}$/.test(hash) ? mc.assetUrl(hash) : url
   }
   if (url.startsWith('https://piston-data.mojang.com/')) {
     const m = url.match(/([0-9a-f]{40})/)
-    return m ? BMCLAPI.objectUrl(m[1]) : url
+    return m ? mc.objectUrl(m[1]) : url
   }
   return url
 }

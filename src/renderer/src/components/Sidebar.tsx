@@ -35,7 +35,7 @@ export function Sidebar({
             return (
               <button
                 key={item.id}
-                id={item.id === 'downloads' ? 'nav-download' : undefined}
+                id={`nav-${item.id}`}
                 onClick={() => onNavigate(item.id)}
                 className="relative flex items-center gap-3 rounded-[16px] px-3.5 py-2.5 text-left no-drag"
                 style={{ color: isActive ? 'var(--text-primary)' : 'var(--text-secondary)' }}

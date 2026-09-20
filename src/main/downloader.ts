@@ -1,9 +1,12 @@
+// TODO(网络进程迁移): 实际下载执行（installVersion 的网络字节流，基于 stream-download.ts）待迁入网络进程，
+// 用 progress 事件流式回传并保住 phase:'done' 语义。本模块暂保留主进程下载路径，不退化。
 import { createHash } from 'crypto'
 import { createReadStream, existsSync, promises as fsp } from 'fs'
 import { dirname, join } from 'path'
 import type { DownloadProgress, Library, VersionJson } from '@shared/types'
 import { clientJarUrl, mirrorConfig, mirrorUrl, type MirrorKind } from './mirror'
 import { streamDownload } from './stream-download'
+import { netRequest } from './broker'
 
 const UA = 'HungerCatLauncher/0.1'
 
@@ -106,10 +109,8 @@ function sha1File(path: string): Promise<string> {
 /** Fetch a Maven `.sha1` sidecar; returns the hex hash or undefined on failure. */
 async function fetchSha1Sidecar(jarUrl: string): Promise<string | undefined> {
   try {
-    const res = await fetch(`${jarUrl}.sha1`, { headers: { 'User-Agent': UA } })
-    if (!res.ok) return undefined
-    const text = (await res.text()).trim()
-    return /^[0-9a-f]{40}$/i.test(text) ? text.toLowerCase() : undefined
+    // 真实网络执行在网络进程（download:sha1），统一 10s 超时；失败/取消返回 undefined。
+    return await netRequest<string | undefined>('download:sha1', { url: jarUrl, ua: UA })
   } catch {
     return undefined
   }
@@ -265,6 +266,7 @@ export async function installVersion(
   signal?: AbortSignal
 ): Promise<InstallResult> {
   const tasks = await collectTasks(json, gameDir, kind)
+  console.info(`[下载] 开始安装版本 ${json.id}，共 ${tasks.length} 个下载任务`)
   const assetIndex = json.assetIndex
   const mc = mirrorConfig(kind)
 
@@ -293,6 +295,12 @@ export async function installVersion(
   let doneBytes = 0
   let totalBytes = tasks.reduce((s, t) => s + (t.size ?? 0), 0)
 
+  // 实时速度统计：在上一次进度上报的基础上累计字节增量与时间差，据此算出
+  // 近似的下载速度（字节/秒）。时间戳跟随 sendProgress 记录，覆盖并发的多 worker。
+  let speed = 0
+  let lastSpeedAt = Date.now()
+  let lastSpeedBytes = 0
+
   // 主进程同样节流进度上报：每个网络分块都会触发 onBytes，乘以并发工作线程后
   // 会造成极高频的 IPC 序列化与发送。这里合并到约 80ms 一次，仅结束态强制立即
   // 上报，既保持进度条流畅，又显著降低 IPC 与 CPU 占用。
@@ -309,7 +317,18 @@ export async function installVersion(
     // 导致下载结束后进度条卡住。
     if (finished) return
     emitTimer = null
-    lastEmitAt = Date.now()
+    const now = Date.now()
+    const delta = now - lastSpeedAt
+    const bytes = doneBytes - lastSpeedBytes
+    lastSpeedAt = now
+    lastSpeedBytes = doneBytes
+    // 只在有意义的时间窗口内更新速度（避免首帧瞬时峰值 / 结束前后抖动），
+    // 无字节增量时平滑衰减而非骤降。
+    if (delta > 0) {
+      const inst = bytes / delta // 字节/毫秒
+      speed = inst > 0 ? Math.max(0, Math.min(inst * 1000, 1024 * 1024 * 1024)) : speed * 0.5
+    }
+    lastEmitAt = now
     // Byte-based percent whenever the total is known; fall back to task count
     // while sizes are still being discovered.
     const percent =
@@ -325,7 +344,8 @@ export async function installVersion(
       currentBytes: doneBytes,
       totalBytes,
       phase: latestPhase,
-      percent
+      percent,
+      speed: Math.round(speed)
     })
   }
 
@@ -378,38 +398,56 @@ export async function installVersion(
   })
   let nativesDir = ''
   try {
-    await Promise.all(workers)
+    try {
+      await Promise.all(workers)
 
-    if (signal?.aborted) {
-      throw new Error('下载已取消')
-    }
+      if (signal?.aborted) {
+        throw new Error('下载已取消')
+      }
 
-    // Save the resolved version JSON (strip inheritsFrom — it is already merged),
-    // keeping the base Minecraft version in `clientVersion`. Prefer the value
-    // mergeVersions already computed (child.inheritsFrom), then inheritsFrom, then
-    // the id; otherwise loader instances end up with their folder name.
-    const { inheritsFrom: _inheritsFrom, ...resolved } = json
-    resolved.clientVersion = json.clientVersion ?? json.inheritsFrom ?? json.id
-    await fsp.mkdir(join(gameDir, 'versions', json.id), { recursive: true })
-    await fsp.writeFile(join(gameDir, 'versions', json.id, `${json.id}.json`), JSON.stringify(resolved, null, 2), 'utf-8')
+      // Save the resolved version JSON (strip inheritsFrom — it is already merged),
+      // keeping the base Minecraft version in `clientVersion`. Prefer the value
+      // mergeVersions already computed (child.inheritsFrom), then inheritsFrom, then
+      // the id; otherwise loader instances end up with their folder name.
+      const { inheritsFrom: _inheritsFrom, ...resolved } = json
+      resolved.clientVersion = json.clientVersion ?? json.inheritsFrom ?? json.id
+      await fsp.mkdir(join(gameDir, 'versions', json.id), { recursive: true })
+      await fsp.writeFile(join(gameDir, 'versions', json.id, `${json.id}.json`), JSON.stringify(resolved, null, 2), 'utf-8')
 
-    nativesDir = join(gameDir, 'natives', json.id)
-    await fsp.mkdir(nativesDir, { recursive: true })
-    for (const task of queue.filter((t) => t.extract)) {
-      await extractJar(task.dest, nativesDir)
+      nativesDir = join(gameDir, 'natives', json.id)
+      await fsp.mkdir(nativesDir, { recursive: true })
+      for (const task of queue.filter((t) => t.extract)) {
+        await extractJar(task.dest, nativesDir)
+      }
+    } finally {
+      // 一旦结束（无论成功 / 取消 / 失败），标记 finished 并清除节流定时器，丢弃
+      // 所有尚未发出的进度上报。此前仅在成功路径清除定时器，失败 / 取消 / 超时时
+      // 残留的 setTimeout 会在 installVersion 返回后继续发送过期进度，把渲染端已
+      // 清理的进度条目「复活」，导致补全结束后进度条卡住。
+      finished = true
+      if (emitTimer != null) {
+        clearTimeout(emitTimer)
+        emitTimer = null
+      }
     }
-  } finally {
-    // 一旦结束（无论成功 / 取消 / 失败），标记 finished 并清除节流定时器，丢弃
-    // 所有尚未发出的进度上报。此前仅在成功路径清除定时器，失败 / 取消 / 超时时
-    // 残留的 setTimeout 会在 installVersion 返回后继续发送过期进度，把渲染端已
-    // 清理的进度条目「复活」，导致补全结束后进度条卡住。
-    finished = true
-    if (emitTimer != null) {
-      clearTimeout(emitTimer)
-      emitTimer = null
-    }
+  } catch (err) {
+    // 失败 / 取消 / worker 任务超时：补发 done 事件清掉渲染端残留的进度条目，
+    // 否则界面会永远停在下载态无法恢复（对应「下载版本卡死」）。
+    if (signal?.aborted) console.warn(`[下载] 版本 ${json.id} 安装已取消`)
+    else console.error(`[下载] 版本 ${json.id} 安装失败: ${err instanceof Error ? err.message : String(err)}`)
+    onProgress({
+      task: latestLabel || '下载中断',
+      current: done,
+      total,
+      currentBytes: doneBytes,
+      totalBytes,
+      phase: 'done',
+      percent: 0,
+      speed: Math.round(speed)
+    })
+    throw err
   }
-
+  console.info(`[下载] 版本 ${json.id} 安装完成`)
   onProgress({ task: '完成', current: total, total, currentBytes: doneBytes, totalBytes, phase: 'done', percent: 100 })
   return { nativesDir, librariesDir: join(gameDir, 'libraries'), assetIndexId: assetIndex.id }
 }

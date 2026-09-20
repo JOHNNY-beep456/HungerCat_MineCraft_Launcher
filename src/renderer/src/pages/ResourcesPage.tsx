@@ -27,7 +27,7 @@ export function ResourcesPage(): JSX.Element {
     void window.api.versions.list().then((m) => {
       setManifest(m)
       setMcVersion(m.latest.release || m.versions[0]?.id || '')
-    })
+    }).catch(() => { /* versions:list 失败时保持上次清单 */ })
   }, [])
 
   const refreshInstalled = useCallback(async () => {
