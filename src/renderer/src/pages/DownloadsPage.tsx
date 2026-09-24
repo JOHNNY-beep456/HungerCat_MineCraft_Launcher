@@ -1,3 +1,4 @@
+import { AnimatePresence, motion } from 'motion/react'
 import { useApp } from '../store'
 import { useRuntime } from '../runtime'
 import { Button, Icon, ProgressBar, formatSpeed } from '../components/ui'
@@ -21,19 +22,30 @@ export function DownloadsPage(): JSX.Element {
           </div>
         ) : (
           <div className="space-y-3">
-            {downloads.map((d) => (
-              <div key={d.taskId ?? 'main'} className="glass-soft rounded-2xl p-4">
-                <div className="mb-2 flex items-center justify-between">
-                  <span className="headline truncate">{d.task}</span>
-                  <span className="chip">{d.percent}%</span>
-                </div>
-                <ProgressBar percent={d.percent} />
-                <div className="mt-2 flex items-center justify-between text-[12px] opacity-70">
-                  <span>{d.currentBytes > 0 ? formatBytes(d.currentBytes) : ''}{d.totalBytes > 0 ? ` / ${formatBytes(d.totalBytes)}` : ''}</span>
-                  <span>{d.speed && d.speed > 0 ? formatSpeed(d.speed) : '--'}</span>
-                </div>
-              </div>
-            ))}
+            {/* 任务行增删用 layout 平滑过渡，进出场做淡入 + 轻微 y */}
+            <AnimatePresence initial={false}>
+              {downloads.map((d) => (
+                <motion.div
+                  key={d.taskId ?? 'main'}
+                  layout
+                  initial={{ opacity: 0, y: 8 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, scale: 0.98, transition: { duration: 0.15 } }}
+                  transition={{ type: 'spring', bounce: 0, duration: 0.3 }}
+                  className="glass-soft rounded-2xl p-4"
+                >
+                  <div className="mb-2 flex items-center justify-between">
+                    <span className="headline truncate">{d.task}</span>
+                    <span className="chip">{d.percent}%</span>
+                  </div>
+                  <ProgressBar percent={d.percent} />
+                  <div className="mt-2 flex items-center justify-between text-[12px] opacity-70">
+                    <span>{d.currentBytes > 0 ? formatBytes(d.currentBytes) : ''}{d.totalBytes > 0 ? ` / ${formatBytes(d.totalBytes)}` : ''}</span>
+                    <span>{d.speed && d.speed > 0 ? formatSpeed(d.speed) : '--'}</span>
+                  </div>
+                </motion.div>
+              ))}
+            </AnimatePresence>
             <Button size="sm" variant="danger" icon="xmark" onClick={cancelDownload}>
               取消全部
             </Button>

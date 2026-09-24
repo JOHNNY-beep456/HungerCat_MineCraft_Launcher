@@ -59,8 +59,15 @@ export function AboutPage(): JSX.Element {
                   <span className="chip">{(group.people ?? []).length}</span>
                 </div>
                 <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3">
-                  {(group.people ?? []).map((person) => (
-                    <PersonCard key={person.id} person={person} onMore={() => setLinkPerson(person)} onOpen={openUrl} />
+                  {(group.people ?? []).map((person, i) => (
+                    <motion.div
+                      key={person.id}
+                      initial={{ opacity: 0, y: 8 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      transition={{ type: 'spring', bounce: 0, duration: 0.3, delay: Math.min(i * 0.03, 0.2) }}
+                    >
+                      <PersonCard person={person} onMore={() => setLinkPerson(person)} onOpen={openUrl} />
+                    </motion.div>
                   ))}
                 </div>
               </div>

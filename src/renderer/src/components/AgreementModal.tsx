@@ -39,12 +39,14 @@ export function AgreementModal(): JSX.Element {
       className="fixed inset-0 z-[100] flex items-center justify-center p-6"
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
     >
       <div className="absolute inset-0" style={{ background: 'var(--scrim)' }} />
       <motion.div
         className="glass-strong relative z-10 flex max-h-[82vh] w-full max-w-2xl flex-col rounded-[28px] p-7"
         initial={{ scale: 0.95, opacity: 0, y: 16 }}
         animate={{ scale: 1, opacity: 1, y: 0 }}
+        exit={{ scale: 0.96, opacity: 0, y: 12 }}
         transition={{ type: 'spring', bounce: 0.16, duration: 0.45 }}
       >
         <div className="mb-2 flex items-center gap-2">

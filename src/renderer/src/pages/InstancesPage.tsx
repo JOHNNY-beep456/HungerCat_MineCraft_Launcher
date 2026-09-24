@@ -161,15 +161,20 @@ export function InstancesPage({ onManage }: { onManage: (versionId: string) => v
           </div>
         ) : (
           <div className="space-y-3 pb-4">
-            {installed.map((v) => (
-              <InstanceCard
+            {installed.map((v, i) => (
+              <motion.div
                 key={v.id}
-                v={v}
-                gameDir={settings.gameDir}
-                canLaunch={!!selectedAccount}
-                onManage={() => onManage(v.id)}
-                onLaunch={doLaunch}
-              />
+                initial={{ opacity: 0, y: 8 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ type: 'spring', bounce: 0, duration: 0.3, delay: Math.min(i * 0.03, 0.2) }}
+              >
+                <InstanceCard
+                  v={v}
+                  canLaunch={!!selectedAccount}
+                  onManage={() => onManage(v.id)}
+                  onLaunch={doLaunch}
+                />
+              </motion.div>
             ))}
           </div>
         )}
@@ -227,13 +232,11 @@ export function InstancesPage({ onManage }: { onManage: (versionId: string) => v
 
 function InstanceCard({
   v,
-  gameDir,
   canLaunch,
   onManage,
   onLaunch
 }: {
   v: InstalledVersion
-  gameDir: string
   canLaunch: boolean
   onManage: () => void
   onLaunch: (versionId: string, opts?: { world?: string; server?: string }) => void
@@ -257,7 +260,14 @@ function InstanceCard({
         <Button size="sm" icon="settings" onClick={onManage} title="进入实例管理">
           管理
         </Button>
-        <Button size="sm" icon="folder" onClick={() => void window.api.shell.openPath(gameDir)} title="打开游戏目录">
+        {/* 打开该实例的游戏目录：走 run 语义按隔离设置解析——隔离时为
+            versions/<实例>，未隔离时才是共享的 .minecraft */}
+        <Button
+          size="sm"
+          icon="folder"
+          onClick={() => void window.api.manage.openDir(v.id, 'run')}
+          title="打开实例目录"
+        >
           目录
         </Button>
         <Button size="sm" variant="primary" icon="play" disabled={!canLaunch} onClick={() => onLaunch(v.id)}>
