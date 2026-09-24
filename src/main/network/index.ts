@@ -508,7 +508,8 @@ async function msRefreshToken(p: RefreshTokenParams): Promise<{ accessToken: str
   })
   if (!res.ok) throw new Error('刷新令牌失败，请重新登录')
   const data = (await res.json()) as { access_token: string; refresh_token: string }
-  return { accessToken: data.access_token, refreshToken: data.refresh_token }
+  // 防止用旋转后空 refresh_token 覆盖有效的旧值（否则下次刷新必然失败）
+  return { accessToken: data.access_token, refreshToken: data.refresh_token || p.refreshToken }
 }
 
 interface XblNetResponse {

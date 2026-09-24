@@ -60,6 +60,9 @@ async function refreshMsToken(refreshToken: string): Promise<{ accessToken: stri
 
 /** Refresh an existing account's tokens and return the updated account. */
 export async function refreshAccount(account: MinecraftAccount): Promise<MinecraftAccount> {
+  // 防止向微软发送缺失/空 refresh token：老账号或异常数据会在首步就被清晰拒绝，
+  // 而不是发无效 token 空跑一轮再抛晦涩错误。
+  if (!account.refreshToken) throw new Error('该账号缺少刷新令牌，请重新登录微软账号')
   const tokens = await refreshMsToken(account.refreshToken)
   return completeChain(tokens.accessToken, tokens.refreshToken, account.addedAt)
 }

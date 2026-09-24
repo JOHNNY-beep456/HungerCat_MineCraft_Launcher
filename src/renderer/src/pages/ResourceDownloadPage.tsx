@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useId, useMemo, useRef, useState } from 'react'
 import { AnimatePresence, motion } from 'motion/react'
 import type { InstalledVersion, ModpackProbe, ModrinthProject, ModrinthType, ModrinthVersion, VersionManifest } from '@shared/types'
 import { useRuntimeActions } from '../runtime'
@@ -75,7 +75,18 @@ export function ResourceDownloadPage({
       </div>
 
       <div className="min-h-0 flex-1">
-        {tab === 'versions' ? <VersionsPage presetSearch={presetSearch} /> : <Browser key={tab} type={tab} />}
+        {/* 模组/资源包/光影/整合包 ⇄ 版本：按 key 切换做淡入 + 轻微 y/scale 入场。
+            这里只做入场、不用 AnimatePresence 的 mode="wait" 退场——退场会延后新视图
+            挂载，若退场期间子视图持续重渲染，内容区会长时间空白。 */}
+        <motion.div
+          key={tab}
+          className="h-full"
+          initial={{ opacity: 0, y: 10, scale: 0.995 }}
+          animate={{ opacity: 1, y: 0, scale: 1 }}
+          transition={{ type: 'spring', bounce: 0, duration: 0.3 }}
+        >
+          {tab === 'versions' ? <VersionsPage presetSearch={presetSearch} /> : <Browser key={tab} type={tab} />}
+        </motion.div>
       </div>
     </div>
   )
@@ -173,20 +184,26 @@ function Browser({ type }: { type: BrowseTab }): JSX.Element {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [query, type, category, mcVersion, loader])
 
-  if (detail) {
-    return (
-      <ProjectDetail
-        project={detail}
-        type={modrinthType}
-        installed={installed}
-        filterMcVersion={mcVersion}
-        filterLoader={loader}
-        onBack={() => setDetail(null)}
-      />
-    )
-  }
-
   return (
+    // 结果列表 ⇄ 项目详情：按 key 切换做淡入入场。同样只做入场、不用 mode="wait" 退场，
+    // 否则退出详情时要等退场结束才挂载列表，退场期间的重渲染会让列表迟迟不出现。
+    <motion.div
+      key={detail ? 'detail' : 'list'}
+      className="h-full"
+      initial={{ opacity: 0, y: 10, scale: 0.995 }}
+      animate={{ opacity: 1, y: 0, scale: 1 }}
+      transition={{ type: 'spring', bounce: 0, duration: 0.3 }}
+    >
+      {detail ? (
+        <ProjectDetail
+          project={detail}
+          type={modrinthType}
+          installed={installed}
+          filterMcVersion={mcVersion}
+          filterLoader={loader}
+          onBack={() => setDetail(null)}
+        />
+      ) : (
     <div className="flex h-full flex-col gap-4">
       {/* 筛选栏 */}
       <div className="flex flex-wrap items-center gap-3">
@@ -272,6 +289,8 @@ function Browser({ type }: { type: BrowseTab }): JSX.Element {
         )}
       </div>
     </div>
+      )}
+    </motion.div>
   )
 }
 
@@ -293,6 +312,8 @@ function ProjectDetail({
   const [versions, setVersions] = useState<ModrinthVersion[]>([])
   const [loading, setLoading] = useState(true)
   const [mcTab, setMcTab] = useState('')
+  // MC 版本分栏滑块的 layoutId（同页多组分段互不冲突）
+  const mcTabLayoutId = useId()
 
   useEffect(() => {
     setLoading(true)
@@ -403,21 +424,32 @@ function ProjectDetail({
         </div>
       </div>
 
-      {/* MC 版本分栏 */}
+      {/* MC 版本分栏：选中态用 layoutId 滑动指示块 */}
       <div className="flex gap-2 overflow-x-auto pb-1">
-        {mcTabs.map((mc) => (
-          <button
-            key={mc}
-            onClick={() => setMcTab(mc)}
-            className="shrink-0 rounded-full px-3.5 py-1.5 text-[13px] font-medium no-drag transition-colors"
-            style={{
-              background: activeMc === mc ? 'var(--fill-primary)' : 'var(--fill-secondary)',
-              color: activeMc === mc ? '#fff' : 'var(--text-secondary)'
-            }}
-          >
-            {mc}
-          </button>
-        ))}
+        {mcTabs.map((mc) => {
+          const active = activeMc === mc
+          return (
+            <button
+              key={mc}
+              onClick={() => setMcTab(mc)}
+              className="relative shrink-0 rounded-full px-3.5 py-1.5 text-[13px] font-medium no-drag"
+              style={{
+                background: active ? undefined : 'var(--fill-secondary)',
+                color: active ? '#fff' : 'var(--text-secondary)'
+              }}
+            >
+              {active && (
+                <motion.span
+                  layoutId={mcTabLayoutId}
+                  className="absolute inset-0 rounded-full"
+                  style={{ background: 'var(--fill-primary)' }}
+                  transition={{ type: 'spring', bounce: 0.2, duration: 0.4 }}
+                />
+              )}
+              <span className="relative z-10">{mc}</span>
+            </button>
+          )
+        })}
       </div>
 
       {/* 加载器抽屉 / 版本列表 */}

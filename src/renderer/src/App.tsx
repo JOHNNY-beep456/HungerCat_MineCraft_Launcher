@@ -121,8 +121,9 @@ function Shell(): JSX.Element {
       try {
         const acc = await window.api.accounts.selected()
         if (!acc || acc.offline) return
-        // 与启动流程一致，提前 60 秒即视为过期，主动刷新一次
-        if (acc.expiresAt >= Date.now() + 60_000) return
+        // 与启动流程一致，提前 60 秒即视为过期，主动刷新一次；
+        // expiresAt 缺失（老账号）也视为需刷新
+        if (typeof acc.expiresAt === 'number' && acc.expiresAt >= Date.now() + 60_000) return
         try {
           await window.api.auth.refresh(acc)
           await reloadAccounts()
@@ -163,19 +164,21 @@ function Shell(): JSX.Element {
           </div>
 
           <main className="min-w-0 flex-1 p-5 pl-2">
-            {managingId ? (
-              <InstanceManagePage versionId={managingId} onBack={() => setManagingId(null)} onRename={setManagingId} />
-            ) : (
-              <motion.div
-                key={page}
-                className="h-full"
-                initial={{ opacity: 0, y: 12, scale: 0.995 }}
-                animate={{ opacity: 1, y: 0, scale: 1 }}
-                transition={{ type: 'spring', bounce: 0, duration: 0.35 }}
-              >
-                {renderPage(page, setManagingId, resourcePreset)}
-              </motion.div>
-            )}
+            {/* 页面 ⇄ 实例管理整页：用 key 切换同一容器内的两态视图，做淡入 + 轻微 y/scale 过渡。
+                这里只做入场（不加 AnimatePresence 退场），避免退场延后新页面挂载。 */}
+            <motion.div
+              key={managingId ? 'manage' : page}
+              className="h-full"
+              initial={{ opacity: 0, y: 12, scale: 0.995 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              transition={{ type: 'spring', bounce: 0, duration: 0.35 }}
+            >
+              {managingId ? (
+                <InstanceManagePage versionId={managingId} onBack={() => setManagingId(null)} onRename={setManagingId} />
+              ) : (
+                renderPage(page, setManagingId, resourcePreset)
+              )}
+            </motion.div>
           </main>
         </div>
 
@@ -183,57 +186,61 @@ function Shell(): JSX.Element {
         <FlyDot />
         <DownloadOrb onNavigate={navigate} />
         <CursorGlow />
-        {needAgreement && <AgreementModal />}
+        <AnimatePresence>{needAgreement && <AgreementModal />}</AnimatePresence>
         <OnboardingModal
           open={onboardingOpen}
           onNavigate={navigate}
           onInstallVanilla={installVanillaGuide}
           onFinish={() => setOnboardingOpen(false)}
         />
-        {tokenExpiredError && (
-          <motion.div
-            className="fixed inset-0 z-[110] flex items-center justify-center p-6"
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-          >
-            <div className="absolute inset-0" style={{ background: 'var(--scrim)' }} />
+        <AnimatePresence>
+          {tokenExpiredError && (
             <motion.div
-              className="glass-strong relative z-10 w-full max-w-md rounded-[28px] p-7"
-              initial={{ scale: 0.95, opacity: 0, y: 16 }}
-              animate={{ scale: 1, opacity: 1, y: 0 }}
-              transition={{ type: 'spring', bounce: 0.16, duration: 0.45 }}
+              className="fixed inset-0 z-[110] flex items-center justify-center p-6"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
             >
-              <div className="mb-3 flex items-center gap-3">
-                <div
-                  className="flex h-11 w-11 items-center justify-center rounded-2xl text-white"
-                  style={{ background: 'var(--fill-danger)' }}
-                >
-                  <Icon name="user" size={22} />
+              <div className="absolute inset-0" style={{ background: 'var(--scrim)' }} />
+              <motion.div
+                className="glass-strong relative z-10 w-full max-w-md rounded-[28px] p-7"
+                initial={{ scale: 0.95, opacity: 0, y: 16 }}
+                animate={{ scale: 1, opacity: 1, y: 0 }}
+                exit={{ scale: 0.96, opacity: 0, y: 12 }}
+                transition={{ type: 'spring', bounce: 0.16, duration: 0.45 }}
+              >
+                <div className="mb-3 flex items-center gap-3">
+                  <div
+                    className="flex h-11 w-11 items-center justify-center rounded-2xl text-white"
+                    style={{ background: 'var(--fill-danger)' }}
+                  >
+                    <Icon name="user" size={22} />
+                  </div>
+                  <div>
+                    <h2 className="title">账户令牌已过期</h2>
+                    <p className="caption">无法自动刷新，请重新登录微软账号</p>
+                  </div>
                 </div>
-                <div>
-                  <h2 className="title">账户令牌已过期</h2>
-                  <p className="caption">无法自动刷新，请重新登录微软账号</p>
+                <p className="caption selectable mb-5">{tokenExpiredError}</p>
+                <div className="flex gap-2">
+                  <Button className="flex-1" onClick={() => setTokenExpiredError(null)}>
+                    稍后处理
+                  </Button>
+                  <Button
+                    variant="primary"
+                    className="flex-1"
+                    onClick={() => {
+                      setTokenExpiredError(null)
+                      navigate('accounts')
+                    }}
+                  >
+                    前往登录
+                  </Button>
                 </div>
-              </div>
-              <p className="caption selectable mb-5">{tokenExpiredError}</p>
-              <div className="flex gap-2">
-                <Button className="flex-1" onClick={() => setTokenExpiredError(null)}>
-                  稍后处理
-                </Button>
-                <Button
-                  variant="primary"
-                  className="flex-1"
-                  onClick={() => {
-                    setTokenExpiredError(null)
-                    navigate('accounts')
-                  }}
-                >
-                  前往登录
-                </Button>
-              </div>
+              </motion.div>
             </motion.div>
-          </motion.div>
-        )}
+          )}
+        </AnimatePresence>
       </div>
     </MotionConfig>
   )

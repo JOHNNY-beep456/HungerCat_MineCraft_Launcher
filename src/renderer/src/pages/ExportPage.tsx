@@ -163,9 +163,13 @@ export function ExportPage({ versionId, onClose }: { versionId: string; onClose:
       exit={{ opacity: 0 }}
       style={{ background: 'var(--scrim)' }}
     >
-      <div
+      <motion.div
         className="mx-auto my-6 flex w-full max-w-2xl flex-1 flex-col overflow-hidden rounded-3xl"
         style={{ background: 'var(--surface-flat)', boxShadow: 'var(--glass-shadow)' }}
+        initial={{ opacity: 0, scale: 0.97, y: 18 }}
+        animate={{ opacity: 1, scale: 1, y: 0 }}
+        exit={{ opacity: 0, scale: 0.98, y: 12 }}
+        transition={{ type: 'spring', bounce: 0.15, duration: 0.4 }}
       >
         <div className="flex items-center gap-3 border-b px-5 py-4" style={{ borderColor: 'var(--divider)' }}>
           <div>
@@ -289,7 +293,7 @@ export function ExportPage({ versionId, onClose }: { versionId: string; onClose:
             </>
           )}
         </div>
-      </div>
+      </motion.div>
     </motion.div>
   )
 }
