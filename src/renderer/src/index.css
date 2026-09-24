@@ -82,22 +82,20 @@ body {
 }
 
 /* --- Animated mesh gradient background (iOS-style wallpaper) --- */
+/* 基色即「午夜」预设（默认背景）；其余预设见下方的 data-bg 覆盖。 */
 .app-background {
   position: fixed;
   inset: 0;
   z-index: -1;
   overflow: hidden;
-  background: linear-gradient(160deg, #0b1020 0%, #101731 45%, #1a0f2e 100%);
+  background: linear-gradient(160deg, #04060f 0%, #0b1330 45%, #10101c 100%);
 }
 
 [data-theme='light'] .app-background {
-  background: linear-gradient(165deg, #eaf3ff 0%, #eef0fb 40%, #f6eef9 100%);
+  background: linear-gradient(165deg, #eef1fa 0%, #e8ecf8 45%, #f2f0fb 100%);
 }
 
 /* 自定义背景预设（data-bg 设置在 <html> 上，故用后代选择器） */
-[data-bg='midnight'] .app-background {
-  background: linear-gradient(160deg, #04060f 0%, #0b1330 45%, #10101c 100%);
-}
 [data-bg='sunset'] .app-background {
   background: linear-gradient(160deg, #2a0a14 0%, #7a2a1e 50%, #d4762a 100%);
 }
@@ -109,6 +107,21 @@ body {
 }
 [data-bg='mono'] .app-background {
   background: linear-gradient(160deg, #0d0d10 0%, #1c1c22 50%, #2a2a30 100%);
+}
+
+/* 浅色模式下的预设背景：保持各自色相，但改为浅色调，避免浅色主题配深色底。
+   光斑沿用上面的预设配色（与默认浅色主题同为高饱和柔光），不另做覆盖。 */
+[data-theme='light'][data-bg='sunset'] .app-background {
+  background: linear-gradient(165deg, #fff4ec 0%, #ffe9d9 45%, #ffe2cf 100%);
+}
+[data-theme='light'][data-bg='forest'] .app-background {
+  background: linear-gradient(165deg, #eefaf3 0%, #e4f6ec 45%, #eef9e8 100%);
+}
+[data-theme='light'][data-bg='rose'] .app-background {
+  background: linear-gradient(165deg, #fff0f6 0%, #ffe6f0 45%, #fbeafc 100%);
+}
+[data-theme='light'][data-bg='mono'] .app-background {
+  background: linear-gradient(165deg, #f4f4f6 0%, #ededf0 45%, #e6e6ea 100%);
 }
 
 /* 各预设的装饰光斑配色（与背景基调协调） */
@@ -244,6 +257,10 @@ body {
   }
 }
 
+/* 组件样式必须置于 @layer components：未分层样式的层叠优先级高于 Tailwind 的
+   utilities 层，会让 .glass-strong{position:relative} 压过工具类 absolute、
+   让 .btn{border-radius} 压过 rounded-* 等，导致浮层掉进文档流、圆角失效。 */
+@layer components {
 /* --- Glass materials --- */
 .glass {
   position: relative;
@@ -404,7 +421,6 @@ body {
   color: var(--text-secondary);
 }
 
-@layer components {
   .input {
     height: 36px;
     padding: 0 12px;
@@ -419,24 +435,6 @@ body {
   .input:focus {
     border-color: var(--fill-primary);
     box-shadow: 0 0 0 3px rgba(10, 132, 255, 0.25);
-  }
-
-  /* 原生 select 下拉美化：隐藏系统箭头，改用主题化 SVG 箭头，并预留箭头空间 */
-  .custom-select {
-    appearance: none;
-    -webkit-appearance: none;
-    padding-right: 32px;
-    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%236b7280' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E");
-    background-repeat: no-repeat;
-    background-position: right 10px center;
-    background-size: 16px;
-  }
-  [data-theme='dark'] .custom-select {
-    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%239ca3af' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E");
-  }
-  .custom-select option {
-    background: var(--surface-flat);
-    color: var(--text-primary);
   }
 }
 

@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, shell, dialog, type WebContents } from 'electron'
+import { app, BrowserWindow, ipcMain, shell, dialog, nativeTheme, type WebContents } from 'electron'
 import { join } from 'path'
 import { totalmem, freemem } from 'os'
 import type { ChildProcessWithoutNullStreams } from 'child_process'
@@ -63,6 +63,41 @@ function installedCacheKey(s: ReturnType<typeof settings.get>): string {
   return `${s.gameDir}|${s.versionIsolation}|${s.isolatedVersions.join(',')}`
 }
 
+/* ------------------------------------------------------------------ */
+/* 窗口底色：仅在首帧绘制前 / 拖拽缩放露边时可见                        */
+/* ------------------------------------------------------------------ */
+
+/** 主窗口底色。渲染层会用 .app-background 铺满窗口，这里只负责「露底」的那一瞬：
+ *  按用户主题（system 时取系统明暗）+ 背景预设取色，避免浅色模式下闪出深色底。
+ *  与 index.css 的背景预设一一对应；缺省回落「午夜」（即默认背景）。 */
+const WINDOW_BG_DARK: Record<string, string> = {
+  midnight: '#04060f',
+  sunset: '#2a0a14',
+  forest: '#04120f',
+  rose: '#2a0a1c',
+  mono: '#0d0d10'
+}
+
+const WINDOW_BG_LIGHT: Record<string, string> = {
+  midnight: '#eef1fa',
+  sunset: '#fff4ec',
+  forest: '#eefaf3',
+  rose: '#fff0f6',
+  mono: '#f4f4f6'
+}
+
+function windowBackgroundColor(): string {
+  const s = settings.get()
+  const dark = s.theme === 'dark' || (s.theme === 'system' && nativeTheme.shouldUseDarkColors)
+  const table = dark ? WINDOW_BG_DARK : WINDOW_BG_LIGHT
+  return table[s.background] ?? (dark ? '#04060f' : '#eef1fa')
+}
+
+/** 主题 / 背景预设 / 系统明暗变化后刷新主窗口底色。 */
+function applyWindowBackground(): void {
+  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.setBackgroundColor(windowBackgroundColor())
+}
+
 function createWindow(): void {
   const iconPath = app.isPackaged
     ? join(process.resourcesPath, 'icon.png')
@@ -75,7 +110,7 @@ function createWindow(): void {
     show: false,
     titleBarStyle: 'hidden',
     trafficLightPosition: { x: 18, y: 18 },
-    backgroundColor: '#0b0d14',
+    backgroundColor: windowBackgroundColor(),
     icon: iconPath,
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
@@ -686,6 +721,8 @@ function registerIpc(): void {
   ipcMain.handle('settings:get', () => settings.get())
   ipcMain.handle('settings:set', (_e, partial: Partial<LauncherSettings>) => {
     const next = settings.set(partial)
+    // 主题 / 背景预设变化后同步窗口底色
+    if (partial.theme !== undefined || partial.background !== undefined) applyWindowBackground()
     // Debug 模式开关联动独立日志窗口（开启即创建，关闭即释放）
     if (typeof partial.debugMode === 'boolean') {
       if (partial.debugMode) createDebugWindow()
@@ -801,6 +838,8 @@ app.whenReady().then(() => {
   // 主动拉起网络进程：让版本清单/版本 JSON 等网络操作走网络进程，主进程不再被网络拖累。
   startNetworkWorker()
   createWindow()
+  // 用户在系统里切换明暗模式时，同步窗口底色（主题为「跟随系统」时才实际变化）。
+  nativeTheme.on('updated', applyWindowBackground)
   // Debug 模式开启时，启动即创建独立日志窗口；默认关闭则不创建，零成本。
   if (settings.get().debugMode) createDebugWindow()
   app.on('activate', () => {

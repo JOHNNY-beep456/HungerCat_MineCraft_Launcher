@@ -24,8 +24,26 @@ interface AppState {
 
 const AppContext = createContext<AppState | null>(null)
 
+const DARK_QUERY = '(prefers-color-scheme: dark)'
+
 function systemTheme(): 'light' | 'dark' {
-  return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
+  return window.matchMedia(DARK_QUERY).matches ? 'dark' : 'light'
+}
+
+/**
+ * 订阅系统明暗模式：用户在系统里切换浅色/深色时实时更新，
+ * 使「跟随系统」能立即切换，而不是只在设置变化时读一次。
+ */
+function useSystemTheme(): 'light' | 'dark' {
+  const [sys, setSys] = useState<'light' | 'dark'>(systemTheme)
+  useEffect(() => {
+    const mq = window.matchMedia(DARK_QUERY)
+    const onChange = (): void => setSys(mq.matches ? 'dark' : 'light')
+    onChange()
+    mq.addEventListener('change', onChange)
+    return () => mq.removeEventListener('change', onChange)
+  }, [])
+  return sys
 }
 
 export function AppProvider({ children }: { children: ReactNode }): JSX.Element {
@@ -33,10 +51,11 @@ export function AppProvider({ children }: { children: ReactNode }): JSX.Element 
   const [accounts, setAccounts] = useState<MinecraftAccount[]>([])
   const [selectedAccount, setSelectedAccount] = useState<MinecraftAccount | null>(null)
 
+  const sysTheme = useSystemTheme()
   const theme = useMemo<'light' | 'dark'>(() => {
     if (!settings) return 'dark'
-    return settings.theme === 'system' ? systemTheme() : settings.theme
-  }, [settings])
+    return settings.theme === 'system' ? sysTheme : settings.theme
+  }, [settings, sysTheme])
 
   useEffect(() => {
     document.documentElement.dataset['theme'] = theme
@@ -54,7 +73,7 @@ export function AppProvider({ children }: { children: ReactNode }): JSX.Element 
     const root = document.documentElement
     root.style.setProperty('--fill-primary', settings?.accentColor ?? '#0a84ff')
     root.style.setProperty('--fill-primary-hover', settings?.accentColor ?? '#0a84ff')
-    root.dataset['bg'] = settings?.background ?? 'default'
+    root.dataset['bg'] = settings?.background ?? 'midnight'
   }, [settings?.accentColor, settings?.background])
 
   const reloadSettings = useCallback(async () => {
@@ -103,7 +122,7 @@ export function AppProvider({ children }: { children: ReactNode }): JSX.Element 
         reducedMotion: false,
         versionIsolation: false,
         accentColor: '#0a84ff',
-        background: 'default',
+        background: 'midnight',
         mode: 'normal',
         disabledVersions: [],
         isolatedVersions: [],

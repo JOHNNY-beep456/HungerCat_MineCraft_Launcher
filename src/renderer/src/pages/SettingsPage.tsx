@@ -6,17 +6,18 @@ import { Button, Icon, ProgressBar, Segmented, Switch } from '../components/ui'
 
 const ACCENTS = ['#0a84ff', '#30d158', '#ff9f0a', '#ff375f', '#bf5af2', '#ff453a']
 
-const BACKGROUNDS: Array<{ key: string; label: string; colors: string[] }> = [
-  { key: 'default', label: '默认', colors: ['#0b1020', '#101731', '#1a0f2e'] },
-  { key: 'midnight', label: '午夜', colors: ['#04060f', '#0b1330', '#10101c'] },
-  { key: 'sunset', label: '日落', colors: ['#2a0a14', '#7a2a1e', '#d4762a'] },
-  { key: 'forest', label: '森林', colors: ['#04120f', '#0a2e24', '#144d3a'] },
-  { key: 'rose', label: '玫瑰', colors: ['#2a0a1c', '#6b1740', '#c94d6e'] },
-  { key: 'mono', label: '黑白', colors: ['#0d0d10', '#1c1c22', '#2a2a30'] }
+/** 背景预设色卡：colors 为深色模式渐变，lightColors 为浅色模式渐变（与 index.css 一一对应）。
+ *  首个「午夜」即默认背景（index.css 的 .app-background 基色与之相同）。 */
+const BACKGROUNDS: Array<{ key: string; label: string; colors: string[]; lightColors: string[] }> = [
+  { key: 'midnight', label: '午夜', colors: ['#04060f', '#0b1330', '#10101c'], lightColors: ['#eef1fa', '#e8ecf8', '#f2f0fb'] },
+  { key: 'sunset', label: '日落', colors: ['#2a0a14', '#7a2a1e', '#d4762a'], lightColors: ['#fff4ec', '#ffe9d9', '#ffe2cf'] },
+  { key: 'forest', label: '森林', colors: ['#04120f', '#0a2e24', '#144d3a'], lightColors: ['#eefaf3', '#e4f6ec', '#eef9e8'] },
+  { key: 'rose', label: '玫瑰', colors: ['#2a0a1c', '#6b1740', '#c94d6e'], lightColors: ['#fff0f6', '#ffe6f0', '#fbeafc'] },
+  { key: 'mono', label: '黑白', colors: ['#0d0d10', '#1c1c22', '#2a2a30'], lightColors: ['#f4f4f6', '#ededf0', '#e6e6ea'] }
 ]
 
 export function SettingsPage(): JSX.Element {
-  const { settings, updateSettings } = useApp()
+  const { settings, updateSettings, theme } = useApp()
   const [javas, setJavas] = useState<JavaRuntime[]>([])
   const [detecting, setDetecting] = useState(false)
 
@@ -191,7 +192,7 @@ export function SettingsPage(): JSX.Element {
                   onClick={() => void updateSettings({ background: b.key })}
                   className="h-8 w-8 rounded-xl border-2 no-drag"
                   style={{
-                    background: `linear-gradient(135deg, ${b.colors.join(',')})`,
+                    background: `linear-gradient(135deg, ${(theme === 'light' ? b.lightColors : b.colors).join(',')})`,
                     borderColor: settings.background === b.key ? 'var(--fill-primary)' : 'var(--divider)'
                   }}
                 />
@@ -221,21 +222,6 @@ export function SettingsPage(): JSX.Element {
               >
                 更改
               </Button>
-            </div>
-          </Row>
-          <Row label="分配内存">
-            <div className="flex items-center gap-3">
-              <input
-                type="range"
-                min={1024}
-                max={16384}
-                step={512}
-                value={settings.memoryMb}
-                onChange={(e) => void updateSettings({ memoryMb: Number(e.target.value) })}
-                className="w-40"
-                style={{ accentColor: 'var(--fill-primary)' }}
-              />
-              <span className="chip">{settings.memoryMb} MB</span>
             </div>
           </Row>
           <Row label="版本隔离（每版本独立目录）">

@@ -19,9 +19,17 @@ import { streamDownload } from './stream-download'
  * 皮肤、头颅与服务器鉴权都打到第三方认证服务器。
  */
 
-/** 认证服务器地址：去掉末尾斜杠，保证拼接子路径时格式一致。 */
+/**
+ * 认证基址规范化：界面上只需填域名（如 `skin.johnnyblog.top`），这里统一补全为
+ * `https://{域名}/api/yggdrasil`。已带协议、或已显式含该端点的输入保持不变（幂等），
+ * 因此旧账号里已存的完整地址同样适用。
+ */
 function normalizeServer(server: string): string {
-  return server.trim().replace(/\/+$/, '')
+  let s = server.trim().replace(/\/+$/, '')
+  if (!s) return ''
+  if (!/^https?:\/\//i.test(s)) s = `https://${s}`
+  if (/\/api\/yggdrasil$/i.test(s)) return s
+  return `${s}/api/yggdrasil`
 }
 
 function withoutDashes(uuid: string): string {
@@ -120,7 +128,8 @@ export async function loginYggdrasil(
 export async function refreshYggdrasil(account: MinecraftAccount): Promise<MinecraftAccount> {
   console.info(`[登录] 开始刷新第三方账号令牌：${account.name}`)
   try {
-    const base = account.yggdrasilServer ?? ''
+    // 账号里存的是完整认证基址；这里同样走规范化，兼容只存域名的旧数据。
+    const base = normalizeServer(account.yggdrasilServer ?? '')
     const clientToken = account.clientToken ?? account.id
     const data = await netRequest<YggdrasilAuthResponse>('yggdrasil:refresh', {
       server: base,

@@ -2,13 +2,15 @@ import {
   forwardRef,
   useEffect,
   useId,
+  useRef,
   useState,
   type ButtonHTMLAttributes,
   type CSSProperties,
   type HTMLAttributes,
   type ReactNode
 } from 'react'
-import { motion } from 'motion/react'
+import { createPortal } from 'react-dom'
+import { AnimatePresence, motion } from 'motion/react'
 import defaultAvatar from '../assets/stevE.jpg'
 
 /* ------------------------------------------------------------------ */
@@ -414,8 +416,187 @@ export function Segmented<T extends string>({
 }
 
 /* ------------------------------------------------------------------ */
+/* Select（玻璃拟态下拉，替代原生 select）                                */
+/* ------------------------------------------------------------------ */
+
+/**
+ * 与全应用一致的下拉选择器：触发器沿用 .input 观感，浮层用 glass-strong +
+ * 与首页版本选择相同的 spring 入场；支持点击外部 / Esc 关闭。
+ * 原生 select 无法适配玻璃主题（系统弹层不受样式控制），故统一用它。
+ *
+ * 浮层经 portal 渲染到 body 并用 fixed 定位：这样既不会被祖先的 overflow
+ * 裁剪（可滚动卡片内也能完整显示），也会按视口夹取水平位置——最右侧的下拉
+ * 不再超出窗口边缘，下方空间不足时改为向上展开。
+ */
+export function Select({
+  value,
+  onChange,
+  options,
+  disabled,
+  placeholder = '请选择',
+  className = ''
+}: {
+  value: string
+  onChange: (v: string) => void
+  options: Array<{ value: string; label: string }>
+  disabled?: boolean
+  placeholder?: string
+  className?: string
+}): JSX.Element {
+  const [open, setOpen] = useState(false)
+  const [pos, setPos] = useState<{
+    left: number
+    width: number
+    top?: number
+    bottom?: number
+    listMax: number
+  } | null>(null)
+  const rootRef = useRef<HTMLDivElement>(null)
+  const panelRef = useRef<HTMLDivElement>(null)
+
+  const GAP = 8
+  const ROW_H = 36
+  const LIST_MAX = 288
+
+  // 打开时按触发器位置计算浮层坐标；滚动 / 窗口缩放时跟随
+  useEffect(() => {
+    if (!open) return
+    const place = (): void => {
+      const el = rootRef.current
+      if (!el) return
+      const r = el.getBoundingClientRect()
+      const width = Math.max(r.width, 176)
+      // 水平夹取：避免最右 / 最左的下拉超出视口被裁
+      const left = Math.min(Math.max(r.left, GAP), Math.max(GAP, window.innerWidth - width - GAP))
+      // 竖向：预估高度，下方不够且上方够则向上展开（用 bottom 锚定，无需知道实际高度）
+      const estH = Math.min(options.length * ROW_H, LIST_MAX) + 12
+      const spaceBelow = window.innerHeight - r.bottom - GAP
+      const up = spaceBelow < estH && r.top - GAP - estH > 0
+      const avail = up ? r.top - GAP - GAP : spaceBelow - 12
+      setPos({
+        left,
+        width,
+        top: up ? undefined : r.bottom + GAP,
+        bottom: up ? window.innerHeight - r.top + GAP : undefined,
+        listMax: Math.max(96, Math.min(LIST_MAX, avail))
+      })
+    }
+    place()
+    window.addEventListener('scroll', place, true)
+    window.addEventListener('resize', place)
+    return () => {
+      window.removeEventListener('scroll', place, true)
+      window.removeEventListener('resize', place)
+    }
+  }, [open, options.length])
+
+  // 点击组件外部或按 Esc 关闭浮层（浮层已 portal 到 body，需单独判断）
+  useEffect(() => {
+    if (!open) return
+    const onDown = (e: MouseEvent): void => {
+      const t = e.target as Node
+      if (!rootRef.current?.contains(t) && !panelRef.current?.contains(t)) setOpen(false)
+    }
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key === 'Escape') setOpen(false)
+    }
+    document.addEventListener('mousedown', onDown)
+    document.addEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('mousedown', onDown)
+      document.removeEventListener('keydown', onKey)
+    }
+  }, [open])
+
+  const current = options.find((o) => o.value === value)
+
+  return (
+    <div ref={rootRef} className={`relative inline-block text-left ${className}`}>
+      <button
+        type="button"
+        disabled={disabled}
+        onClick={() => setOpen((v) => !v)}
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        className="input flex w-full items-center justify-between gap-2 no-drag"
+        style={{ opacity: disabled ? 0.5 : 1, cursor: disabled ? 'default' : 'pointer' }}
+      >
+        <span className="truncate">{current ? current.label : placeholder}</span>
+        <Icon
+          name="chevronRight"
+          size={14}
+          className="shrink-0 opacity-50 transition-transform duration-200"
+          style={{ transform: open ? 'rotate(-90deg)' : 'rotate(90deg)' }}
+        />
+      </button>
+
+      {createPortal(
+        <AnimatePresence>
+          {open && pos && (
+            <motion.div
+              ref={panelRef}
+              initial={{ opacity: 0, scale: 0.98 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.98 }}
+              transition={{ type: 'spring', bounce: 0.15, duration: 0.32 }}
+              className="glass-strong fixed z-[100] overflow-hidden rounded-2xl p-1.5"
+              style={{ left: pos.left, width: pos.width, top: pos.top, bottom: pos.bottom }}
+            >
+              <div className="overflow-y-auto" style={{ maxHeight: pos.listMax }} role="listbox">
+                {options.length === 0 ? (
+                  <div className="px-3 py-3 text-center text-[13px] opacity-60">无可选项</div>
+                ) : (
+                  options.map((o) => {
+                    const active = o.value === value
+                    return (
+                      <button
+                        key={o.value}
+                        type="button"
+                        role="option"
+                        aria-selected={active}
+                        onClick={() => {
+                          onChange(o.value)
+                          setOpen(false)
+                        }}
+                        className="flex w-full items-center justify-between gap-2 rounded-xl px-3 py-2 text-left no-drag transition-colors"
+                        style={{ background: active ? 'var(--fill-secondary)' : 'transparent' }}
+                        onMouseEnter={(e) => {
+                          if (!active) e.currentTarget.style.background = 'var(--fill-secondary)'
+                        }}
+                        onMouseLeave={(e) => {
+                          if (!active) e.currentTarget.style.background = 'transparent'
+                        }}
+                      >
+                        <span className="truncate text-[13px] font-medium">{o.label}</span>
+                        {active && <Icon name="check" size={14} style={{ color: 'var(--fill-primary)' }} />}
+                      </button>
+                    )
+                  })
+                )}
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>,
+        document.body
+      )}
+    </div>
+  )
+}
+
+/* ------------------------------------------------------------------ */
 /* Avatar (Minecraft head render)                                      */
 /* ------------------------------------------------------------------ */
+
+/**
+ * 从账号保存的认证基址取站点根：`https://{域名}/api/yggdrasil` → `https://{域名}`。
+ * 兼容只填域名的输入（自动补 https://），用于拼接头像接口 `/avatar/player/{name}`。
+ */
+export function yggdrasilOrigin(server: string): string {
+  const s = server.trim().replace(/\/+$/, '')
+  if (!s) return ''
+  const withScheme = /^https?:\/\//i.test(s) ? s : `https://${s}`
+  return withScheme.match(/^(https?:\/\/[^/]+)/i)?.[1] ?? ''
+}
 
 export function Avatar({
   name,
@@ -431,7 +612,7 @@ export function Avatar({
   skinUrl?: string
   /** 账号认证类型；yggdrasil 账号优先走认证站面像 API。 */
   authType?: 'microsoft' | 'offline' | 'yggdrasil'
-  /** Yggdrasil 认证服务器地址，用于识别 LittleSkin 等第三方皮肤站的头像接口。 */
+  /** Yggdrasil 认证服务器地址（完整认证基址），用于推导第三方头像接口。 */
   yggdrasilServer?: string
   size?: number
 }): JSX.Element {
@@ -443,25 +624,15 @@ export function Avatar({
     setSkinFailed(false)
   }, [uuid, skinUrl, authType, yggdrasilServer])
 
-  const isLittleSkin =
-    (yggdrasilServer ?? '').includes('littleskin.cn') ||
-    (skinUrl ?? '').includes('littleskin.cn')
-
   // 按优先级收集在线面像候选；每个失败后通过 srcIndex +1 回退到下一候选项。
   const sources: string[] = []
   const hash = skinUrl?.match(/([0-9a-f]{64})/i)?.[1]
-  const base = (yggdrasilServer ?? '').replace(/\/+$/, '')
 
   if (authType === 'yggdrasil') {
-    // 第三方账号：优先用认证站推导的面像 API，避免官方服务按 uuid 查不到
-    // （很多第三方站按 uuid 查 404，minotar 又只返回 Steve 占位图）。
-    if (name && isLittleSkin) {
-      sources.push(`https://littleskin.cn/avatar/player/${encodeURIComponent(name)}`)
-      if (base) sources.push(`${base}/skin/${encodeURIComponent(name)}`)
-    } else if (name && base) {
-      // 非 LittleSkin 的自定义认证站：按 Yggdrasil 兼容面像接口取头像。
-      sources.push(`${base}/skin/${encodeURIComponent(name)}`)
-    }
+    // 第三方账号：头像统一走认证站根域的 /avatar/player/{角色名}
+    //（official 头像源按 uuid 在很多第三方站会 404，minotar 又只返回 Steve 占位图）。
+    const origin = yggdrasilOrigin(yggdrasilServer ?? '')
+    if (name && origin) sources.push(`${origin}/avatar/player/${encodeURIComponent(name)}`)
     if (hash) sources.push(`https://mc-heads.net/avatar/${hash}`)
   } else {
     // 正版 / 离线账号：Mojang 官方面像源按 uuid 优先，名字兜底，逐级回退。

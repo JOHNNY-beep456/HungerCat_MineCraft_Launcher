@@ -73,7 +73,7 @@ export function getDefaultSettings(): LauncherSettings {
     reducedMotion: false,
     versionIsolation: false,
     accentColor: '#0a84ff',
-    background: 'default',
+    background: 'midnight',
     mode: 'normal',
     disabledVersions: [],
     isolatedVersions: [],
