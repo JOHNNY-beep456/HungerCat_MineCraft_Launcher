@@ -7,8 +7,9 @@ import { Avatar, Button, GlassCard, Icon, Segmented, Spinner } from '../componen
 /** 账号页视图状态：账号列表，或某一种登录整页。 */
 type AccountView = 'list' | 'microsoft' | 'yggdrasil' | 'offline'
 
-const LITTLESKIN_SERVER = 'https://littleskin.cn/api/yggdrasil'
-const CHANMAO_SERVER = 'https://skin.johnnyblog.top/api/yggdrasil'
+// 第三方认证服务器：界面只需填域名，主进程会自动补全 /api/yggdrasil。
+const LITTLESKIN_DOMAIN = 'littleskin.cn'
+const CHANMAO_DOMAIN = 'skin.johnnyblog.top'
 
 /** 第三方登录 IPC 的保护性超时：即使主进程某次请求异常挂起，弹窗也不会永久停在「登录中」。统一为 10s。 */
 const YGG_LOGIN_TIMEOUT_MS = 10_000
@@ -31,9 +32,9 @@ function withTimeout<T>(p: Promise<T>, ms: number, message: string): Promise<T> 
 
 type YggPreset = 'littleskin' | 'chanmao' | 'custom'
 
-const YGG_PRESETS: Array<{ value: YggPreset; server: string }> = [
-  { value: 'littleskin', server: LITTLESKIN_SERVER },
-  { value: 'chanmao', server: CHANMAO_SERVER }
+const YGG_PRESETS: Array<{ value: YggPreset; domain: string }> = [
+  { value: 'littleskin', domain: LITTLESKIN_DOMAIN },
+  { value: 'chanmao', domain: CHANMAO_DOMAIN }
 ]
 
 export function AccountsPage(): JSX.Element {
@@ -48,7 +49,7 @@ export function AccountsPage(): JSX.Element {
   const [offlineError, setOfflineError] = useState<string | null>(null)
 
   const [yggPreset, setYggPreset] = useState<YggPreset>('littleskin')
-  const [yggServer, setYggServer] = useState(LITTLESKIN_SERVER)
+  const [yggServer, setYggServer] = useState(LITTLESKIN_DOMAIN)
   const [yggEmail, setYggEmail] = useState('')
   const [yggPassword, setYggPassword] = useState('')
   const [yggLoading, setYggLoading] = useState(false)
@@ -135,7 +136,7 @@ export function AccountsPage(): JSX.Element {
     setYggPreset(v)
     setYggError(null)
     const preset = YGG_PRESETS.find((p) => p.value === v)
-    if (preset) setYggServer(preset.server)
+    if (preset) setYggServer(preset.domain)
   }
 
   const addYggdrasil = async (): Promise<void> => {
@@ -419,7 +420,7 @@ export function AccountsPage(): JSX.Element {
               <GlassCard className="p-6">
                 <div className="mb-5">
                   <h3 className="headline">认证服务器</h3>
-                  <p className="caption mt-0.5">选择预设或填写自定义 Yggdrasil 兼容地址</p>
+                  <p className="caption mt-0.5">选择预设或填写自定义 Yggdrasil 认证服务器域名</p>
                 </div>
                 <Segmented
                   options={[
@@ -430,7 +431,7 @@ export function AccountsPage(): JSX.Element {
                   value={yggPreset}
                   onChange={chooseYggPreset}
                 />
-                <div className="caption mb-2 mt-4">认证服务器地址</div>
+                <div className="caption mb-2 mt-4">认证服务器域名</div>
                 <input
                   value={yggServer}
                   onChange={(e) => {
@@ -438,9 +439,10 @@ export function AccountsPage(): JSX.Element {
                     setYggError(null)
                   }}
                   disabled={yggPreset !== 'custom'}
-                  placeholder="https://example.com/api/yggdrasil"
+                  placeholder="例如 skin.johnnyblog.top"
                   className="input w-full"
                 />
+                <p className="caption mt-2">只需填域名，登录时自动补全 /api/yggdrasil</p>
               </GlassCard>
 
               <GlassCard className="p-6">

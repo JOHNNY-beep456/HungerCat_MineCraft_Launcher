@@ -2,7 +2,7 @@ import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
 import { motion } from 'motion/react'
 import type { ForgeKind, InstalledVersion, LoaderKind, VersionManifest } from '@shared/types'
 import { useRuntime } from '../runtime'
-import { Button, Checkbox, GlassCard, Icon, LoadingState, ProgressBar, Segmented } from '../components/ui'
+import { Button, Checkbox, GlassCard, Icon, LoadingState, ProgressBar, Segmented, Select } from '../components/ui'
 
 type Filter = 'all' | 'release' | 'snapshot'
 type AnyLoader = LoaderKind | ForgeKind
@@ -475,21 +475,14 @@ export function VersionsPage({ presetSearch }: { presetSearch?: string }): JSX.E
                 {!isVanilla && (
                   <div className="mt-5">
                     <div className="caption mb-2">加载器版本</div>
-                    <select
+                    <Select
                       value={loaderVersion}
-                      onChange={(e) => setLoaderVersion(e.target.value)}
-                      className="input custom-select w-full"
+                      onChange={setLoaderVersion}
+                      className="w-full"
                       disabled={loaderVersions.length === 0 || loaderBusy}
-                    >
-                      {loaderVersions.length === 0 && (
-                        <option>{loaderBusy ? '安装中…' : loaderLoading ? '加载中…' : '无可用加载器版本'}</option>
-                      )}
-                      {loaderVersions.map((lv) => (
-                        <option key={lv} value={lv}>
-                          {lv}
-                        </option>
-                      ))}
-                    </select>
+                      placeholder={loaderBusy ? '安装中…' : loaderLoading ? '加载中…' : '无可用加载器版本'}
+                      options={loaderVersions.map((lv) => ({ value: lv, label: lv }))}
+                    />
 
                     <div className="caption mt-1.5">
                       {loaderBusy

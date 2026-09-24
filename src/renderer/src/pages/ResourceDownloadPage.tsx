@@ -2,7 +2,7 @@ import { useEffect, useId, useMemo, useRef, useState } from 'react'
 import { AnimatePresence, motion } from 'motion/react'
 import type { InstalledVersion, ModpackProbe, ModrinthProject, ModrinthType, ModrinthVersion, VersionManifest } from '@shared/types'
 import { useRuntimeActions } from '../runtime'
-import { Button, Icon, LoadingState, Segmented, Spinner } from '../components/ui'
+import { Button, Icon, LoadingState, Segmented, Select, Spinner } from '../components/ui'
 import { VersionsPage } from './VersionsPage'
 
 export type Tab = 'mod' | 'resourcepack' | 'shader' | 'modpack' | 'versions'
@@ -721,13 +721,11 @@ function FilterSelect({
   return (
     <div className="flex items-center gap-2">
       <span className="caption">{label}</span>
-      <select value={value} onChange={(e) => onChange(e.target.value)} className="input custom-select">
-        {options.map((o) => (
-          <option key={o} value={o}>
-            {render ? render(o) : o}
-          </option>
-        ))}
-      </select>
+      <Select
+        value={value}
+        onChange={onChange}
+        options={options.map((o) => ({ value: o, label: render ? render(o) : o }))}
+      />
     </div>
   )
 }
