@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { AnimatePresence, motion } from 'motion/react'
+import { motion } from 'motion/react'
 import type { AuthStatus, DeviceCodeInfo } from '@shared/types'
 import { useApp } from '../store'
 import { Avatar, Button, GlassCard, Icon, Segmented, Spinner } from '../components/ui'
@@ -165,21 +165,20 @@ export function AccountsPage(): JSX.Element {
 
   return (
     <div className="flex h-full flex-col gap-5">
-      {/* 账号列表 ⇄ 登录整页：两态视图切换，按 key 区分并做淡入 + 轻微 y/scale 过渡 */}
-      <AnimatePresence mode="wait" initial={false}>
+      {/* 账号列表 ⇄ 登录整页：同一时刻只渲染一个视图，按 key 切换做淡入入场。
+          只用入场、不用 AnimatePresence 的 mode="wait" 退场——退场会延后新视图挂载，
+          若退场期间发生重渲染（如刚删除账号），新视图可能一直不挂载而出现空白屏。 */}
       {view === 'list' && (
         <motion.div
           key="list"
           className="flex min-h-0 flex-1 flex-col gap-5"
           initial={{ opacity: 0, y: 10, scale: 0.995 }}
           animate={{ opacity: 1, y: 0, scale: 1 }}
-          exit={{ opacity: 0, y: -8, scale: 0.995, transition: { duration: 0.15 } }}
           transition={{ type: 'spring', bounce: 0, duration: 0.3 }}
         >
       <div className="flex items-end justify-between">
         <div>
           <h1 className="display">账号</h1>
-          <p className="caption mt-1">使用微软账号登录，无需申请开发者应用</p>
         </div>
         <div className="flex gap-2">
           <Button onClick={() => setView('offline')}>离线账号</Button>
@@ -271,7 +270,6 @@ export function AccountsPage(): JSX.Element {
           className="flex min-h-0 flex-1 flex-col gap-5"
           initial={{ opacity: 0, y: 10, scale: 0.995 }}
           animate={{ opacity: 1, y: 0, scale: 1 }}
-          exit={{ opacity: 0, y: -8, scale: 0.995, transition: { duration: 0.15 } }}
           transition={{ type: 'spring', bounce: 0, duration: 0.3 }}
         >
           {/* 页头 */}
@@ -402,7 +400,6 @@ export function AccountsPage(): JSX.Element {
           className="flex min-h-0 flex-1 flex-col gap-5"
           initial={{ opacity: 0, y: 10, scale: 0.995 }}
           animate={{ opacity: 1, y: 0, scale: 1 }}
-          exit={{ opacity: 0, y: -8, scale: 0.995, transition: { duration: 0.15 } }}
           transition={{ type: 'spring', bounce: 0, duration: 0.3 }}
         >
           {/* 页头 */}
@@ -516,7 +513,6 @@ export function AccountsPage(): JSX.Element {
           className="flex min-h-0 flex-1 flex-col gap-5"
           initial={{ opacity: 0, y: 10, scale: 0.995 }}
           animate={{ opacity: 1, y: 0, scale: 1 }}
-          exit={{ opacity: 0, y: -8, scale: 0.995, transition: { duration: 0.15 } }}
           transition={{ type: 'spring', bounce: 0, duration: 0.3 }}
         >
           {/* 页头 */}
@@ -583,7 +579,6 @@ export function AccountsPage(): JSX.Element {
           </div>
         </motion.div>
       )}
-      </AnimatePresence>
     </div>
   )
 }
