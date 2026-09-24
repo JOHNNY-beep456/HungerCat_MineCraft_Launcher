@@ -179,7 +179,6 @@ export function AccountsPage(): JSX.Element {
       <div className="flex items-end justify-between">
         <div>
           <h1 className="display">账号</h1>
-          <p className="caption mt-1">使用微软账号登录，无需申请开发者应用</p>
         </div>
         <div className="flex gap-2">
           <Button onClick={() => setView('offline')}>离线账号</Button>
