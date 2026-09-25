@@ -7,6 +7,7 @@ import type { DownloadProgress, Library, VersionJson } from '@shared/types'
 import { clientJarUrl, mirrorConfig, mirrorUrl, type MirrorKind } from './mirror'
 import { streamDownload } from './stream-download'
 import { netRequest } from './broker'
+import { extractArchive } from './archive'
 
 const UA = 'HungerCatLauncher/0.1'
 
@@ -453,8 +454,10 @@ export async function installVersion(
 }
 
 async function extractJar(jarPath: string, destDir: string): Promise<void> {
-  const { execFile } = await import('child_process')
-  return new Promise((resolve) => {
-    execFile('tar', ['-xf', jarPath, '-C', destDir], { windowsHide: true }, () => resolve())
-  })
+  try {
+    await extractArchive(jarPath, destDir)
+  } catch (err) {
+    // 与旧行为一致：natives 解压失败不中断安装（缺 native 由启动阶段暴露），但留下日志。
+    console.warn(`[下载] natives 解压失败：${jarPath} ${err instanceof Error ? err.message : String(err)}`)
+  }
 }

@@ -1,7 +1,7 @@
-import { execFile } from 'child_process'
 import { existsSync, promises as fsp } from 'fs'
 import { basename, join } from 'path'
 import type { ModEntry, SchematicEntry, VersionDirKind } from '@shared/types'
+import { listArchive, readArchiveText } from './archive'
 import { findProject } from './modrinth'
 import { withLocalTimeout } from './local-timeout'
 
@@ -36,24 +36,6 @@ export function resolveVersionDir(
 /* 模组元数据识别（JAR 内 fabric.mod.json / quilt.mod.json / mods.toml）  */
 /* ------------------------------------------------------------------ */
 
-function tarRun(args: string[]): Promise<string> {
-  return new Promise((resolve, reject) => {
-    execFile('tar', args, { windowsHide: true, maxBuffer: 8 * 1024 * 1024 }, (err, stdout, stderr) => {
-      if (err) reject(new Error(stderr || err.message))
-      else resolve(stdout)
-    })
-  })
-}
-
-async function tarList(archive: string): Promise<string[]> {
-  const out = await tarRun(['-tf', archive])
-  return out.split(/\r?\n/).map((s) => s.replace(/^\.\/?/, '')).filter(Boolean)
-}
-
-async function tarRead(archive: string, entry: string): Promise<string> {
-  return tarRun(['-xOf', archive, entry])
-}
-
 interface ModMeta {
   id: string
   name: string
@@ -62,7 +44,7 @@ interface ModMeta {
 async function readModMeta(path: string): Promise<ModMeta | null> {
   let entries: string[]
   try {
-    entries = await tarList(path)
+    entries = await listArchive(path)
   } catch {
     return null
   }
@@ -72,7 +54,7 @@ async function readModMeta(path: string): Promise<ModMeta | null> {
     const entry = entries.find((e) => e === fileName || e.endsWith(`/${fileName}`))
     if (!entry) continue
     try {
-      const data = JSON.parse((await tarRead(path, entry)).replace(/^\uFEFF/, ''))
+      const data = JSON.parse((await readArchiveText(path, entry)).replace(/^\uFEFF/, ''))
       const loader = fileName === 'quilt.mod.json' ? data?.quilt_loader : data
       const id = typeof loader?.id === 'string' ? loader.id : ''
       const name =
@@ -91,7 +73,7 @@ async function readModMeta(path: string): Promise<ModMeta | null> {
   const toml = entries.find((e) => /(^|\/)(neoforge\.)?mods\.toml$/i.test(e))
   if (toml) {
     try {
-      const raw = await tarRead(path, toml)
+      const raw = await readArchiveText(path, toml)
       const id = raw.match(/modId\s*=\s*"([^"]+)"/)?.[1] ?? ''
       const name = raw.match(/displayName\s*=\s*"([^"]+)"/)?.[1] ?? ''
       if (id || name) return { id, name }
