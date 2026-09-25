@@ -1,6 +1,5 @@
 // TODO(网络进程迁移): modpack.ts 的下载部分（downloadModpack / importModpackFromUrl 的远程拉取）
 // 待迁入网络进程，进度经 progress 事件回传并保住 phase:'done'。本模块暂保留主进程路径，不退化。
-import { execFile } from 'child_process'
 import { createHash } from 'crypto'
 import { createReadStream, existsSync, promises as fsp } from 'fs'
 import { tmpdir } from 'os'
@@ -24,37 +23,11 @@ import { loaderVersions, installLoader } from './loaders'
 import { forgeVersions, installForge } from './forge'
 import { pickInstallerJava, requiredJavaForMc } from './java'
 import { settings } from './store'
+import { extractArchive, listArchive, readArchiveText, zipDirectory } from './archive'
 
 /* ------------------------------------------------------------------ */
-/* tar (bsdtar) helpers — 用于读取/解压 zip 格式的整合包                */
+/* 整合包归档读写（内嵌 zip / tar 解析，见 archive.ts）                  */
 /* ------------------------------------------------------------------ */
-
-function tarRun(args: string[]): Promise<string> {
-  return new Promise((resolve, reject) => {
-    execFile('tar', args, { windowsHide: true, maxBuffer: 128 * 1024 * 1024 }, (err, stdout, stderr) => {
-      if (err) reject(new Error(stderr || err.message))
-      else resolve(stdout)
-    })
-  })
-}
-
-async function tarList(archive: string): Promise<string[]> {
-  const out = await tarRun(['-tf', archive])
-  return out.split(/\r?\n/).map((s) => s.replace(/^\.\/?/, '')).filter(Boolean)
-}
-
-async function tarRead(archive: string, entry: string): Promise<string> {
-  return tarRun(['-xOf', archive, entry])
-}
-
-async function tarExtract(archive: string, dest: string): Promise<void> {
-  await fsp.mkdir(dest, { recursive: true })
-  await tarRun(['-xf', archive, '-C', dest])
-}
-
-async function zipDir(srcDir: string, outPath: string): Promise<void> {
-  await tarRun(['--format=zip', '-cf', outPath, '-C', srcDir, '.'])
-}
 
 function findEntry(entries: string[], name: string): string | null {
   for (const e of entries) {
@@ -65,7 +38,7 @@ function findEntry(entries: string[], name: string): string | null {
 }
 
 async function readJsonEntry(archive: string, entry: string): Promise<unknown> {
-  const raw = await tarRead(archive, entry)
+  const raw = await readArchiveText(archive, entry)
   return JSON.parse(raw.replace(/^\uFEFF/, ''))
 }
 
@@ -74,7 +47,7 @@ async function readJsonEntry(archive: string, entry: string): Promise<unknown> {
 /* ------------------------------------------------------------------ */
 
 async function detectFormat(archive: string): Promise<ModpackFormat | null> {
-  const entries = await tarList(archive)
+  const entries = await listArchive(archive)
   if (findEntry(entries, 'modrinth.index.json')) return 'modrinth'
   if (findEntry(entries, 'mcbbs.packmeta')) return 'mcbbs'
   if (findEntry(entries, 'launcher.packmeta')) return 'native'
@@ -202,7 +175,7 @@ interface ParsedPack {
 }
 
 async function parseModrinth(archive: string): Promise<ParsedPack> {
-  const entries = await tarList(archive)
+  const entries = await listArchive(archive)
   const idxEntry = findEntry(entries, 'modrinth.index.json')
   if (!idxEntry) throw new Error('modrinth.index.json 不存在')
   const index = (await readJsonEntry(archive, idxEntry)) as {
@@ -337,7 +310,7 @@ function extractMcbbsMeta(manifest: Record<string, unknown>): { mcVersion: strin
 }
 
 async function parseMcbbs(archive: string): Promise<ParsedPack> {
-  const entries = await tarList(archive)
+  const entries = await listArchive(archive)
   let manifest: Record<string, unknown> | null = null
   const packmeta = findEntry(entries, 'mcbbs.packmeta')
   if (packmeta) {
@@ -406,7 +379,7 @@ async function parseMcbbs(archive: string): Promise<ParsedPack> {
 
 /** 解析启动器自带格式（launcher.packmeta + overrides，无外部下载文件）。 */
 async function parseNative(archive: string): Promise<ParsedPack> {
-  const entries = await tarList(archive)
+  const entries = await listArchive(archive)
   const entry = findEntry(entries, 'launcher.packmeta')
   if (!entry) throw new Error('launcher.packmeta 不存在')
   const manifest = (await readJsonEntry(archive, entry)) as Record<string, unknown>
@@ -536,7 +509,7 @@ async function applyModpackFiles(
 
   // 1) 先解压并复制 overrides / client-overrides（打包在 zip 内的文件，两种格式均支持）
   const tmp = join(tmpdir(), `hc-mp-${Date.now()}-${Math.random().toString(36).slice(2)}`)
-  await tarExtract(archive, tmp)
+  await extractArchive(archive, tmp)
   try {
     for (const d of ['overrides', 'client-overrides']) {
       const src = join(tmp, d)
@@ -948,7 +921,7 @@ export async function exportModpack(
   await fsp.mkdir(outDir, { recursive: true })
   const ext = format === 'modrinth' ? 'mrpack' : 'zip'
   const outPath = join(outDir, `${versionId}.${ext}`)
-  await zipDir(tmp, outPath)
+  await zipDirectory(tmp, outPath)
   await fsp.rm(tmp, { recursive: true, force: true }).catch(() => {})
   onProgress({ taskId: 'modpack', task: `导出完成 ${basename(outPath)}`, current: 1, total: 1, currentBytes: 0, totalBytes: 0, phase: 'done', percent: 100 })
   return outPath

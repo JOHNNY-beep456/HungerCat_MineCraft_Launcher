@@ -3,6 +3,7 @@ import { existsSync, readdirSync, statSync, promises as fsp } from 'fs'
 import { homedir } from 'os'
 import { join } from 'path'
 import type { DownloadPhase, JavaRuntime } from '@shared/types'
+import { extractArchive } from './archive'
 import { netRequest } from './broker'
 import { streamDownload } from './stream-download'
 
@@ -361,9 +362,7 @@ export async function installJava(
   if (lastErr) throw lastErr
 
   onProgress(90, `解压 Java ${major}…`, received, total, 'java')
-  await new Promise<void>((resolve, reject) => {
-    execFile('tar', ['-xf', archive, '-C', root], { windowsHide: true }, (err) => (err ? reject(err) : resolve()))
-  })
+  await extractArchive(archive, root)
   await fsp.rm(archive, { force: true })
 
   const bin = findJavaBinRecursive(root)
