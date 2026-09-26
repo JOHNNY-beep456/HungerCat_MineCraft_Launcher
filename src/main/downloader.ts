@@ -13,6 +13,8 @@ const UA = 'HungerCatLauncher/0.1'
 
 interface DownloadTask {
   url: string
+  /** 官方源地址：镜像源返回 HTTP 404 时自动回退到此地址重下。 */
+  fallbackUrl?: string
   dest: string
   sha1?: string
   size?: number
@@ -24,6 +26,27 @@ interface DownloadTask {
 const isWindows = process.platform === 'win32'
 const isMac = process.platform === 'darwin'
 const osName = isWindows ? 'windows' : isMac ? 'osx' : 'linux'
+
+/** 官方（Mojang）镜像配置，用于镜像源失败时回退。 */
+const OFFICIAL = mirrorConfig('mojang')
+
+/**
+ * 构造「主用地址 + 官方回退地址」。启用镜像时，若 `mirrorUrl` 未能改写该地址
+ * （例如第三方 Maven 仓库，本就无需镜像），则不设置回退地址。
+ */
+function urlsFor(officialUrl: string, kind: MirrorKind): { url: string; fallbackUrl?: string } {
+  const mirrored = mirrorUrl(officialUrl, kind)
+  return mirrored !== officialUrl ? { url: mirrored, fallbackUrl: officialUrl } : { url: officialUrl }
+}
+
+/**
+ * 判断错误是否为 HTTP 404。网络进程只回传错误文案（错误对象不跨进程序列化），
+ * 故从 `下载失败 (HTTP 404)` 这类文案中识别。
+ */
+function isHttp404(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err)
+  return /HTTP[^\d]*404/.test(msg)
+}
 
 function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms))
@@ -60,11 +83,17 @@ async function downloadFile(
     }
   }
   const tmp = task.dest + '.part'
+  // 候选源：主用（可能是镜像源）在前，官方源在后。镜像源返回 HTTP 404（例如尚未
+  // 同步该文件）时立刻切到官方源重下，不占用常规重试次数；其它错误仍按原逻辑重试。
+  const candidates = task.fallbackUrl && task.fallbackUrl !== task.url ? [task.url, task.fallbackUrl] : [task.url]
+  let candidateIndex = 0
+  let attempt = 0
   let sizeReported = false
-  for (let attempt = 0; attempt <= retries; attempt++) {
+  for (;;) {
     if (signal?.aborted) throw new Error('下载已取消')
+    const url = candidates[candidateIndex]
     try {
-      await streamDownload(task.url, tmp, {
+      await streamDownload(url, tmp, {
         signal,
         onBytes,
         onSize: (size) => {
@@ -77,7 +106,7 @@ async function downloadFile(
       })
       if (task.sha1) {
         const digest = await sha1File(tmp)
-        if (digest !== task.sha1) throw new Error(`SHA1 校验失败: ${task.url}`)
+        if (digest !== task.sha1) throw new Error(`SHA1 校验失败: ${url}`)
       }
       await fsp.rename(tmp, task.dest)
       return
@@ -91,8 +120,15 @@ async function downloadFile(
       } catch {
         /* ignore */
       }
+      // 镜像源 404：立即回退官方源
+      if (candidateIndex + 1 < candidates.length && isHttp404(err)) {
+        candidateIndex++
+        console.warn(`[下载] 镜像源 404，回退官方源：${task.label}`)
+        continue
+      }
       if (attempt === retries) throw err
-      await sleep(500 * (attempt + 1))
+      attempt++
+      await sleep(500 * attempt)
     }
   }
 }
@@ -160,7 +196,6 @@ export function pickClassifier(lib: Library): string | null {
 
 async function collectTasks(json: VersionJson, gameDir: string, kind: MirrorKind): Promise<DownloadTask[]> {
   const tasks: DownloadTask[] = []
-  const mc = mirrorConfig(kind)
 
   // Asset index (small file; leave on Mojang — BMCLAPI has no direct mirror).
   const assetIndex = json.assetIndex
@@ -179,9 +214,9 @@ async function collectTasks(json: VersionJson, gameDir: string, kind: MirrorKind
     const repo = (lib.url ?? '').replace(/\/+$/, '')
     if (lib.downloads?.artifact) {
       const a = lib.downloads.artifact
-      const url = a.url ?? (repo ? `${repo}/${prefix}/${base}.jar` : mc.libraryUrl(`${prefix}/${base}.jar`))
+      const officialUrl = a.url ?? (repo ? `${repo}/${prefix}/${base}.jar` : OFFICIAL.libraryUrl(`${prefix}/${base}.jar`))
       tasks.push({
-        url: mirrorUrl(url, kind),
+        ...urlsFor(officialUrl, kind),
         dest: join(gameDir, 'libraries', a.path ?? `${prefix}/${base}.jar`),
         sha1: a.sha1,
         size: a.size,
@@ -189,17 +224,18 @@ async function collectTasks(json: VersionJson, gameDir: string, kind: MirrorKind
         phase: 'libraries'
       })
     } else {
-      const jarUrl = repo ? `${repo}/${prefix}/${base}.jar` : mc.libraryUrl(`${prefix}/${base}.jar`)
+      const officialUrl = repo ? `${repo}/${prefix}/${base}.jar` : OFFICIAL.libraryUrl(`${prefix}/${base}.jar`)
+      const pair = urlsFor(officialUrl, kind)
       // Profile libraries (Fabric/Quilt) ship no sha1/size. Fetch the .sha1
       // sidecar once and persist it on the library so later launches can
       // verify and skip without re-fetching.
       let sha1 = lib.sha1
       if (!sha1) {
-        sha1 = await fetchSha1Sidecar(jarUrl)
+        sha1 = await fetchSha1Sidecar(pair.url)
         if (sha1) lib.sha1 = sha1
       }
       tasks.push({
-        url: mirrorUrl(jarUrl, kind),
+        ...pair,
         dest: join(gameDir, 'libraries', prefix, `${base}.jar`),
         sha1,
         label: lib.name,
@@ -210,9 +246,9 @@ async function collectTasks(json: VersionJson, gameDir: string, kind: MirrorKind
       const classifier = pickClassifier(lib)
       if (classifier) {
         const cd = lib.downloads?.classifiers?.[classifier]
-        const url = cd?.url ?? (repo ? `${repo}/${prefix}/${base}-${classifier}.jar` : mc.libraryUrl(`${prefix}/${base}-${classifier}.jar`))
+        const officialUrl = cd?.url ?? (repo ? `${repo}/${prefix}/${base}-${classifier}.jar` : OFFICIAL.libraryUrl(`${prefix}/${base}-${classifier}.jar`))
         tasks.push({
-          url: mirrorUrl(url, kind),
+          ...urlsFor(officialUrl, kind),
           dest: join(gameDir, 'libraries', cd?.path ?? `${prefix}/${base}-${classifier}.jar`),
           sha1: cd?.sha1,
           size: cd?.size,
@@ -227,9 +263,10 @@ async function collectTasks(json: VersionJson, gameDir: string, kind: MirrorKind
   const client = json.downloads?.client
   if (!client?.url) throw new Error(`版本 ${json.id} 缺少客户端 jar`)
   const baseVersion = json.clientVersion ?? json.id
-  const clientJar = clientJarUrl(baseVersion, kind) ?? client.url
+  const mirroredClient = clientJarUrl(baseVersion, kind)
   tasks.push({
-    url: clientJar,
+    url: mirroredClient ?? client.url,
+    ...(mirroredClient && mirroredClient !== client.url ? { fallbackUrl: client.url } : {}),
     dest: join(gameDir, 'versions', json.id, `${json.id}.jar`),
     sha1: client.sha1,
     size: client.size,
@@ -269,7 +306,6 @@ export async function installVersion(
   const tasks = await collectTasks(json, gameDir, kind)
   console.info(`[下载] 开始安装版本 ${json.id}，共 ${tasks.length} 个下载任务`)
   const assetIndex = json.assetIndex
-  const mc = mirrorConfig(kind)
 
   const indexDest = join(gameDir, 'assets', 'indexes', `${assetIndex.id}.json`)
   await downloadFile(
@@ -282,7 +318,7 @@ export async function installVersion(
   }
   for (const [name, obj] of Object.entries(indexData.objects)) {
     tasks.push({
-      url: mc.assetUrl(obj.hash),
+      ...urlsFor(OFFICIAL.assetUrl(obj.hash), kind),
       dest: join(gameDir, 'assets', 'objects', obj.hash.slice(0, 2), obj.hash),
       sha1: obj.hash,
       size: obj.size,

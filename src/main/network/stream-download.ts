@@ -188,7 +188,10 @@ async function parallelDownload(
             await handle.write(Buffer.from(value), 0, value.byteLength, pos)
             pos += value.byteLength
           }
-          return true
+          // 短读检测：Range 请求被服务器提前断流时，收到的字节数少于请求区间。
+          // 返回 false 触发调用方回退单连接重下，避免把「尾部缺失 / 中间空洞」的
+          // 损坏文件重命名成正式文件（对应「模组下载不完整」）。
+          return pos === end
         })()
       )
     }

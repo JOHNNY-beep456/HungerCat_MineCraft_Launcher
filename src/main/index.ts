@@ -13,7 +13,8 @@ import type {
   VersionDirKind,
   LauncherSettings,
   UpdateInfo,
-  DebugLogEntry
+  DebugLogEntry,
+  HomepageSubmitPayload
 } from '@shared/types'
 import { accounts, settings, createOfflineAccount } from './store'
 import { initLogger, getLogBuffer, subscribeLogs } from './logger'
@@ -32,6 +33,20 @@ import { searchMods, getVersions as getModVersions, installMod, downloadTo, find
 import { listResources, removeResource, openResourceDir } from './resources'
 import { probeModpack, importModpack, importModpackFromUrl, exportModpack, collectExportInventory, downloadModpack } from './modpack'
 import { fetchAbout, fetchAgreement, fetchUpdateInfo, downloadUpdate, runUpdate, compareVersions } from './server'
+import {
+  listHomepages,
+  readHomepage,
+  importHomepage,
+  downloadHomepage,
+  removeHomepage,
+  verifyHomepage,
+  confirmHomepage,
+  setActiveHomepage,
+  openHomepageDir,
+  fetchMarket,
+  submitHomepage,
+  installNumbered
+} from './homepage'
 import {
   enrichMods,
   listMods,
@@ -211,7 +226,8 @@ const QUIET_CHANNELS = new Set([
   'settings:get',
   'debug:isEnabled',
   'accounts:list',
-  'accounts:selected'
+  'accounts:selected',
+  'homepage:log' // 脚本日志按条触发，本身已落到调试日志缓冲，无需再记 IPC 起止
 ])
 
 /** 该频道中哪些参数位是敏感字符串（如账号密码），一律只记 <redacted>，绝不打印明文。 */
@@ -735,6 +751,31 @@ function registerIpc(): void {
     const total = Math.round(totalmem() / 1024 / 1024)
     const free = Math.round(freemem() / 1024 / 1024)
     return { total, used: total - free, free }
+  })
+
+  // ---- 自定义主页（脚本仓管 / 联网校验 / 市场 / 投稿）----
+  ipcMain.handle('homepage:list', () => listHomepages())
+  ipcMain.handle('homepage:read', (_e, id: string) => readHomepage(id))
+  ipcMain.handle('homepage:importFile', () => importHomepage())
+  ipcMain.handle('homepage:download', (_e, url: string, filename: string) => downloadHomepage(url, filename))
+  ipcMain.handle('homepage:remove', (_e, id: string) => removeHomepage(id))
+  ipcMain.handle('homepage:verify', (_e, id: string) => verifyHomepage(id))
+  ipcMain.handle('homepage:confirm', (_e, id: string, network: boolean) => confirmHomepage(id, network))
+  ipcMain.handle('homepage:setActive', (_e, id: string) => setActiveHomepage(id))
+  ipcMain.handle('homepage:openDir', () => openHomepageDir())
+  ipcMain.handle('homepage:market', () => fetchMarket())
+  ipcMain.handle('homepage:submit', (_e, payload: HomepageSubmitPayload) => submitHomepage(payload))
+  ipcMain.handle(
+    'homepage:installNumbered',
+    (_e, input: { filename: string; contentBase64: string; replaceId?: string }) => installNumbered(input)
+  )
+  ipcMain.handle('homepage:log', (_e, level: DebugLogEntry['level'], message: string) => {
+    // 脚本日志只在 Debug 模式落地：调试日志窗口仅在 Debug 模式存在。
+    if (!settings.get().debugMode) return
+    const line = `[主页脚本] ${String(message).slice(0, 4000)}`
+    if (level === 'error') console.error(line)
+    else if (level === 'warn') console.warn(line)
+    else console.info(line)
   })
 
   // ---- About / agreement / update (remote server) ----

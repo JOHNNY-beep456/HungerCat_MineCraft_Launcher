@@ -3,10 +3,19 @@ import { Icon, Avatar } from './ui'
 import { useApp } from '../store'
 import { useRuntime } from '../runtime'
 
-export type PageId = 'home' | 'resources' | 'instances' | 'downloads' | 'accounts' | 'settings' | 'about'
+export type PageId =
+  | 'home'
+  | 'homepage'
+  | 'resources'
+  | 'instances'
+  | 'downloads'
+  | 'accounts'
+  | 'settings'
+  | 'about'
 
 const NAV: Array<{ id: PageId; label: string; icon: string }> = [
   { id: 'home', label: '启动游戏', icon: 'home' },
+  { id: 'homepage', label: '主页', icon: 'palette' },
   { id: 'resources', label: '资源下载', icon: 'cube' },
   { id: 'instances', label: '实例', icon: 'box' },
   { id: 'downloads', label: '进度', icon: 'download' },

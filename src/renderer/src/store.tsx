@@ -129,7 +129,9 @@ export function AppProvider({ children }: { children: ReactNode }): JSX.Element 
         agreementAcceptedAt: 0,
         onboardingDone: false,
         debugMode: false,
-        metadataOnlyMods: false
+        metadataOnlyMods: false,
+        homepageId: '',
+        selectedVersionId: ''
       },
       accounts,
       selectedAccount,
