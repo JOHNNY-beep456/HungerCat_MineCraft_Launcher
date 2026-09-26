@@ -13,7 +13,8 @@ export type PageId =
   | 'settings'
   | 'about'
 
-const NAV: Array<{ id: PageId; label: string; icon: string }> = [
+/** 侧栏条目；实验性 Win10 桌面也用它生成桌面图标与开始菜单。 */
+export const NAV: Array<{ id: PageId; label: string; icon: string }> = [
   { id: 'home', label: '启动游戏', icon: 'home' },
   { id: 'homepage', label: '主页', icon: 'palette' },
   { id: 'resources', label: '资源下载', icon: 'cube' },
@@ -52,8 +53,7 @@ export function Sidebar({
                 {isActive && (
                   <motion.span
                     layoutId="nav-active"
-                    className="absolute inset-0 rounded-[16px]"
-                    style={{ background: 'var(--fill-secondary)' }}
+                    className="mica absolute inset-0 rounded-[16px]"
                     transition={{ type: 'spring', bounce: 0.2, duration: 0.4 }}
                   />
                 )}

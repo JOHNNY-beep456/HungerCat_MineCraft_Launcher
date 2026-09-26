@@ -14,7 +14,8 @@ import type {
   LauncherSettings,
   UpdateInfo,
   DebugLogEntry,
-  HomepageSubmitPayload
+  HomepageSubmitPayload,
+  NativeWindowRect
 } from '@shared/types'
 import { accounts, settings, createOfflineAccount } from './store'
 import { initLogger, getLogBuffer, subscribeLogs } from './logger'
@@ -31,8 +32,22 @@ import { loaderVersions, installLoader } from './loaders'
 import { forgeVersions, installForge } from './forge'
 import { searchMods, getVersions as getModVersions, installMod, downloadTo, findFabricApi } from './modrinth'
 import { listResources, removeResource, openResourceDir } from './resources'
+import { listDir, listPlaces, openPath, revealPath } from './files'
+import { clearWallpaper, pickWallpaper, wallpaperData } from './wallpaper'
 import { probeModpack, importModpack, importModpackFromUrl, exportModpack, collectExportInventory, downloadModpack } from './modpack'
 import { fetchAbout, fetchAgreement, fetchUpdateInfo, downloadUpdate, runUpdate, compareVersions } from './server'
+import {
+  focusWindow,
+  isNativeWindowSupported,
+  listWindows,
+  placeWindow,
+  placedCount,
+  releaseAll,
+  releaseWindow,
+  resyncAll,
+  setHoleVisible,
+  setHost
+} from './win32-window'
 import {
   listHomepages,
   readHomepage,
@@ -42,9 +57,11 @@ import {
   verifyHomepage,
   confirmHomepage,
   setActiveHomepage,
+  blockHomepage,
   openHomepageDir,
   fetchMarket,
   submitHomepage,
+  sendEmailCode,
   installNumbered
 } from './homepage'
 import {
@@ -113,6 +130,32 @@ function applyWindowBackground(): void {
   if (mainWindow && !mainWindow.isDestroyed()) mainWindow.setBackgroundColor(windowBackgroundColor())
 }
 
+/** 取窗口句柄（HWND，十进制字符串）：外部窗口要挂成它的子窗口。 */
+function mainWindowHandleId(w: BrowserWindow): string {
+  const buf = w.getNativeWindowHandle()
+  // x64 为 8 字节指针，32 位为 4 字节
+  const hwnd = buf.length === 8 ? buf.readBigUInt64LE(0) : BigInt(buf.readUInt32LE(0))
+  return hwnd.toString()
+}
+
+/**
+ * 判断某个导航目标是不是「外泄型外部地址」（F-05）。
+ *
+ * 自定义主页跑在 sandbox="allow-scripts" 的 iframe 里，虽然拿不到顶层控制权，
+ * 但仍可对「自身」导航（location 赋值 / meta refresh），把拼接出的数据带出去。
+ * 这类导航型外泄不受 CSP connect-src 管辖，必须在主进程先行拦截。
+ * 协议相对 // 与 http(s) 视为外部；渲染层自身入口（dev server / file / about）放行。
+ */
+function isExternalNavTarget(rawUrl: string): boolean {
+  const url = rawUrl.trim()
+  if (!url) return false
+  if (url.startsWith('file://') || url.startsWith('about:') || url.startsWith('devtools:')) return false
+  const dev = process.env['ELECTRON_RENDERER_URL']
+  if (dev && url.startsWith(dev)) return false
+  if (url.startsWith('//')) return true
+  return /^https?:\/\//i.test(url)
+}
+
 function createWindow(): void {
   const iconPath = app.isPackaged
     ? join(process.resourcesPath, 'icon.png')
@@ -136,6 +179,36 @@ function createWindow(): void {
   })
 
   mainWindow.once('ready-to-show', () => mainWindow?.show())
+
+  // 安全：主页沙箱（iframe）只能渲染，绝不允许自我导航把数据带出去
+  // （d01 meta refresh / d02 location 赋值）。这类导航不受 connect-src 管辖，
+  // 因此在导航发生「前」拦截，并通知渲染层立刻弹出封锁遮罩（F-05）。
+  mainWindow.webContents.on('will-frame-navigate', (details) => {
+    if (details.isMainFrame) return
+    const url = details.url
+    if (!isExternalNavTarget(url)) return
+    details.preventDefault()
+    const wc = mainWindow?.webContents
+    if (wc && !wc.isDestroyed()) wc.send('homepage:nav-blocked', url)
+    console.warn(`[主页安全] 已拦截沙箱主页的对外导航：${url}`)
+  })
+
+  // 实验性 Win10 桌面把 MC / 资源管理器的窗口摆进桌面（它们仍是独立顶层窗口，
+  // 只是位置被挪到预留矩形里，启动器窗口在这些矩形上挖洞透出）。因此：
+  //   * 启动器窗口移动 / 缩放 / 进出全屏后，要把它们重新摆到新的客户区位置；
+  //   * 关闭窗口 / 退出程序前必须 releaseAll()，把它们放回原来的位置。
+  const resyncPlaced = (): void => {
+    if (placedCount() > 0) resyncAll()
+  }
+  mainWindow.on('move', resyncPlaced)
+  mainWindow.on('resize', resyncPlaced)
+  mainWindow.on('enter-full-screen', resyncPlaced)
+  mainWindow.on('leave-full-screen', resyncPlaced)
+  mainWindow.on('restore', resyncPlaced)
+  mainWindow.on('close', () => {
+    const n = releaseAll()
+    if (n > 0) console.log(`[桌面] 关窗前已把 ${n} 个外部窗口放回原位`)
+  })
 
   if (process.env['ELECTRON_RENDERER_URL']) {
     mainWindow.loadURL(process.env['ELECTRON_RENDERER_URL'])
@@ -616,9 +689,8 @@ function registerIpc(): void {
   })
   ipcMain.handle('manage:openDir', async (_e, versionId: string, kind: VersionDirKind) => {
     const s = settings.get()
-    const dir = await openVersionDir(s.gameDir, versionId, isIsolated(versionId), kind)
-    void shell.openPath(dir)
-    return dir
+    // 只返回目录路径：由渲染层用启动器自实现的资源管理器打开（不再唤起系统资源管理器）
+    return await openVersionDir(s.gameDir, versionId, isIsolated(versionId), kind)
   })
 
   // ---- Java ----
@@ -747,6 +819,10 @@ function registerIpc(): void {
     return next
   })
   ipcMain.handle('app:version', () => app.getVersion())
+  // 自定义壁纸：选图（复制进数据目录）/ 清除 / 取 data URL
+  ipcMain.handle('settings:pickWallpaper', () => pickWallpaper())
+  ipcMain.handle('settings:clearWallpaper', () => clearWallpaper())
+  ipcMain.handle('settings:wallpaperData', () => wallpaperData())
   ipcMain.handle('system:memory', () => {
     const total = Math.round(totalmem() / 1024 / 1024)
     const free = Math.round(freemem() / 1024 / 1024)
@@ -762,8 +838,11 @@ function registerIpc(): void {
   ipcMain.handle('homepage:verify', (_e, id: string) => verifyHomepage(id))
   ipcMain.handle('homepage:confirm', (_e, id: string, network: boolean) => confirmHomepage(id, network))
   ipcMain.handle('homepage:setActive', (_e, id: string) => setActiveHomepage(id))
+  // 运行时检测到危险代码：封锁脚本并立即停用（渲染层负责弹全屏提示）。
+  ipcMain.handle('homepage:block', (_e, id: string, reason: string) => blockHomepage(id, reason))
   ipcMain.handle('homepage:openDir', () => openHomepageDir())
   ipcMain.handle('homepage:market', () => fetchMarket())
+  ipcMain.handle('homepage:send-email-code', (_e, email: string) => sendEmailCode(email))
   ipcMain.handle('homepage:submit', (_e, payload: HomepageSubmitPayload) => submitHomepage(payload))
   ipcMain.handle(
     'homepage:installNumbered',
@@ -772,7 +851,12 @@ function registerIpc(): void {
   ipcMain.handle('homepage:log', (_e, level: DebugLogEntry['level'], message: string) => {
     // 脚本日志只在 Debug 模式落地：调试日志窗口仅在 Debug 模式存在。
     if (!settings.get().debugMode) return
-    const line = `[主页脚本] ${String(message).slice(0, 4000)}`
+    // 折叠换行 / 控制字符：一条脚本日志绝不能伪造出多行「启动器日志」（F-14 / D07）。
+    const text = String(message)
+      .replace(/[\r\n\u2028\u2029]+/g, ' ⏎ ')
+      .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, '')
+      .slice(0, 4000)
+    const line = `[主页脚本] ${text}`
     if (level === 'error') console.error(line)
     else if (level === 'warn') console.warn(line)
     else console.info(line)
@@ -828,8 +912,90 @@ function registerIpc(): void {
     if (w.isMaximized()) w.unmaximize()
     else w.maximize()
   })
-  ipcMain.handle('window:close', (e) => BrowserWindow.fromWebContents(e.sender)?.close())
+  ipcMain.handle('window:close', (e) => {
+    BrowserWindow.fromWebContents(e.sender)?.close()
+  })
   ipcMain.handle('window:isMaximized', (e) => BrowserWindow.fromWebContents(e.sender)?.isMaximized() ?? false)
+  ipcMain.handle('window:setFullscreen', (e, on: boolean) => {
+    const w = BrowserWindow.fromWebContents(e.sender)
+    if (!w) return false
+    // 退出全屏时先还原为普通窗口，避免 Windows 上残留最大化状态
+    w.setFullScreen(!!on)
+    if (!on) w.unmaximize()
+    return w.isFullScreen()
+  })
+  ipcMain.handle('window:setAlwaysOnTop', (e, on: boolean) => {
+    const w = BrowserWindow.fromWebContents(e.sender)
+    if (!w) return false
+    // screen-saver 级别：桌面模式下连系统任务栏也压得住
+    w.setAlwaysOnTop(!!on, 'screen-saver')
+    return w.isAlwaysOnTop()
+  })
+  /**
+   * 安全拦截期间的强制系统全屏：命中危险代码时要连 Windows 任务栏一起盖住，
+   * 否则提示可能被别的窗口挡住、用户根本没看到。
+   *
+   * on=true：先记住这个窗口当时的状态（是否已全屏 / 是否最大化）再全屏；
+   * on=false：按记住的状态精确还原 —— Win10 桌面模式本来就在全屏，不会被退回窗口。
+   * 没有记录就收到 on=false（例如从未强制过）时什么都不做，避免误改用户的窗口状态。
+   */
+  const securityFullscreenPrev = new WeakMap<BrowserWindow, { fullScreen: boolean; maximized: boolean }>()
+  ipcMain.handle('window:securityFullscreen', (e, on: boolean) => {
+    const w = BrowserWindow.fromWebContents(e.sender)
+    if (!w || w.isDestroyed()) return false
+    if (on) {
+      if (!securityFullscreenPrev.has(w)) {
+        securityFullscreenPrev.set(w, { fullScreen: w.isFullScreen(), maximized: w.isMaximized() })
+      }
+      w.setFullScreen(true)
+      w.show()
+      w.moveTop()
+      return w.isFullScreen()
+    }
+    const prev = securityFullscreenPrev.get(w)
+    if (!prev) return w.isFullScreen()
+    securityFullscreenPrev.delete(w)
+    if (prev.fullScreen) {
+      w.setFullScreen(true)
+      return true
+    }
+    w.setFullScreen(false)
+    if (prev.maximized) w.maximize()
+    return w.isFullScreen()
+  })
+
+  // ---- 实验性 Win10 桌面：把外部窗口（MC / 资源管理器）显示在桌面里 ----
+  ipcMain.handle('desktop:supported', () => isNativeWindowSupported())
+  ipcMain.handle('desktop:list', () => listWindows())
+  ipcMain.handle('desktop:place', (e, id: string, rect: NativeWindowRect, raise?: boolean) => {
+    const w = BrowserWindow.fromWebContents(e.sender)
+    if (!w) return false
+    setHost(mainWindowHandleId(w))
+    return placeWindow(id, rect, raise === true)
+  })
+  ipcMain.handle('desktop:setVisible', (_e, id: string, visible: boolean) => setHoleVisible(id, visible))
+  ipcMain.handle('desktop:release', (_e, id: string) => releaseWindow(id))
+  ipcMain.handle('desktop:releaseAll', () => releaseAll())
+  ipcMain.handle('desktop:resync', (e) => {
+    const w = BrowserWindow.fromWebContents(e.sender)
+    if (!w) return false
+    setHost(mainWindowHandleId(w))
+    resyncAll()
+    return true
+  })
+  ipcMain.handle('desktop:focus', (_e, id: string) => focusWindow(id))
+
+  // ---- 自实现的资源管理器（浏览 + 打开；替代系统资源管理器）----
+  ipcMain.handle('files:places', () => {
+    const s = settings.get()
+    return listPlaces([
+      // 游戏目录排在最前：这是用户最常来的地方
+      { name: '游戏目录', path: s.gameDir, kind: 'place' }
+    ])
+  })
+  ipcMain.handle('files:list', (_e, path: string) => listDir(path))
+  ipcMain.handle('files:open', (_e, path: string) => openPath(path))
+  ipcMain.handle('files:reveal', (_e, path: string) => revealPath(path))
 
   // ---- Shell ----
   ipcMain.handle('shell:openExternal', (_e, url: string) => shell.openExternal(url))
@@ -893,6 +1059,8 @@ app.on('window-all-closed', () => {
 })
 
 app.on('will-quit', () => {
+  // 桌面模式摆放的外部窗口：退出前放回原位（它们不是子窗口，不会被销毁）
+  releaseAll()
   // 回收网络进程并拒绝所有在途网络请求。
   stopNetworkWorker()
 })

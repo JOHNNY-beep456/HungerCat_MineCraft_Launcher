@@ -4,7 +4,15 @@ import type { HomepageEntry } from '@shared/types'
 import { Button, Icon, LoadingState } from './ui'
 
 /** 运行前的判定流程所处阶段。 */
-type GateState = 'checking' | 'confirm' | 'externals' | 'reject' | 'mismatch' | 'incompatible' | 'error'
+type GateState =
+  | 'checking'
+  | 'confirm'
+  | 'externals'
+  | 'reject'
+  | 'mismatch'
+  | 'notfound'
+  | 'incompatible'
+  | 'error'
 
 /** 比较语义化版本：current 低于 required 时返回 true。 */
 function olderThan(current: string, required: string): boolean {
@@ -58,6 +66,7 @@ export function HomepageGate({
       setEntry(e)
       setMessage(res.message)
       if (e.risk.level === 'reject') return setState('reject')
+      if (res.notFound) return setState('notfound')
       if (e.verify === 'mismatch') return setState('mismatch')
       // 脚本要求的最低启动器版本高于当前版本：直接拒绝，避免未知行为。
       if (e.meta.minLauncher) {
@@ -98,35 +107,39 @@ export function HomepageGate({
   const risk = entry?.risk
   const externals = risk?.externals ?? []
 
-  const rejected = state === 'reject' || state === 'mismatch' || state === 'incompatible'
+  const rejected = state === 'reject' || state === 'mismatch' || state === 'notfound' || state === 'incompatible'
   const title =
     state === 'reject'
       ? '已拒绝运行'
       : state === 'mismatch'
         ? '脚本已被改动'
-        : state === 'incompatible'
-          ? '启动器版本过低'
-          : state === 'externals'
-            ? '该脚本会连接外部服务'
-            : state === 'confirm'
-              ? '首次运行确认'
-              : state === 'error'
-                ? '无法完成安全检查'
-                : '正在安全检查'
+        : state === 'notfound'
+          ? '编号不存在'
+          : state === 'incompatible'
+            ? '启动器版本过低'
+            : state === 'externals'
+              ? '该脚本会连接外部服务'
+              : state === 'confirm'
+                ? '首次运行确认'
+                : state === 'error'
+                  ? '无法完成安全检查'
+                  : '正在安全检查'
   const subtitle =
     state === 'reject'
       ? '检测到危险代码，无法运行'
       : state === 'mismatch'
         ? '编号与脚本哈希不一致'
-        : state === 'incompatible'
-          ? '请升级启动器后再使用该脚本'
-          : state === 'externals'
-            ? '确认后才会允许联网'
-            : state === 'confirm'
-              ? '该脚本没有可用编号'
-              : state === 'error'
-                ? '请重试或关闭'
-                : '正在联网核对编号与 SHA256'
+        : state === 'notfound'
+          ? '服务端查无此编号，无法核对脚本来源'
+          : state === 'incompatible'
+            ? '请升级启动器后再使用该脚本'
+            : state === 'externals'
+              ? '确认后才会允许联网'
+              : state === 'confirm'
+                ? '该脚本没有可用编号'
+                : state === 'error'
+                  ? '请重试或关闭'
+                  : '正在联网核对编号与 SHA256'
 
   return (
     <AnimatePresence>

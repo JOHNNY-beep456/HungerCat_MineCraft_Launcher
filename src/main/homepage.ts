@@ -17,6 +17,8 @@ import { promises as fsp } from 'fs'
 import { join } from 'path'
 import { createHash } from 'crypto'
 import type {
+  HomepageBlock,
+  HomepageEmailCodeResult,
   HomepageEntry,
   HomepageExternal,
   HomepageRisk,
@@ -47,6 +49,11 @@ interface StoredState {
   networkSha: string
   /** 最近一次联网校验结果。 */
   verify: HomepageVerify
+  /**
+   * 运行时被安全策略拦截的封锁记录。
+   * 与内容哈希无关：只在删除脚本时清除，避免「改几个字再启用」绕过封锁。
+   */
+  blocked?: HomepageBlock
 }
 
 function homepageDir(): string {
@@ -218,7 +225,8 @@ async function deepAnalyzeRisk(risk: HomepageRisk, parentSha: string): Promise<H
 
   externals.sort((a, b) => a.url.localeCompare(b.url))
   const level: HomepageRisk['level'] = blocks.length > 0 ? 'reject' : externals.length > 0 ? 'warn' : 'safe'
-  return { level, blocks, externals: externals.slice(0, 30) }
+  // 同样不截断：截断会让排在后面的地址对用户不可见（F-12）。
+  return { level, blocks, externals }
 }
 
 /** 组装一条脚本条目（读取正文 → 元信息 → 静态检测 → 结合持久状态）。 */
@@ -233,10 +241,19 @@ async function buildEntry(
   const hash = sha256(buf)
   const stat = await fsp.stat(file)
   const meta = parseHomepageMeta(content, id)
+  const st = state[id] ?? { confirmedSha: '', networkSha: '', verify: 'unchecked' as HomepageVerify }
   let risk = analyzeScript(content)
   // 静态已判拒绝时结论不会再变，不必再去取回外链脚本正文。
   if (deep && risk.level !== 'reject') risk = await deepAnalyzeRisk(risk, hash)
-  const st = state[id] ?? { confirmedSha: '', networkSha: '', verify: 'unchecked' as HomepageVerify }
+  if (st.blocked) {
+    // 运行时被抓到过危险行为的脚本：一律维持「拒绝运行」。
+    // 封锁与内容哈希无关，改几个字不会解除，只能删除或重新导入。
+    risk = {
+      ...risk,
+      level: 'reject',
+      blocks: [`运行时被安全策略拦截：${st.blocked.reason}`, ...risk.blocks]
+    }
+  }
   return {
     id,
     meta,
@@ -249,6 +266,7 @@ async function buildEntry(
     confirmed: st.confirmedSha === hash,
     networkApproved: st.networkSha === hash,
     active: settings.get().homepageId === id,
+    blocked: st.blocked,
     content
   }
 }
@@ -317,13 +335,107 @@ export async function importHomepage(): Promise<HomepageEntry | null> {
   return writeHomepage(file.split(/[\\/]/).pop() ?? 'homepage.html', buf, MAX_LOCAL_SIZE)
 }
 
+/** 服务端编号格式（HC- 前缀 + 字母数字，服务端分配时为大写）。 */
+const HOMEPAGE_ID_RE = /^HC-[A-Za-z0-9]{4,}$/
+
+/** 把服务端错误正文里的说明提取成可读文本：剥掉 HTML 标签、压缩空白并截断。 */
+function extractServerText(raw: string): string {
+  let text = String(raw ?? '').trim()
+  if (!text) return ''
+  // 纯文本直接可用；HTML（错误页）则剥标签后取可读文本。
+  if (/<\s*[a-z!/]/i.test(text)) {
+    text = text
+      .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+      .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+      .replace(/<[^>]+>/g, ' ')
+      .replace(/&nbsp;/gi, ' ')
+      .replace(/&lt;/gi, '<')
+      .replace(/&gt;/gi, '>')
+      .replace(/&quot;/gi, '"')
+      .replace(/&#39;/gi, "'")
+      .replace(/&amp;/gi, '&')
+  }
+  return text.replace(/\s+/g, ' ').trim().slice(0, 160)
+}
+
+/**
+ * 从网络层错误消息里取 HTTP 状态码与附带的响应正文。
+ * stream-download 会把服务端正文拼成「下载失败 (HTTP 403)：<正文>」，这里还原出正文。
+ */
+function parseHttpFailure(message: string): { status: number; detail: string } {
+  const m = /HTTP\s+(\d{3})/.exec(message)
+  const sep = message.indexOf('：')
+  const detail = sep >= 0 ? extractServerText(message.slice(sep + 1)) : ''
+  return { status: m ? Number(m[1]) : 0, detail }
+}
+
+/**
+ * 把「按编号下载主页脚本」的失败转成具体、可操作的中文提示。
+ * 服务端 script.php 用 4xx + 中文正文说明原因，这里优先透出该说明，并按原因给出下一步。
+ */
+function describeDownloadFailure(err: unknown): Error {
+  const raw = err instanceof Error ? err.message : String(err)
+  const { status, detail } = parseHttpFailure(raw)
+  const ctx = detail || raw
+
+  // 编号不存在：服务端查无此编号（404 +「脚本不存在：HC-…」）。
+  if (status === 404 && /脚本不存在|查无此编号/.test(ctx)) {
+    return new Error(
+      `编号不存在：服务端查无此编号${detail ? `（${detail}）` : ''}。` +
+        '请核对编号是否填写正确（形如 HC-XXXXXX）；若该脚本还没上架，请先到「投稿」页提交审核，' +
+        '或到「主页市场」重新选择其它脚本。'
+    )
+  }
+  // 未公开：未上架 / 已下架 / 私密（script.php 以 403 返回）。
+  if (status === 403 || /未公开|已下架|下架|私密/.test(ctx)) {
+    return new Error(
+      '该脚本当前未公开（已被作者下架或设为私密），无法按编号安装。' +
+        '请到「主页市场」重新选择其它脚本，或联系作者恢复公开后再试。'
+    )
+  }
+  // 记录存在但没有可下载的文件（审核未通过 / 文件被删除）。
+  if (/暂无可用文件|未通过审核|文件缺失/.test(ctx)) {
+    return new Error(
+      `该脚本暂无可下载的文件${detail ? `（${detail}）` : ''}，无法安装。` +
+        '请到「主页市场」重新选择，或联系脚本作者重新投稿。'
+    )
+  }
+  // 服务端不可达 / 超时：给出网络排查指引，并保留原始错误作为次要信息。
+  if (!status || /超时|timeout|fetch failed|网络连接|ENOTFOUND|ECONN|EAI_AGAIN|不可用|未启动/.test(raw)) {
+    return new Error(`无法连接服务端下载脚本，请检查网络后重试。（原始错误：${raw}）`)
+  }
+  // 其它 HTTP 错误：透出服务端说明并给出兜底指引。
+  return new Error(
+    `下载主页脚本失败（HTTP ${status}）${detail ? `：${detail}` : ''}。请稍后重试，或到「主页市场」重新选择脚本。`
+  )
+}
+
 /** 从主页市场下载脚本并安装。 */
 export async function downloadHomepage(url: string, filename: string): Promise<HomepageEntry> {
   if (!/^https:\/\//i.test(url)) throw new Error('仅支持从 https 地址下载主页脚本')
+  // 按编号下载：先做格式校验，明显不合法的编号不必白跑一次网络请求。
+  const scriptId = (() => {
+    try {
+      return new URL(url).searchParams.get('id') ?? ''
+    } catch {
+      return ''
+    }
+  })()
+  if (scriptId && !HOMEPAGE_ID_RE.test(scriptId)) {
+    throw new Error(
+      `编号格式不正确：${scriptId}。请核对编号（形如 HC-XXXXXX），或到「主页市场」重新选择脚本。`
+    )
+  }
   const id = `${toLocalId(filename || 'homepage.html')}-${Date.now().toString(36)}`
   const dest = resolveEntry(id)
   await ensureDir()
-  await streamDownload(url, dest, {})
+  try {
+    await streamDownload(url, dest, {})
+  } catch (err) {
+    // 服务端 4xx（未公开 / 编号不存在等）会带中文正文，这里分类成可操作提示。
+    await fsp.rm(dest, { force: true })
+    throw describeDownloadFailure(err)
+  }
   try {
     const buf = await fsp.readFile(dest)
     if (buf.byteLength > MAX_MARKET_SIZE) throw new Error('市场脚本体积超出上限（512KB）')
@@ -358,6 +470,13 @@ export async function verifyHomepage(id: string): Promise<HomepageVerifyResult> 
   const state = await loadState()
   const st = state[id] ?? { confirmedSha: '', networkSha: '', verify: 'unchecked' as HomepageVerify }
 
+  if (source.blocked) {
+    return {
+      entry: stripContent(source),
+      reachable: true,
+      message: `该脚本在运行时被安全策略拦截并封锁（${source.blocked.reason}），已禁止运行`
+    }
+  }
   if (source.risk.level === 'reject') {
     return { entry: stripContent(source), reachable: true, message: '静态检测未通过，已拒绝运行' }
   }
@@ -370,19 +489,28 @@ export async function verifyHomepage(id: string): Promise<HomepageVerifyResult> 
   }
 
   try {
-    const res = await netRequest<{ ok?: boolean; verified?: boolean }>('server:api', {
+    const res = await netRequest<{
+      ok?: boolean
+      verified?: boolean
+      script?: { id?: string } | null
+    }>('server:api', {
       path: `script_verify&id=${encodeURIComponent(source.meta.id)}&sha256=${source.sha256}`
     })
     const verified = res?.verified === true
+    // 服务端查无此编号时 script 为 null：这与「哈希不一致」是两回事，必须分别提示。
+    const notFound = !verified && res?.ok === true && !res.script
     st.verify = verified ? 'verified' : 'mismatch'
     state[id] = st
     await saveState(state)
     return {
       entry: stripContent(await readHomepage(id)),
       reachable: true,
+      notFound,
       message: verified
         ? `联网校验通过：编号 ${source.meta.id} 与脚本哈希一致`
-        : `联网校验未通过：编号 ${source.meta.id} 与脚本哈希不一致，脚本可能已被改动`
+        : notFound
+          ? `编号不存在：服务端查无编号 ${source.meta.id}（可能尚未上架 / 已下架 / 已设为私密），无法核对脚本来源。请核对编号，或到「主页市场」重新下载。`
+          : `联网校验未通过：编号 ${source.meta.id} 与脚本哈希不一致，脚本可能已被篡改，已拒绝运行`
     }
   } catch (err) {
     // 服务端不可达：按无编号脚本流程处理（本地检测 + 首次确认），不阻断使用。
@@ -397,6 +525,9 @@ export async function verifyHomepage(id: string): Promise<HomepageVerifyResult> 
 /** 记录用户对当前脚本内容的确认；network=true 时同时授权联网能力。 */
 export async function confirmHomepage(id: string, network: boolean): Promise<HomepageEntry> {
   const source = await readHomepage(id)
+  if (source.blocked) {
+    throw new Error(`该脚本已被安全策略封锁（${source.blocked.reason}），不允许运行`)
+  }
   if (source.risk.level === 'reject') throw new Error('该脚本未通过静态安全检测，不允许运行')
   const state = await loadState()
   const st = state[id] ?? { confirmedSha: '', networkSha: '', verify: source.verify }
@@ -414,14 +545,54 @@ export async function setActiveHomepage(id: string): Promise<void> {
     return
   }
   const source = await readHomepage(id)
+  if (source.blocked) {
+    throw new Error(`该脚本已被安全策略封锁（${source.blocked.reason}），不能设为默认主页`)
+  }
   if (source.risk.level === 'reject') throw new Error('该脚本未通过静态安全检测，不能设为默认主页')
   settings.set({ homepageId: id })
+}
+
+/**
+ * 运行时检测到危险代码（删除 / 修改文件、格式化、伪装代码）时调用：
+ * 封锁脚本并立即停用（回到内置界面）。
+ *
+ * 封锁是持久的：与脚本内容哈希无关，也不会被「重新确认」解除，
+ * 只能从主页管理页删除脚本、或删掉后重新导入（新的标识）。
+ */
+export async function blockHomepage(id: string, reason: string): Promise<void> {
+  resolveEntry(id)
+  const state = await loadState()
+  const st = state[id] ?? { confirmedSha: '', networkSha: '', verify: 'unchecked' as HomepageVerify }
+  const text = String(reason ?? '').trim().slice(0, 300) || '检测到危险代码'
+  if (!st.blocked) st.blocked = { at: Date.now(), reason: text }
+  // 封锁后此前的确认与联网授权一并作废。
+  st.confirmedSha = ''
+  st.networkSha = ''
+  state[id] = st
+  await saveState(state)
+  if (settings.get().homepageId === id) settings.set({ homepageId: '' })
 }
 
 /** 拉取主页市场列表。 */
 export async function fetchMarket(): Promise<MarketScript[]> {
   const res = await netRequest<{ scripts?: MarketScript[] }>('server:api', { path: 'market_list' })
   return Array.isArray(res?.scripts) ? res.scripts : []
+}
+
+/**
+ * 投稿前给开发者邮箱发送验证码。
+ * 服务端的限流与冷却由服务端判定，命中时会以 400 + error 返回，交给渲染层展示。
+ */
+export async function sendEmailCode(email: string): Promise<HomepageEmailCodeResult> {
+  const res = await netRequest<Partial<HomepageEmailCodeResult>>('server:post', {
+    path: 'email_send_code',
+    body: { email }
+  })
+  return {
+    ok: res?.ok === true,
+    ttl: Number(res?.ttl) || 0,
+    cooldown: Number(res?.cooldown) || 0
+  }
 }
 
 /** 自助投稿：把脚本原文交给服务端分配编号并回传已编号脚本。 */
@@ -440,7 +611,9 @@ export async function submitHomepage(payload: HomepageSubmitPayload): Promise<Ho
       author: payload.author,
       description: payload.description,
       version: payload.version,
-      visibility: payload.visibility
+      visibility: payload.visibility,
+      email: payload.email,
+      code: payload.code
     }
   })
   // 服务端以 snake_case 回传脚本正文，这里统一成 camelCase 供渲染层使用。
@@ -464,9 +637,7 @@ export async function installNumbered(input: {
   return writeHomepage(input.filename, buf, MAX_MARKET_SIZE, input.replaceId)
 }
 
-/** 打开主页脚本目录。 */
+/** 返回主页脚本目录（不唤起系统资源管理器，由渲染层自实现的资源管理器打开）。 */
 export async function openHomepageDir(): Promise<string> {
-  const dir = await ensureDir()
-  await shell.openPath(dir)
-  return dir
+  return await ensureDir()
 }

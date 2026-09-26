@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { motion } from 'motion/react'
 import type { ForgeKind, InstalledVersion, LoaderKind, VersionManifest } from '@shared/types'
 import { useRuntime } from '../runtime'
@@ -50,8 +50,6 @@ export function VersionsPage({ presetSearch }: { presetSearch?: string }): JSX.E
   const [installed, setInstalled] = useState<InstalledVersion[]>([])
   const [filter, setFilter] = useState<Filter>('all')
   const [search, setSearch] = useState(presetSearch ?? '')
-  // 过滤分段滑块的 layoutId：用 useId 保证同页多组分段互不冲突
-  const filterLayoutId = useId()
 
   const [loaderTarget, setLoaderTarget] = useState<string | null>(null)
   const [loaderKind, setLoaderKind] = useState<InstallKind>('vanilla')
@@ -277,35 +275,15 @@ export function VersionsPage({ presetSearch }: { presetSearch?: string }): JSX.E
                 className="input w-full pl-9"
               />
             </div>
-            <div className="inline-flex gap-1 rounded-xl p-1" style={{ background: 'var(--fill-secondary)' }}>
-              {(
-                [
-                  ['all', '全部'],
-                  ['release', '正式版'],
-                  ['snapshot', '快照']
-                ] as Array<[Filter, string]>
-              ).map(([value, label]) => {
-                const active = filter === value
-                return (
-                  <button
-                    key={value}
-                    onClick={() => setFilter(value)}
-                    className="relative rounded-lg px-3 py-1.5 text-[13px] font-medium no-drag"
-                    style={{ color: active ? 'var(--text-primary)' : 'var(--text-secondary)' }}
-                  >
-                    {active && (
-                      <motion.span
-                        layoutId={filterLayoutId}
-                        className="absolute inset-0 rounded-lg"
-                        style={{ background: 'var(--glass-bg-soft)' }}
-                        transition={{ type: 'spring', bounce: 0.2, duration: 0.4 }}
-                      />
-                    )}
-                    <span className="relative z-10">{label}</span>
-                  </button>
-                )
-              })}
-            </div>
+            <Segmented<Filter>
+              value={filter}
+              onChange={setFilter}
+              options={[
+                { value: 'all', label: '全部' },
+                { value: 'release', label: '正式版' },
+                { value: 'snapshot', label: '快照' }
+              ]}
+            />
           </div>
 
           <div className="grid grid-cols-1 gap-2.5 pb-4 sm:grid-cols-2 xl:grid-cols-3">

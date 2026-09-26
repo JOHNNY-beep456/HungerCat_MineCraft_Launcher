@@ -119,7 +119,10 @@ const api: LauncherApi = {
   },
   settings: {
     get: () => ipcRenderer.invoke('settings:get'),
-    set: (partial: Partial<LauncherSettings>) => ipcRenderer.invoke('settings:set', partial)
+    set: (partial: Partial<LauncherSettings>) => ipcRenderer.invoke('settings:set', partial),
+    pickWallpaper: () => ipcRenderer.invoke('settings:pickWallpaper'),
+    clearWallpaper: () => ipcRenderer.invoke('settings:clearWallpaper'),
+    wallpaperData: () => ipcRenderer.invoke('settings:wallpaperData')
   },
   system: {
     memory: () => ipcRenderer.invoke('system:memory')
@@ -133,13 +136,22 @@ const api: LauncherApi = {
     verify: (id: string) => ipcRenderer.invoke('homepage:verify', id),
     confirm: (id: string, network: boolean) => ipcRenderer.invoke('homepage:confirm', id, network),
     setActive: (id: string) => ipcRenderer.invoke('homepage:setActive', id),
+    block: (id: string, reason: string) => ipcRenderer.invoke('homepage:block', id, reason),
     openDir: () => ipcRenderer.invoke('homepage:openDir'),
     market: () => ipcRenderer.invoke('homepage:market'),
     submit: (payload) => ipcRenderer.invoke('homepage:submit', payload),
+    sendEmailCode: (email: string) => ipcRenderer.invoke('homepage:send-email-code', email),
     installNumbered: (input) => ipcRenderer.invoke('homepage:installNumbered', input),
     log: (level, message) => {
       void ipcRenderer.invoke('homepage:log', level, message)
-    }
+    },
+    onNavBlocked: subscribe<string>('homepage:nav-blocked')
+  },
+  files: {
+    places: () => ipcRenderer.invoke('files:places'),
+    list: (path: string) => ipcRenderer.invoke('files:list', path),
+    open: (path: string) => ipcRenderer.invoke('files:open', path),
+    reveal: (path: string) => ipcRenderer.invoke('files:reveal', path)
   },
   modpack: {
     probe: (filePath: string) => ipcRenderer.invoke('modpack:probe', filePath),
@@ -164,7 +176,21 @@ const api: LauncherApi = {
     minimize: () => ipcRenderer.invoke('window:minimize'),
     maximize: () => ipcRenderer.invoke('window:maximize'),
     close: () => ipcRenderer.invoke('window:close'),
-    isMaximized: () => ipcRenderer.invoke('window:isMaximized')
+    isMaximized: () => ipcRenderer.invoke('window:isMaximized'),
+    setFullscreen: (on: boolean) => ipcRenderer.invoke('window:setFullscreen', on),
+    setAlwaysOnTop: (on: boolean) => ipcRenderer.invoke('window:setAlwaysOnTop', on),
+    securityFullscreen: (on: boolean) => ipcRenderer.invoke('window:securityFullscreen', on)
+  },
+  desktop: {
+    supported: () => ipcRenderer.invoke('desktop:supported'),
+    list: () => ipcRenderer.invoke('desktop:list'),
+    place: (id: string, rect: unknown, raise?: boolean) =>
+      ipcRenderer.invoke('desktop:place', id, rect, raise),
+    setVisible: (id: string, visible: boolean) => ipcRenderer.invoke('desktop:setVisible', id, visible),
+    release: (id: string) => ipcRenderer.invoke('desktop:release', id),
+    releaseAll: () => ipcRenderer.invoke('desktop:releaseAll'),
+    resync: () => ipcRenderer.invoke('desktop:resync'),
+    focus: (id: string) => ipcRenderer.invoke('desktop:focus', id)
   },
   shell: {
     openExternal: (url: string) => ipcRenderer.invoke('shell:openExternal', url),

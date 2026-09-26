@@ -4,7 +4,7 @@ import { useRuntime } from '../runtime'
 import { Button, Icon, ProgressBar, formatSpeed } from '../components/ui'
 
 export function DownloadsPage(): JSX.Element {
-  const { settings } = useApp()
+  const { settings, openFileManager } = useApp()
   const { downloads, cancelDownload } = useRuntime()
 
   return (
@@ -59,7 +59,7 @@ export function DownloadsPage(): JSX.Element {
         </div>
 
         <div className="flex gap-2">
-          <Button icon="folder" onClick={() => void window.api.shell.openPath(settings.gameDir)}>
+          <Button icon="folder" onClick={() => openFileManager(settings.gameDir)}>
             打开游戏目录
           </Button>
           {settings.mode !== 'local' && (

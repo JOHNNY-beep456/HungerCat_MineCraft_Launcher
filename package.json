@@ -17,7 +17,9 @@
     "dist:win": "electron-vite build && electron-builder --win",
     "dist:mac": "electron-vite build && electron-builder --mac"
   },
-  "dependencies": {},
+  "dependencies": {
+    "koffi": "^3.3.1"
+  },
   "devDependencies": {
     "@tailwindcss/vite": "^4.0.0",
     "@types/node": "^22.10.1",

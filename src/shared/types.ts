@@ -237,6 +237,11 @@ export interface LauncherSettings {
   accentColor: string
   /** Background preset key. */
   background: string
+  /**
+   * 自定义壁纸：启动器数据目录下的文件名（空串 = 只用背景预设）。
+   * 选图时先把图片复制进 userData 再只存文件名，避免原路径失效。
+   */
+  backgroundImage: string
   /** 运行模式：normal 普通 / local 本地（关闭联网功能）/ minimal 极简（UI 二维化）。 */
   mode: 'normal' | 'local' | 'minimal'
   /** Version ids the user has disabled. */
@@ -255,6 +260,15 @@ export interface LauncherSettings {
   homepageId: string
   /** 上次选中的游戏版本 id（自定义主页与内置页共享，持久化后脚本可读写）。 */
   selectedVersionId: string
+  /**
+   * 实验性界面（默认关闭，多项互斥）：
+   *   off    默认界面（原毛玻璃：半透明磨砂 + 扁平半透明控件）
+   *   mica   3D 云母：近实心底色 + 面板受光渐变 + 倒角与三层投影，更有厚度
+   *   mac    仿 Mac 玻璃皮肤：苹方字体 + 更通透的玻璃与文字色
+   *   win10  Win10 桌面：自动全屏，功能以桌面图标呈现，双击打开
+   * 用单一字段表达「相斥」，避免多个布尔同时为真。
+   */
+  experimental: 'off' | 'mica' | 'mac' | 'win10'
 }
 
 /* ------------------------------------------------------------------ */
@@ -345,6 +359,53 @@ export interface ModpackExportOptions {
   gunPacks: string[]
   includeDisabledMods: boolean
   schematics: string[]
+}
+
+/* ------------------------------------------------------------------ */
+/* 实验性 Win10 桌面：外部窗口捕获（Windows 专用）                        */
+/* ------------------------------------------------------------------ */
+
+/** 矩形：x/y/w/h，单位为设备像素（相对宿主窗口客户区）。 */
+export interface NativeWindowRect {
+  x: number
+  y: number
+  w: number
+  h: number
+}
+
+/** 被摆进启动器桌面的外部窗口（MC / 文件资源管理器）。 */
+export interface NativeWindowInfo {
+  /** 窗口句柄（十进制字符串） */
+  id: string
+  title: string
+  /** 可执行文件名，如 javaw.exe / explorer.exe */
+  exe: string
+  kind: 'minecraft' | 'explorer'
+  /** 是否已经摆进启动器桌面 */
+  placed: boolean
+}
+
+/* ------------------------------------------------------------------ */
+/* 启动器自实现的资源管理器（替代打开系统资源管理器）                     */
+/* ------------------------------------------------------------------ */
+
+/** 目录里的一项。 */
+export interface FileEntry {
+  name: string
+  /** 绝对路径 */
+  path: string
+  isDir: boolean
+  /** 字节数；目录为 0 */
+  size: number
+  /** 修改时间（epoch ms） */
+  mtime: number
+}
+
+/** 左栏快捷入口：驱动器或常用位置。 */
+export interface FilePlace {
+  name: string
+  path: string
+  kind: 'drive' | 'place'
 }
 
 /** 整合包探测结果（导入前用于展示与重命名）。 */
@@ -448,6 +509,14 @@ export interface HomepageRisk {
   externals: HomepageExternal[]
 }
 
+/** 运行时被安全策略拦截后的封锁记录（按脚本标识绑定，内容改动不会自动解除）。 */
+export interface HomepageBlock {
+  /** epoch ms */
+  at: number
+  /** 命中的危险行为说明。 */
+  reason: string
+}
+
 /** 联网校验结果。 */
 export type HomepageVerify = 'verified' | 'mismatch' | 'local' | 'unchecked'
 
@@ -469,6 +538,8 @@ export interface HomepageEntry {
   networkApproved: boolean
   /** 是否为当前启用的主页。 */
   active: boolean
+  /** 运行时被安全策略拦截过：一旦存在即永久禁止再启用，只能删除或重新导入。 */
+  blocked?: HomepageBlock
 }
 
 /** 本地已安装的主页脚本（含脚本正文）。 */
@@ -483,6 +554,8 @@ export interface HomepageVerifyResult {
   reachable: boolean
   /** 面向用户的中文说明。 */
   message: string
+  /** 服务端查无此编号（未上架 / 已下架 / 私密）；与「哈希不一致」需分别提示。 */
+  notFound?: boolean
 }
 
 /** 主页市场条目（服务端下发）。 */
@@ -511,6 +584,19 @@ export interface HomepageSubmitPayload {
   description: string
   version: string
   visibility: 'public' | 'private'
+  /** 开发者邮箱：用于接收验证码与审核结果 / 永久管理链接。 */
+  email: string
+  /** 邮箱验证码（6 位数字）。 */
+  code: string
+}
+
+/** 发送邮箱验证码的结果。 */
+export interface HomepageEmailCodeResult {
+  ok: boolean
+  /** 验证码有效期（秒）。 */
+  ttl: number
+  /** 重新发送的冷却时间（秒）。 */
+  cooldown: number
 }
 
 /** 投稿结果。 */
@@ -613,6 +699,12 @@ export interface LauncherApi {
   settings: {
     get: () => Promise<LauncherSettings>
     set: (partial: Partial<LauncherSettings>) => Promise<LauncherSettings>
+    /** 弹系统选图框选自定义壁纸；选中后复制进数据目录并写进设置（取消则原样返回） */
+    pickWallpaper: () => Promise<LauncherSettings>
+    /** 清除自定义壁纸（删文件 + 清设置） */
+    clearWallpaper: () => Promise<LauncherSettings>
+    /** 读取当前壁纸的 data URL；没设置 / 文件丢失时返回空串 */
+    wallpaperData: () => Promise<string>
   }
   system: {
     memory: () => Promise<SystemMemoryInfo>
@@ -634,12 +726,19 @@ export interface LauncherApi {
     confirm: (id: string, network: boolean) => Promise<HomepageEntry>
     /** 设置当前启用的主页脚本，空串表示回到内置界面。 */
     setActive: (id: string) => Promise<void>
+    /**
+     * 运行时检测到危险代码（删除 / 修改文件、格式化、伪装代码）时调用：
+     * 永久封锁该脚本并立即停用（回到内置界面），由渲染层弹出全屏提示。
+     */
+    block: (id: string, reason: string) => Promise<void>
     /** 打开主页脚本目录。 */
     openDir: () => Promise<string>
     /** 拉取主页市场列表。 */
     market: () => Promise<MarketScript[]>
     /** 自助投稿。 */
     submit: (payload: HomepageSubmitPayload) => Promise<HomepageSubmitResult>
+    /** 投稿前给开发者邮箱发送验证码。 */
+    sendEmailCode: (email: string) => Promise<HomepageEmailCodeResult>
     /** 把服务端回传的已编号脚本落到本地（投稿后可直接启用）。 */
     installNumbered: (input: {
       filename: string
@@ -648,6 +747,11 @@ export interface LauncherApi {
     }) => Promise<HomepageEntry>
     /** 把脚本日志写入主进程调试日志缓冲区（仅在 Debug 模式可见）。 */
     log: (level: DebugLogEntry['level'], message: string) => void
+    /**
+     * 订阅「沙箱主页尝试自我导航（跳转）到外部地址」事件：主进程已在导航发生前拦截，
+     * 渲染层据此弹出全屏封锁遮罩（F-05 导航外泄）。
+     */
+    onNavBlocked: (cb: (url: string) => void) => () => void
   }
   modpack: {
     probe: (filePath: string) => Promise<ModpackProbe>
@@ -673,6 +777,54 @@ export interface LauncherApi {
     maximize: () => Promise<void>
     close: () => Promise<void>
     isMaximized: () => Promise<boolean>
+    /** 切换全屏（Win10 桌面模式进入时全屏、退出时还原），返回切换后的状态。 */
+    setFullscreen: (on: boolean) => Promise<boolean>
+    /** 置顶（Win10 桌面模式用），level 为 screen-saver 可压住任务栏等系统窗口。 */
+    setAlwaysOnTop: (on: boolean) => Promise<boolean>
+    /**
+     * 安全拦截期间强制系统全屏（连 Windows 任务栏一起盖住）。
+     *
+     * on=true 时记住当前窗口状态再全屏；on=false 时精确还原（本来是全屏 / 最大化都不会被破坏）。
+     * 从未强制过就调用 on=false 时不做任何事，避免误改窗口状态。
+     */
+    securityFullscreen: (on: boolean) => Promise<boolean>
+  }
+  /** 实验性 Win10 桌面：把 MC / 资源管理器窗口显示在启动器桌面里（仅 Windows 支持）。 */
+  desktop: {
+    /** 是否支持（非 Windows 或缺原生模块时为 false） */
+    supported: () => Promise<boolean>
+    /** 列出可显示的外部窗口（含已摆放的） */
+    list: () => Promise<NativeWindowInfo[]>
+    /**
+     * 把外部窗口摆到桌面预留矩形处并挖洞透出（rect 为客户端设备像素）。
+     * 只移动位置、不改窗口层级与样式，因此 GL/DirectComposition 画面不受影响。
+     * raise=true 时把它提到最上层（聚焦的窗口用）。
+     */
+    place: (id: string, rect: NativeWindowRect, raise?: boolean) => Promise<boolean>
+    /** 是否在该矩形上挖洞（最小化 / 被启动器界面盖住 / 开始菜单打开时传 false） */
+    setVisible: (id: string, visible: boolean) => Promise<boolean>
+    /** 从桌面收回，放回原位置（不会关闭它） */
+    release: (id: string) => Promise<boolean>
+    /** 全部收回（退出桌面模式 / 关窗前必须调用） */
+    releaseAll: () => Promise<number>
+    /** 宿主窗口移动/缩放后重新摆放所有窗口 */
+    resync: () => Promise<boolean>
+    /** 聚焦该外部窗口（点任务栏条目时用） */
+    focus: (id: string) => Promise<boolean>
+  }
+  /**
+   * 启动器自实现的资源管理器：只做「浏览 + 打开」，
+   * 用于替代打开系统资源管理器（桌面模式下不再捕获 explorer 窗口）。
+   */
+  files: {
+    /** 左栏快捷入口：驱动器（Windows 盘符）+ 常用位置（游戏目录 / 下载 / 主页目录…） */
+    places: () => Promise<FilePlace[]>
+    /** 列出一个目录；失败时抛出带中文说明的错误 */
+    list: (path: string) => Promise<FileEntry[]>
+    /** 用系统默认程序打开文件 / 目录（返回空串表示成功） */
+    open: (path: string) => Promise<string>
+    /** 在**系统**资源管理器中定位该项（应急出口） */
+    reveal: (path: string) => Promise<void>
   }
   shell: {
     openExternal: (url: string) => Promise<void>

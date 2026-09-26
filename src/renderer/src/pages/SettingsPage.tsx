@@ -17,9 +17,49 @@ const BACKGROUNDS: Array<{ key: string; label: string; colors: string[]; lightCo
 ]
 
 export function SettingsPage(): JSX.Element {
-  const { settings, updateSettings, theme } = useApp()
+  const { settings, updateSettings, reloadSettings, theme } = useApp()
   const [javas, setJavas] = useState<JavaRuntime[]>([])
   const [detecting, setDetecting] = useState(false)
+  const [wallpaperBusy, setWallpaperBusy] = useState(false)
+  const [wallpaperPreview, setWallpaperPreview] = useState('')
+
+  /** 选图 → 主进程弹框、复制进数据目录、写设置；随后刷新 store 触发壁纸 effect。
+   *  取消选择时返回的仍是原设置，刷新一次不会有副作用。 */
+  const chooseWallpaper = async (): Promise<void> => {
+    setWallpaperBusy(true)
+    try {
+      await window.api.settings.pickWallpaper()
+      await reloadSettings()
+    } finally {
+      setWallpaperBusy(false)
+    }
+  }
+
+  /** 清除自定义壁纸：删文件 + 清设置，随后刷新 store 回落到背景预设。 */
+  const removeWallpaper = async (): Promise<void> => {
+    setWallpaperBusy(true)
+    try {
+      await window.api.settings.clearWallpaper()
+      await reloadSettings()
+    } finally {
+      setWallpaperBusy(false)
+    }
+  }
+
+  /** 读取当前壁纸的 data URL 作为缩略图预览（没有则清空）。 */
+  useEffect(() => {
+    if (!settings.backgroundImage) {
+      setWallpaperPreview('')
+      return
+    }
+    let alive = true
+    void window.api.settings.wallpaperData().then((url) => {
+      if (alive) setWallpaperPreview(url)
+    })
+    return () => {
+      alive = false
+    }
+  }, [settings.backgroundImage])
 
   const [appVersion, setAppVersion] = useState('')
   const [updateChecking, setUpdateChecking] = useState(false)
@@ -199,12 +239,63 @@ export function SettingsPage(): JSX.Element {
               ))}
             </div>
           </Row>
+          <Row label="自定义壁纸">
+            <div className="flex items-center gap-2">
+              {wallpaperPreview && (
+                <img
+                  src={wallpaperPreview}
+                  alt="壁纸预览"
+                  className="h-8 w-12 rounded-lg object-cover"
+                  style={{ border: '1px solid var(--divider)' }}
+                />
+              )}
+              <Button size="sm" icon="folder" disabled={wallpaperBusy} onClick={() => void chooseWallpaper()}>
+                {wallpaperBusy ? '处理中…' : settings.backgroundImage ? '更换' : '选择图片'}
+              </Button>
+              {settings.backgroundImage && (
+                <Button size="sm" variant="ghost" icon="xmark" disabled={wallpaperBusy} onClick={() => void removeWallpaper()}>
+                  清除
+                </Button>
+              )}
+            </div>
+          </Row>
           <Row label="减少动态效果">
             <Switch
               checked={settings.reducedMotion}
               onChange={(v) => void updateSettings({ reducedMotion: v })}
             />
           </Row>
+        </Section>
+
+        {/* 实验性功能（多项互斥） */}
+        <Section title="实验性功能" icon="info">
+          <Row label="3D 云母（面板更厚实）">
+            <Switch
+              checked={settings.experimental === 'mica'}
+              onChange={(v) => void updateSettings({ experimental: v ? 'mica' : 'off' })}
+            />
+          </Row>
+          <Row label="仿 Mac 玻璃（苹方字体）">
+            <Switch
+              checked={settings.experimental === 'mac'}
+              onChange={(v) => void updateSettings({ experimental: v ? 'mac' : 'off' })}
+            />
+          </Row>
+          <Row label="Win10 桌面（自动全屏）">
+            <Switch
+              checked={settings.experimental === 'win10'}
+              onChange={(v) => void updateSettings({ experimental: v ? 'win10' : 'off' })}
+            />
+          </Row>
+          <p className="caption -mt-1">
+            多项互斥：开启其一会自动关闭其它，全部关闭即回到默认界面（原毛玻璃）。
+            {settings.experimental === 'mica' &&
+              '当前：面板换成 3D 云母——近实心底色 + 受光渐变 + 倒角与三层投影，更有厚度，背景被压成一层均匀材质。'}
+            {settings.experimental === 'mac' &&
+              '当前：字体切换为苹方，玻璃更通透、文字色改为 macOS 风格，布局与功能不变。'}
+            {settings.experimental === 'win10' &&
+              '当前：进入后自动全屏并置顶，各功能以桌面图标呈现（双击打开），底部为任务栏；Minecraft 与文件资源管理器窗口会自动摆进桌面（真实窗口、可直接操作，✕ 仅收回不关闭），开始菜单里可退出启动器。'}
+          </p>
         </Section>
 
         {/* 游戏 */}

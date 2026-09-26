@@ -11,12 +11,31 @@
   --text-secondary: rgba(0, 0, 0, 0.58);
   --text-tertiary: rgba(0, 0, 0, 0.38);
 
-  --glass-bg: rgba(255, 255, 255, 0.52);
-  --glass-bg-strong: rgba(255, 255, 255, 0.64);
-  --glass-bg-soft: rgba(255, 255, 255, 0.34);
-  --glass-border: rgba(255, 255, 255, 0.6);
-  --glass-highlight: rgba(255, 255, 255, 0.8);
-  --glass-shadow: 0 24px 60px -24px rgba(15, 23, 42, 0.35);
+  /* 这里是基础材质「3D 云母」的令牌：底色接近实心（不追加透明度）+ 面板受光渐变 +
+     倒角亮/暗边 + 接触/中层/环境三层投影，靠这几层做出厚度。
+     它现在只在实验性功能里开启「3D 云母」时才生效；默认界面走文件末尾
+     [data-skin='glass'] 的「原毛玻璃」令牌（半透明磨砂 + 扁平半透明控件）。 */
+  --glass-bg: rgba(250, 251, 253, 0.9);
+  --glass-bg-strong: rgba(255, 255, 255, 0.96);
+  --glass-bg-soft: rgba(238, 241, 247, 0.92);
+  --glass-border: rgba(255, 255, 255, 0.65);
+  --glass-highlight: rgba(255, 255, 255, 0.82);
+  /* 面板自身的受光渐变：凸起 = 上亮下暗，凹陷 = 上暗下亮（.glass-soft 用）。
+     顶端不过亮，避免与 .glass::before 的高光 + 内嵌亮边叠成一片死白；体积感主要靠「下暗」。*/
+  --surface-shade: linear-gradient(180deg, rgba(255, 255, 255, 0.34) 0%, rgba(255, 255, 255, 0.05) 42%, rgba(15, 23, 42, 0.07) 100%);
+  --surface-shade-inset: linear-gradient(180deg, rgba(15, 23, 42, 0.07) 0%, rgba(255, 255, 255, 0.03) 54%, rgba(255, 255, 255, 0.38) 100%);
+  /* 倒角（内嵌上亮 / 下暗）+ 接触、中层、环境三层投影 */
+  --glass-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.92), inset 0 -1px 0 rgba(15, 23, 42, 0.07), 0 1px 2px rgba(15, 23, 42, 0.07), 0 10px 22px -8px rgba(15, 23, 42, 0.16), 0 30px 60px -22px rgba(15, 23, 42, 0.3);
+
+  /* 控件级云母：控件（标签、次级按钮、输入框、下拉触发器、分栏/分段、选中态）
+     尺寸小，套卡片那套（36–48px 模糊 + 5 段投影）会糊、阴影也会脏，所以单列一套
+     更轻的模糊 + 紧凑的倒角/投影。凸起用 --surface-shade，凹陷用 --surface-shade-inset。*/
+  --control-raised-blur: blur(20px) saturate(170%);
+  --control-well-blur: blur(16px) saturate(150%);
+  --glass-shadow-control: inset 0 1px 0 rgba(255, 255, 255, 0.85), inset 0 -1px 0 rgba(15, 23, 42, 0.06), 0 1px 2px rgba(15, 23, 42, 0.06), 0 4px 10px -4px rgba(15, 23, 42, 0.14);
+  --glass-shadow-well: inset 0 1px 2px rgba(15, 23, 42, 0.1), inset 0 -1px 0 rgba(255, 255, 255, 0.55), 0 1px 1px rgba(15, 23, 42, 0.04);
+  /* 悬停时略微提亮（深色模式下提亮更明显，浅色下更实） */
+  --control-hover-brightness: 1.03;
 
   --fill-primary: #0a84ff;
   --fill-primary-hover: #0a78f0;
@@ -28,6 +47,11 @@
   --chip-bg: rgba(0, 0, 0, 0.05);
   --divider: rgba(0, 0, 0, 0.08);
   --scrim: rgba(0, 0, 0, 0.4);
+
+  /* 自定义壁纸：铺在图片上的遮罩，保证前景文字可读。
+     图片本身由渲染层把主进程读出的 data URL 挂到 --wallpaper-image 上
+     （CSP 的 img-src 不含 file:，所以只能走 data:）。 */
+  --wallpaper-scrim: linear-gradient(160deg, rgba(245, 247, 252, 0.42) 0%, rgba(245, 247, 252, 0.2) 45%, rgba(240, 243, 250, 0.46) 100%);
 
   /* 极简（二维化）模式的纯色表面与背景 */
   --surface-flat: #ffffff;
@@ -41,18 +65,26 @@
   --text-secondary: rgba(255, 255, 255, 0.62);
   --text-tertiary: rgba(255, 255, 255, 0.4);
 
-  --glass-bg: rgba(28, 28, 36, 0.5);
-  --glass-bg-strong: rgba(32, 32, 42, 0.62);
-  --glass-bg-soft: rgba(24, 24, 32, 0.34);
-  --glass-border: rgba(255, 255, 255, 0.14);
+  /* 暗色同理：近实心的云母面板 + 受光渐变 + 倒角亮/暗边 + 三层投影；
+     通透玻璃留给 [data-skin='mac']。渐变必须在此覆盖，否则会继承浅色那一套。 */
+  --glass-bg: rgba(36, 36, 48, 0.9);
+  --glass-bg-strong: rgba(46, 46, 60, 0.96);
+  --glass-bg-soft: rgba(28, 28, 38, 0.92);
+  --glass-border: rgba(255, 255, 255, 0.16);
   --glass-highlight: rgba(255, 255, 255, 0.2);
-  --glass-shadow: 0 24px 60px -24px rgba(0, 0, 0, 0.65);
+  --surface-shade: linear-gradient(180deg, rgba(255, 255, 255, 0.09) 0%, rgba(255, 255, 255, 0.015) 46%, rgba(0, 0, 0, 0.3) 100%);
+  --surface-shade-inset: linear-gradient(180deg, rgba(0, 0, 0, 0.34) 0%, rgba(255, 255, 255, 0.008) 54%, rgba(255, 255, 255, 0.08) 100%);
+  --glass-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.14), inset 0 -1px 0 rgba(0, 0, 0, 0.45), 0 1px 2px rgba(0, 0, 0, 0.4), 0 10px 24px -8px rgba(0, 0, 0, 0.5), 0 32px 64px -24px rgba(0, 0, 0, 0.7);
+  --glass-shadow-control: inset 0 1px 0 rgba(255, 255, 255, 0.12), inset 0 -1px 0 rgba(0, 0, 0, 0.4), 0 1px 2px rgba(0, 0, 0, 0.35), 0 4px 12px -4px rgba(0, 0, 0, 0.5);
+  --glass-shadow-well: inset 0 1px 3px rgba(0, 0, 0, 0.55), inset 0 -1px 0 rgba(255, 255, 255, 0.06), 0 1px 1px rgba(0, 0, 0, 0.3);
+  --control-hover-brightness: 1.08;
 
   --fill-secondary: rgba(255, 255, 255, 0.08);
   --fill-secondary-hover: rgba(255, 255, 255, 0.14);
   --chip-bg: rgba(255, 255, 255, 0.08);
   --divider: rgba(255, 255, 255, 0.1);
   --scrim: rgba(0, 0, 0, 0.55);
+  --wallpaper-scrim: linear-gradient(160deg, rgba(4, 6, 15, 0.52) 0%, rgba(4, 6, 15, 0.32) 45%, rgba(4, 6, 15, 0.58) 100%);
 
   --surface-flat: #1d1d26;
   --bg-flat: #101015;
@@ -70,9 +102,13 @@ body,
 }
 
 body {
-  font-family:
-    -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI Variable', 'Segoe UI',
-    'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', system-ui, sans-serif;
+  /* 基础字体栈只放「跟随平台原生的 UI 字体」。
+     不得出现 -apple-system / BlinkMacSystemFont / 'SF Pro Text' / 'PingFang SC' /
+     'Hiragino Sans GB' 这类 macOS 专有字体：切换成苹方正是「仿 Mac 玻璃」皮肤的内容
+     （见文件末尾的 [data-skin='mac']），写在这里会让未开启该皮肤的用户也看到苹方——
+     本机装了这些字体时尤其明显。系统级的 system-ui 已能覆盖各平台的默认 UI 字体。 */
+  font-family: 'Segoe UI Variable', 'Segoe UI Variable Text', 'Segoe UI', 'Microsoft YaHei UI',
+    'Microsoft YaHei', system-ui, sans-serif;
   font-size: 14px;
   color: var(--text-primary);
   -webkit-font-smoothing: antialiased;
@@ -122,6 +158,27 @@ body {
 }
 [data-theme='light'][data-bg='mono'] .app-background {
   background: linear-gradient(165deg, #f4f4f6 0%, #ededf0 45%, #e6e6ea 100%);
+}
+
+/* 自定义壁纸（需求 4）：data-wallpaper='on' 时用图片替换上面的预设渐变。
+   图片上再叠一层 --wallpaper-scrim 遮罩保证文字可读；关掉（off / 未设）时
+   这些规则不生效，自动回落到上面的预设底色。
+
+   选择器多写 data-theme / data-skin 两个恒存在的属性，是为了抬高优先级：
+   浅色预设、极简模式、皮肤等规则同样是「属性 + .app-background」，靠来源顺序
+   压制并不可靠，直接压过它们更稳。 */
+:root[data-theme][data-skin][data-wallpaper='on'] .app-background {
+  background: var(--wallpaper-image, none) center / cover no-repeat #04060f;
+}
+:root[data-theme][data-skin][data-wallpaper='on'] .app-background::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: var(--wallpaper-scrim);
+}
+/* 照片上的装饰光斑收得比纯色底更淡，避免糊掉画面 */
+:root[data-theme][data-skin][data-wallpaper='on'] .app-background .blob {
+  opacity: 0.16;
 }
 
 /* 各预设的装饰光斑配色（与背景基调协调） */
@@ -261,13 +318,20 @@ body {
    utilities 层，会让 .glass-strong{position:relative} 压过工具类 absolute、
    让 .btn{border-radius} 压过 rounded-* 等，导致浮层掉进文档流、圆角失效。 */
 @layer components {
-/* --- Glass materials --- */
+/* --- Surface materials ---
+   组件类只吃令牌，具体材质由 [data-skin] 决定：
+   默认（[data-skin='glass']，原毛玻璃）——半透明底色 + 扁平半透明控件；
+   实验项「3D 云母」——近实心底色 + 一次大半径的 backdrop 模糊（把背景压成
+   一层均匀的「材质底」，而不是像玻璃那样能看清背景）+ 面板受光渐变（--surface-shade）
+   + 顶部高光（.glass::before）+ 倒角亮/暗边 + 接触/中层/环境三层投影
+   （--glass-shadow 的 5 段）。厚度是这几层堆出来的，不靠提高透明度。
+   仿 Mac 玻璃（[data-skin='mac']）：底色更透、模糊更小、饱和度更高，
+   并把 --surface-shade 关掉（见文件末尾），避免变成「半透 + 白雾」的中间态。 */
 .glass {
   position: relative;
   isolation: isolate;
   background: var(--glass-bg);
   backdrop-filter: blur(36px) saturate(180%);
-  -webkit-backdrop-filter: blur(36px) saturate(180%);
   border: 1px solid var(--glass-border);
   box-shadow: var(--glass-shadow);
 }
@@ -277,7 +341,6 @@ body {
   isolation: isolate;
   background: var(--glass-bg-strong);
   backdrop-filter: blur(48px) saturate(200%);
-  -webkit-backdrop-filter: blur(48px) saturate(200%);
   border: 1px solid var(--glass-border);
   box-shadow: var(--glass-shadow);
 }
@@ -287,8 +350,19 @@ body {
   isolation: isolate;
   background: var(--glass-bg-soft);
   backdrop-filter: blur(24px) saturate(160%);
-  -webkit-backdrop-filter: blur(24px) saturate(160%);
   border: 1px solid var(--glass-border);
+}
+
+/* 3D 的「厚度」来自面板自身被光扫过的明暗，而不是更透。
+   凸面（卡片/弹窗）上亮下暗、凹面（.glass-soft）上暗下亮，两者形成受光对比。
+   必须写在上面 background 简写之后：同优先级下用 background-image 覆盖，
+   否则会被 shorthand 重置为 none。（皮肤里把这两个变量设成 none 即可关闭。） */
+.glass,
+.glass-strong {
+  background-image: var(--surface-shade);
+}
+.glass-soft {
+  background-image: var(--surface-shade-inset);
 }
 
 /* The bright top edge that reads as light catching a glass surface */
@@ -373,7 +447,8 @@ body {
     transform 100ms ease,
     background 160ms ease,
     opacity 160ms ease,
-    box-shadow 160ms ease;
+    box-shadow 160ms ease,
+    filter 160ms ease;
   -webkit-app-region: no-drag;
 }
 .btn:hover:not(:disabled) {
@@ -397,11 +472,12 @@ body {
   background: var(--fill-primary-hover);
 }
 .btn-secondary {
-  background: var(--fill-secondary);
+  /* 底色/材质由下面的「云母控件」段统一给出；悬停只轻微提亮 + 抬高一点投影 */
   color: var(--text-primary);
 }
 .btn-secondary:hover:not(:disabled) {
-  background: var(--fill-secondary-hover);
+  filter: brightness(var(--control-hover-brightness));
+  box-shadow: var(--glass-shadow-control), 0 2px 6px -2px rgba(15, 23, 42, 0.14);
 }
 .btn-danger {
   background: var(--fill-danger);
@@ -415,27 +491,62 @@ body {
   gap: 6px;
   padding: 5px 11px;
   border-radius: 999px;
-  background: var(--chip-bg);
+  /* 底色/材质由下面的「云母控件」段统一给出 */
   font-size: 12px;
   font-weight: 500;
   color: var(--text-secondary);
 }
 
-  .input {
-    height: 36px;
-    padding: 0 12px;
-    border-radius: 10px;
-    background: var(--fill-secondary);
-    border: 1px solid var(--divider);
-    color: var(--text-primary);
-    font-size: 14px;
-    outline: none;
-    user-select: text;
-  }
-  .input:focus {
-    border-color: var(--fill-primary);
-    box-shadow: 0 0 0 3px rgba(10, 132, 255, 0.25);
-  }
+.input {
+  height: 36px;
+  padding: 0 12px;
+  border-radius: 10px;
+  color: var(--text-primary);
+  font-size: 14px;
+  outline: none;
+  user-select: text;
+}
+.input:focus {
+  border-color: var(--fill-primary);
+  /* 保留凹陷的内阴影，再叠一圈聚焦光环 */
+  box-shadow: var(--glass-shadow-well), 0 0 0 3px rgba(10, 132, 255, 0.25);
+}
+/* 多行输入：.input 的尺寸是按「单行输入框」定的——固定 height:36px、上下不留内边距，
+   那是为了让单行文字在框内垂直居中。同一套尺寸套到 textarea 上就会出问题：
+   36px 把 rows 撑不开（三行被压成一行），0 的上下内边距又让文字紧贴上沿，
+   看起来就是「光标/文字偏上、框子太扁」。这里只复位多行所需的尺寸，
+   材质（background/border/阴影）仍沿用下面云母凹陷那套，保持与单行输入一致。 */
+textarea.input {
+  height: auto;
+  min-height: 72px;
+  padding: 9px 12px;
+  line-height: 1.5;
+}
+
+/* --- 云母控件 ---
+   把「标签 / 次级按钮 / 输入框 / 下拉触发器 / 分栏(分段) / 选中态」统一成控件级云母：
+   凸起（.mica、.chip、.btn-secondary）：近实心底色 + 小半径 backdrop 模糊 + 受光渐变
+   （上亮下暗）+ 倒角；凹陷（.mica-well、.input）：更实一点 + 内阴影 + 内嵌渐变
+   （上暗下亮），像在面板上「挖」出来的一道槽。
+   皮肤通过覆盖 --control-*-blur 与 --glass-shadow-control|well 改质感；Win10 直接关掉模糊。*/
+.mica,
+.chip,
+.btn-secondary {
+  background-color: var(--glass-bg-strong);
+  background-image: var(--surface-shade);
+  border: 1px solid var(--glass-border);
+  box-shadow: var(--glass-shadow-control);
+  backdrop-filter: var(--control-raised-blur);
+}
+.mica-well,
+.input {
+  background-color: var(--glass-bg-soft);
+  background-image: var(--surface-shade-inset);
+  border: 1px solid var(--divider);
+  box-shadow: var(--glass-shadow-well);
+  backdrop-filter: var(--control-well-blur);
+}
+
 }
 
 /* --- Scrollbar --- */
@@ -455,6 +566,17 @@ body {
 }
 ::-webkit-scrollbar-track {
   background: transparent;
+}
+
+/* 隐藏滚动条但保留滚动能力：用于横向排布的分栏/标签条（内容超出时仍可滚轮/拖动滚动） */
+.no-scrollbar {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+  width: 0;
+  height: 0;
 }
 
 /* --- Drag region for frameless window --- */
@@ -487,8 +609,17 @@ body {
   .glass-strong,
   .glass-soft {
     backdrop-filter: none;
-    -webkit-backdrop-filter: none;
-    background: var(--glass-bg-strong);
+    /* 用不透明表面（--surface-flat 不被任何皮肤覆盖）：即使开着「仿 Mac 玻璃」，
+       「减少透明度」也应当真正变成不透明，而不是留下半透明底色。 */
+    background: var(--surface-flat);
+  }
+  /* 控件同样关掉模糊（保留云母底色与倒角，不影响可读性） */
+  .mica,
+  .mica-well,
+  .chip,
+  .btn-secondary,
+  .input {
+    backdrop-filter: none;
   }
 }
 
@@ -525,16 +656,507 @@ body {
 [data-mode='minimal'] .glass-soft {
   background: var(--surface-flat);
   backdrop-filter: none;
-  -webkit-backdrop-filter: none;
   border: 1px solid var(--divider);
   box-shadow: none;
 }
 [data-mode='minimal'] .glass::before {
   display: none;
 }
+/* 极简模式：控件一并二维化（去掉模糊/投影/受光渐变），回到纯色块 */
+[data-mode='minimal'] .mica {
+  background: var(--surface-flat);
+  background-image: none;
+  border: 1px solid var(--divider);
+  box-shadow: none;
+  backdrop-filter: none;
+}
+[data-mode='minimal'] .mica-well,
+[data-mode='minimal'] .chip,
+[data-mode='minimal'] .btn-secondary,
+[data-mode='minimal'] .input {
+  background: var(--fill-secondary);
+  background-image: none;
+  border: 1px solid var(--divider);
+  box-shadow: none;
+  backdrop-filter: none;
+}
 [data-mode='minimal'] .btn {
   box-shadow: none;
 }
 [data-mode='minimal'] .cursor-glow {
   display: none;
+}
+
+/* ------------------------------------------------------------------ */
+/*  实验性皮肤 1：仿 Mac 玻璃                                            */
+/*  令牌与字体定义在文件末尾的「实验性皮肤」段（必须未分层才能压过        */
+/*  :root / body）。这里做的是「通透玻璃」那一层：在基础材质之上把        */
+/*  模糊（.glass 的 36/48/24px）换成 52/64px、饱和度提到 220%、底色 0.42， */
+/*  得到比默认「原毛玻璃」更透的磨砂（同样在层外，天然压过 @layer 里的   */
+/*  .glass；再用 :not([data-mode='minimal']) 让极简模式仍然优先）。        */
+/* ------------------------------------------------------------------ */
+/* 只有用户未要求「减少透明度」且不是极简模式时，才启用磨砂 */
+@media (prefers-reduced-transparency: no-preference) {
+  [data-skin='mac']:not([data-mode='minimal']) .glass {
+    backdrop-filter: blur(52px) saturate(220%);
+  }
+  [data-skin='mac']:not([data-mode='minimal']) .glass-strong {
+    backdrop-filter: blur(64px) saturate(230%);
+  }
+  [data-skin='mac']:not([data-mode='minimal']) .glass-soft {
+    backdrop-filter: blur(24px) saturate(160%);
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/*  实验性皮肤 2：Win10 桌面                                            */
+/*  令牌与字体同样定义在文件末尾；这里处理同层可见的扁平化与桌面样式。     */
+/* ------------------------------------------------------------------ */
+[data-skin='win10'] .app-background {
+  display: none;
+}
+[data-skin='win10'] .glass,
+[data-skin='win10'] .glass-strong,
+[data-skin='win10'] .glass-soft {
+  background: var(--glass-bg);
+  backdrop-filter: none;
+  border: 1px solid var(--glass-border);
+  box-shadow: var(--glass-shadow);
+}
+[data-skin='win10'] .glass::before {
+  display: none;
+}
+[data-skin='win10'] .cursor-glow {
+  display: none;
+}
+
+/* --- Win10 桌面 --- */
+.win10-desktop {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  user-select: none;
+}
+.win10-wallpaper {
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(125% 125% at 16% 6%, #2f8fe0 0%, #0b63b8 42%, #063a75 100%);
+}
+.win10-wallpaper::before {
+  content: '';
+  position: absolute;
+  inset: -25%;
+  transform: rotate(-8deg);
+  background: linear-gradient(
+    112deg,
+    rgba(255, 255, 255, 0.16) 0 10%,
+    transparent 10% 24%,
+    rgba(255, 255, 255, 0.1) 24% 33%,
+    transparent 33% 100%
+  );
+}
+.win10-wallmark {
+  position: absolute;
+  left: 50%;
+  top: 46%;
+  width: 260px;
+  height: 260px;
+  transform: translate(-50%, -50%);
+  opacity: 0.13;
+  filter: invert(1) brightness(1.6);
+  pointer-events: none;
+}
+.win10-icons {
+  position: absolute;
+  top: 18px;
+  left: 18px;
+  bottom: 62px;
+  display: grid;
+  grid-auto-flow: column;
+  grid-template-rows: repeat(auto-fill, 98px);
+  gap: 4px;
+  align-content: start;
+}
+.win10-icon {
+  width: 88px;
+  height: 94px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 4px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: transparent;
+  cursor: default;
+}
+.win10-icon:hover {
+  background: rgba(255, 255, 255, 0.16);
+  border-color: rgba(255, 255, 255, 0.3);
+}
+.win10-icon.is-selected {
+  background: var(--win10-select);
+  border-color: rgba(255, 255, 255, 0.48);
+}
+.win10-icon-tile {
+  width: 46px;
+  height: 46px;
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  background: var(--win10-tile);
+  border: 1px solid var(--win10-tile-border);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.28);
+}
+.win10-icon-label {
+  font-size: 12px;
+  line-height: 1.25;
+  text-align: center;
+  color: var(--win10-label);
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.75);
+  word-break: break-all;
+}
+.win10-taskbar {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 9000;
+  height: 48px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 8px;
+  color: #fff;
+  background: var(--win10-taskbar);
+  backdrop-filter: blur(18px) saturate(140%);
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+.win10-task-btn {
+  height: 40px;
+  min-width: 42px;
+  padding: 0 10px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  border-radius: 3px;
+  color: inherit;
+  background: transparent;
+  cursor: pointer;
+}
+.win10-task-btn:hover {
+  background: rgba(255, 255, 255, 0.14);
+}
+.win10-task-btn.is-active {
+  background: rgba(255, 255, 255, 0.18);
+  border-bottom-color: #60cdff;
+}
+.win10-task-label {
+  font-size: 12px;
+  max-width: 130px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.win10-tray {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding-right: 6px;
+  font-size: 12px;
+  line-height: 1.3;
+  text-align: right;
+}
+.win10-startmenu {
+  position: absolute;
+  left: 8px;
+  bottom: 56px;
+  z-index: 9500;
+  width: 400px;
+  max-height: 66vh;
+  overflow-y: auto;
+  padding: 12px;
+  border-radius: 6px;
+  color: var(--win10-text);
+  background: var(--win10-surface);
+  border: 1px solid var(--glass-border);
+  box-shadow: 0 -4px 28px rgba(0, 0, 0, 0.4);
+}
+.win10-startitem {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 9px 10px;
+  border: 0;
+  border-radius: 4px;
+  text-align: left;
+  color: inherit;
+  background: transparent;
+  cursor: pointer;
+}
+.win10-startitem:hover {
+  background: var(--win10-hover);
+}
+.win10-window {
+  position: absolute;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border-radius: 6px;
+  color: var(--win10-text);
+  background: var(--win10-surface);
+  border: 1px solid var(--glass-border);
+  box-shadow: 0 14px 44px rgba(0, 0, 0, 0.42);
+}
+.win10-titlebar {
+  flex: 0 0 auto;
+  height: 34px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-left: 10px;
+  color: var(--win10-text);
+  background: var(--win10-titlebar);
+}
+.win10-titlebar.is-draggable {
+  cursor: default;
+}
+.win10-title {
+  font-size: 12.5px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.win10-controls {
+  margin-left: auto;
+  display: flex;
+  height: 100%;
+}
+.win10-ctl {
+  width: 44px;
+  height: 100%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  color: inherit;
+  background: transparent;
+  cursor: pointer;
+}
+.win10-ctl:hover {
+  background: var(--win10-hover);
+}
+.win10-ctl.is-close:hover {
+  background: var(--win10-close-hover);
+  color: #fff;
+}
+.win10-body {
+  flex: 1;
+  min-height: 0;
+  padding: 16px;
+  overflow: auto;
+}
+
+/* ==================================================================== */
+/*  实验性皮肤：令牌与字体                                               */
+/*                                                                      */
+/*  :root / [data-theme='dark'] / body 都是未分层样式，而未分层样式的     */
+/*  层叠优先级高于任何 @layer，因此皮肤要覆盖它们，自身也必须未分层。     */
+/*  本文件里 @layer components 只包到上面的组件类为止，这一整段都在层外， */
+/*  并且刻意排在 :root 之后（靠来源顺序取胜，不依赖 !important）。       */
+/*  调整顺序或挪进 @layer 都会让皮肤失效。                              */
+/* ==================================================================== */
+
+/* --- 原毛玻璃（默认界面）：半透明磨砂观感 ---
+   默认 experimental='off' 就映射到这套皮肤（见 renderer/store：off → data-skin='glass'）。
+   只换材质令牌，不动字体/布局：底色更透（0.52/0.64/0.34）、只留一层大半径背景模糊，
+   并关掉 3D 云母的受光渐变与倒角/厚投影（控件也一并退回扁平半透明，见下方控件复位）。 */
+[data-skin='glass'] {
+  --glass-bg: rgba(255, 255, 255, 0.52);
+  --glass-bg-strong: rgba(255, 255, 255, 0.64);
+  --glass-bg-soft: rgba(255, 255, 255, 0.34);
+  --glass-border: rgba(255, 255, 255, 0.6);
+  --glass-highlight: rgba(255, 255, 255, 0.8);
+  --glass-shadow: 0 24px 60px -24px rgba(15, 23, 42, 0.35);
+  --surface-shade: none;
+  --surface-shade-inset: none;
+}
+
+[data-skin='glass'][data-theme='dark'] {
+  --glass-bg: rgba(28, 28, 36, 0.5);
+  --glass-bg-strong: rgba(32, 32, 42, 0.62);
+  --glass-bg-soft: rgba(24, 24, 32, 0.34);
+  --glass-border: rgba(255, 255, 255, 0.14);
+  --glass-highlight: rgba(255, 255, 255, 0.2);
+  --glass-shadow: 0 24px 60px -24px rgba(0, 0, 0, 0.65);
+}
+
+/* --- 仿 Mac 玻璃：苹方字体 + 更通透的玻璃 + macOS 系文字色 --- */
+[data-skin='mac'] body {
+  font-family: 'PingFang SC', 'PingFang TC', '苹方-简', 'Hiragino Sans GB', 'Heiti SC',
+    'Microsoft YaHei', system-ui, sans-serif;
+  letter-spacing: 0.006em;
+}
+
+[data-skin='mac'] {
+  --text-primary: rgba(0, 0, 0, 0.88);
+  --text-secondary: rgba(60, 60, 67, 0.62);
+  --text-tertiary: rgba(60, 60, 67, 0.34);
+
+  --glass-bg: rgba(255, 255, 255, 0.42);
+  --glass-bg-strong: rgba(255, 255, 255, 0.56);
+  --glass-bg-soft: rgba(255, 255, 255, 0.26);
+  --glass-border: rgba(255, 255, 255, 0.72);
+  --glass-highlight: rgba(255, 255, 255, 0.9);
+  --glass-shadow: 0 28px 70px -26px rgba(15, 23, 42, 0.42);
+  /* 通透玻璃靠 backdrop 模糊本身读厚度，不要叠加普通模式那层受光渐变 */
+  --surface-shade: none;
+  --surface-shade-inset: none;
+  /* 控件不用普通模式那套不透明的「云母控件」（见下方「mac 控件复位」），只留悬停提亮 */
+  --control-hover-brightness: 1.02;
+
+  --fill-secondary: rgba(120, 120, 128, 0.12);
+  --fill-secondary-hover: rgba(120, 120, 128, 0.2);
+  --divider: rgba(60, 60, 67, 0.14);
+  --scrim: rgba(0, 0, 0, 0.34);
+}
+
+[data-skin='mac'][data-theme='dark'] {
+  --text-primary: rgba(245, 245, 247, 0.94);
+  --text-secondary: rgba(235, 235, 245, 0.62);
+  --text-tertiary: rgba(235, 235, 245, 0.36);
+
+  --glass-bg: rgba(28, 28, 36, 0.36);
+  --glass-bg-strong: rgba(32, 32, 42, 0.48);
+  --glass-bg-soft: rgba(24, 24, 32, 0.24);
+  --glass-border: rgba(255, 255, 255, 0.18);
+  --glass-highlight: rgba(255, 255, 255, 0.26);
+  --glass-shadow: 0 28px 70px -26px rgba(0, 0, 0, 0.7);
+  --surface-shade: none;
+  --surface-shade-inset: none;
+  --control-hover-brightness: 1.06;
+
+  --fill-secondary: rgba(120, 120, 128, 0.24);
+  --fill-secondary-hover: rgba(120, 120, 128, 0.32);
+  --divider: rgba(235, 235, 245, 0.14);
+  --scrim: rgba(0, 0, 0, 0.5);
+}
+
+/* --- 通透皮肤的控件复位（仿 Mac / 原毛玻璃[默认]） ---
+   这两套皮肤都是通透风格，3D 云母那套不透明的「云母控件」（实心底色 + 倒角 + 投影）
+   会让标签、次级按钮、输入框、分栏变成一个个实心白块，与通透感冲突。这里把控件退回
+   扁平半透明填充（= 上云母之前的观感），让整块皮肤一致。
+   必须在层外（未分层优先级高于 @layer components），且排在 :root 之后。 */
+[data-skin='mac'] :is(.mica, .mica-well, .chip, .btn-secondary, .input),
+[data-skin='glass'] :is(.mica, .mica-well, .chip, .btn-secondary, .input) {
+  background-image: none;
+  box-shadow: none;
+  backdrop-filter: none;
+  border: 1px solid transparent;
+}
+[data-skin='mac'] .chip,
+[data-skin='glass'] .chip {
+  background-color: var(--chip-bg);
+}
+[data-skin='mac'] .btn-secondary,
+[data-skin='glass'] .btn-secondary {
+  background-color: var(--fill-secondary);
+}
+[data-skin='mac'] .mica,
+[data-skin='glass'] .mica {
+  background-color: var(--fill-secondary-hover);
+}
+[data-skin='mac'] .mica-well,
+[data-skin='glass'] .mica-well,
+[data-skin='mac'] .input,
+[data-skin='glass'] .input {
+  background-color: var(--fill-secondary);
+}
+[data-skin='mac'] .input,
+[data-skin='glass'] .input {
+  border-color: var(--divider);
+}
+[data-skin='mac'] .input:focus,
+[data-skin='glass'] .input:focus {
+  border-color: var(--fill-primary);
+  box-shadow: 0 0 0 3px rgba(10, 132, 255, 0.25);
+}
+
+/* --- Win10 桌面：Segoe UI + 扁平化配色 + 桌面/任务栏/窗口变量 --- */
+[data-skin='win10'] body {
+  font-family: 'Segoe UI Variable Text', 'Segoe UI', 'Microsoft YaHei', system-ui, sans-serif;
+}
+
+[data-skin='win10'] {
+  --text-primary: rgba(0, 0, 0, 0.9);
+  --text-secondary: rgba(0, 0, 0, 0.62);
+  --text-tertiary: rgba(0, 0, 0, 0.42);
+
+  --glass-bg: #ffffff;
+  --glass-bg-strong: #ffffff;
+  --glass-bg-soft: rgba(255, 255, 255, 0.72);
+  --glass-border: rgba(0, 0, 0, 0.14);
+  --glass-highlight: transparent;
+  --glass-shadow: 0 2px 10px rgba(0, 0, 0, 0.14);
+  /* Win10 是扁平皮肤：不要普通模式的受光渐变 */
+  --surface-shade: none;
+  --surface-shade-inset: none;
+  /* 控件也不模糊，只留极轻的描边/投影 */
+  --control-raised-blur: none;
+  --control-well-blur: none;
+  --glass-shadow-control: 0 1px 3px rgba(0, 0, 0, 0.12), inset 0 0 0 1px rgba(0, 0, 0, 0.04);
+  --glass-shadow-well: inset 0 0 0 1px rgba(0, 0, 0, 0.1);
+  --control-hover-brightness: 1;
+
+  --fill-secondary: rgba(0, 0, 0, 0.06);
+  --fill-secondary-hover: rgba(0, 0, 0, 0.12);
+  --chip-bg: rgba(0, 0, 0, 0.06);
+  --divider: rgba(0, 0, 0, 0.14);
+  --scrim: rgba(0, 0, 0, 0.45);
+
+  --win10-titlebar: #f3f3f3;
+  --win10-surface: #ffffff;
+  --win10-text: #1a1a1a;
+  --win10-hover: rgba(0, 0, 0, 0.07);
+  --win10-close-hover: #e81123;
+  --win10-taskbar: rgba(16, 16, 16, 0.82);
+  --win10-tile: rgba(255, 255, 255, 0.22);
+  --win10-tile-border: rgba(255, 255, 255, 0.32);
+  --win10-label: #ffffff;
+  --win10-select: rgba(255, 255, 255, 0.3);
+}
+
+[data-skin='win10'][data-theme='dark'] {
+  --text-primary: rgba(255, 255, 255, 0.92);
+  --text-secondary: rgba(255, 255, 255, 0.66);
+  --text-tertiary: rgba(255, 255, 255, 0.44);
+
+  --glass-bg: #202020;
+  --glass-bg-strong: #272727;
+  --glass-bg-soft: rgba(40, 40, 40, 0.72);
+  --glass-border: rgba(255, 255, 255, 0.14);
+  --glass-shadow: 0 2px 10px rgba(0, 0, 0, 0.5);
+  --surface-shade: none;
+  --surface-shade-inset: none;
+  --glass-shadow-control: 0 1px 3px rgba(0, 0, 0, 0.5), inset 0 0 0 1px rgba(255, 255, 255, 0.05);
+  --glass-shadow-well: inset 0 0 0 1px rgba(255, 255, 255, 0.09);
+
+  --fill-secondary: rgba(255, 255, 255, 0.08);
+  --fill-secondary-hover: rgba(255, 255, 255, 0.14);
+  --chip-bg: rgba(255, 255, 255, 0.08);
+  --divider: rgba(255, 255, 255, 0.14);
+
+  --win10-titlebar: #1f1f1f;
+  --win10-surface: #202020;
+  --win10-text: #f0f0f0;
+  --win10-hover: rgba(255, 255, 255, 0.09);
 }
