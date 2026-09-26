@@ -237,6 +237,11 @@ export interface LauncherSettings {
   accentColor: string
   /** Background preset key. */
   background: string
+  /**
+   * 自定义壁纸：启动器数据目录下的文件名（空串 = 只用背景预设）。
+   * 选图时先把图片复制进 userData 再只存文件名，避免原路径失效。
+   */
+  backgroundImage: string
   /** 运行模式：normal 普通 / local 本地（关闭联网功能）/ minimal 极简（UI 二维化）。 */
   mode: 'normal' | 'local' | 'minimal'
   /** Version ids the user has disabled. */
@@ -256,13 +261,14 @@ export interface LauncherSettings {
   /** 上次选中的游戏版本 id（自定义主页与内置页共享，持久化后脚本可读写）。 */
   selectedVersionId: string
   /**
-   * 实验性界面（默认关闭，两项互斥）：
-   *   off    普通界面
+   * 实验性界面（默认关闭，多项互斥）：
+   *   off    默认界面（原毛玻璃：半透明磨砂 + 扁平半透明控件）
+   *   mica   3D 云母：近实心底色 + 面板受光渐变 + 倒角与三层投影，更有厚度
    *   mac    仿 Mac 玻璃皮肤：苹方字体 + 更通透的玻璃与文字色
    *   win10  Win10 桌面：自动全屏，功能以桌面图标呈现，双击打开
-   * 用单一字段表达「相斥」，避免两个布尔同时为真。
+   * 用单一字段表达「相斥」，避免多个布尔同时为真。
    */
-  experimental: 'off' | 'mac' | 'win10'
+  experimental: 'off' | 'mica' | 'mac' | 'win10'
 }
 
 /* ------------------------------------------------------------------ */
@@ -377,6 +383,29 @@ export interface NativeWindowInfo {
   kind: 'minecraft' | 'explorer'
   /** 是否已经摆进启动器桌面 */
   placed: boolean
+}
+
+/* ------------------------------------------------------------------ */
+/* 启动器自实现的资源管理器（替代打开系统资源管理器）                     */
+/* ------------------------------------------------------------------ */
+
+/** 目录里的一项。 */
+export interface FileEntry {
+  name: string
+  /** 绝对路径 */
+  path: string
+  isDir: boolean
+  /** 字节数；目录为 0 */
+  size: number
+  /** 修改时间（epoch ms） */
+  mtime: number
+}
+
+/** 左栏快捷入口：驱动器或常用位置。 */
+export interface FilePlace {
+  name: string
+  path: string
+  kind: 'drive' | 'place'
 }
 
 /** 整合包探测结果（导入前用于展示与重命名）。 */
@@ -525,6 +554,8 @@ export interface HomepageVerifyResult {
   reachable: boolean
   /** 面向用户的中文说明。 */
   message: string
+  /** 服务端查无此编号（未上架 / 已下架 / 私密）；与「哈希不一致」需分别提示。 */
+  notFound?: boolean
 }
 
 /** 主页市场条目（服务端下发）。 */
@@ -553,6 +584,19 @@ export interface HomepageSubmitPayload {
   description: string
   version: string
   visibility: 'public' | 'private'
+  /** 开发者邮箱：用于接收验证码与审核结果 / 永久管理链接。 */
+  email: string
+  /** 邮箱验证码（6 位数字）。 */
+  code: string
+}
+
+/** 发送邮箱验证码的结果。 */
+export interface HomepageEmailCodeResult {
+  ok: boolean
+  /** 验证码有效期（秒）。 */
+  ttl: number
+  /** 重新发送的冷却时间（秒）。 */
+  cooldown: number
 }
 
 /** 投稿结果。 */
@@ -655,6 +699,12 @@ export interface LauncherApi {
   settings: {
     get: () => Promise<LauncherSettings>
     set: (partial: Partial<LauncherSettings>) => Promise<LauncherSettings>
+    /** 弹系统选图框选自定义壁纸；选中后复制进数据目录并写进设置（取消则原样返回） */
+    pickWallpaper: () => Promise<LauncherSettings>
+    /** 清除自定义壁纸（删文件 + 清设置） */
+    clearWallpaper: () => Promise<LauncherSettings>
+    /** 读取当前壁纸的 data URL；没设置 / 文件丢失时返回空串 */
+    wallpaperData: () => Promise<string>
   }
   system: {
     memory: () => Promise<SystemMemoryInfo>
@@ -687,6 +737,8 @@ export interface LauncherApi {
     market: () => Promise<MarketScript[]>
     /** 自助投稿。 */
     submit: (payload: HomepageSubmitPayload) => Promise<HomepageSubmitResult>
+    /** 投稿前给开发者邮箱发送验证码。 */
+    sendEmailCode: (email: string) => Promise<HomepageEmailCodeResult>
     /** 把服务端回传的已编号脚本落到本地（投稿后可直接启用）。 */
     installNumbered: (input: {
       filename: string
@@ -695,6 +747,11 @@ export interface LauncherApi {
     }) => Promise<HomepageEntry>
     /** 把脚本日志写入主进程调试日志缓冲区（仅在 Debug 模式可见）。 */
     log: (level: DebugLogEntry['level'], message: string) => void
+    /**
+     * 订阅「沙箱主页尝试自我导航（跳转）到外部地址」事件：主进程已在导航发生前拦截，
+     * 渲染层据此弹出全屏封锁遮罩（F-05 导航外泄）。
+     */
+    onNavBlocked: (cb: (url: string) => void) => () => void
   }
   modpack: {
     probe: (filePath: string) => Promise<ModpackProbe>
@@ -754,6 +811,20 @@ export interface LauncherApi {
     resync: () => Promise<boolean>
     /** 聚焦该外部窗口（点任务栏条目时用） */
     focus: (id: string) => Promise<boolean>
+  }
+  /**
+   * 启动器自实现的资源管理器：只做「浏览 + 打开」，
+   * 用于替代打开系统资源管理器（桌面模式下不再捕获 explorer 窗口）。
+   */
+  files: {
+    /** 左栏快捷入口：驱动器（Windows 盘符）+ 常用位置（游戏目录 / 下载 / 主页目录…） */
+    places: () => Promise<FilePlace[]>
+    /** 列出一个目录；失败时抛出带中文说明的错误 */
+    list: (path: string) => Promise<FileEntry[]>
+    /** 用系统默认程序打开文件 / 目录（返回空串表示成功） */
+    open: (path: string) => Promise<string>
+    /** 在**系统**资源管理器中定位该项（应急出口） */
+    reveal: (path: string) => Promise<void>
   }
   shell: {
     openExternal: (url: string) => Promise<void>

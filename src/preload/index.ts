@@ -119,7 +119,10 @@ const api: LauncherApi = {
   },
   settings: {
     get: () => ipcRenderer.invoke('settings:get'),
-    set: (partial: Partial<LauncherSettings>) => ipcRenderer.invoke('settings:set', partial)
+    set: (partial: Partial<LauncherSettings>) => ipcRenderer.invoke('settings:set', partial),
+    pickWallpaper: () => ipcRenderer.invoke('settings:pickWallpaper'),
+    clearWallpaper: () => ipcRenderer.invoke('settings:clearWallpaper'),
+    wallpaperData: () => ipcRenderer.invoke('settings:wallpaperData')
   },
   system: {
     memory: () => ipcRenderer.invoke('system:memory')
@@ -137,10 +140,18 @@ const api: LauncherApi = {
     openDir: () => ipcRenderer.invoke('homepage:openDir'),
     market: () => ipcRenderer.invoke('homepage:market'),
     submit: (payload) => ipcRenderer.invoke('homepage:submit', payload),
+    sendEmailCode: (email: string) => ipcRenderer.invoke('homepage:send-email-code', email),
     installNumbered: (input) => ipcRenderer.invoke('homepage:installNumbered', input),
     log: (level, message) => {
       void ipcRenderer.invoke('homepage:log', level, message)
-    }
+    },
+    onNavBlocked: subscribe<string>('homepage:nav-blocked')
+  },
+  files: {
+    places: () => ipcRenderer.invoke('files:places'),
+    list: (path: string) => ipcRenderer.invoke('files:list', path),
+    open: (path: string) => ipcRenderer.invoke('files:open', path),
+    reveal: (path: string) => ipcRenderer.invoke('files:reveal', path)
   },
   modpack: {
     probe: (filePath: string) => ipcRenderer.invoke('modpack:probe', filePath),

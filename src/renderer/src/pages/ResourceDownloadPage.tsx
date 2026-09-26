@@ -1,4 +1,4 @@
-import { useEffect, useId, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { AnimatePresence, motion } from 'motion/react'
 import type { InstalledVersion, ModEntry, ModpackProbe, ModrinthProject, ModrinthType, ModrinthVersion, VersionManifest } from '@shared/types'
 import { useRuntimeActions } from '../runtime'
@@ -318,8 +318,6 @@ function ProjectDetail({
   const [versions, setVersions] = useState<ModrinthVersion[]>([])
   const [loading, setLoading] = useState(true)
   const [mcTab, setMcTab] = useState('')
-  // MC 版本分栏滑块的 layoutId（同页多组分段互不冲突）
-  const mcTabLayoutId = useId()
 
   useEffect(() => {
     setLoading(true)
@@ -445,41 +443,20 @@ function ProjectDetail({
         <div className="flex shrink-0 items-center gap-2">
           <button
             onClick={() => void window.api.shell.openExternal(`https://modrinth.com/${project.project_type}/${project.slug}`)}
-            className="no-drag shrink-0 rounded-lg px-2 py-1 text-[12px] font-medium opacity-70 hover:opacity-100"
-            style={{ background: 'var(--fill-secondary)' }}
+            className="mica no-drag shrink-0 rounded-lg px-2 py-1 text-[12px] font-medium"
           >
             更多信息..
           </button>
         </div>
       </div>
 
-      {/* MC 版本分栏：选中态用 layoutId 滑动指示块 */}
-      <div className="flex gap-2 overflow-x-auto pb-1">
-        {mcTabs.map((mc) => {
-          const active = activeMc === mc
-          return (
-            <button
-              key={mc}
-              onClick={() => setMcTab(mc)}
-              className="relative shrink-0 rounded-full px-3.5 py-1.5 text-[13px] font-medium no-drag"
-              style={{
-                background: active ? undefined : 'var(--fill-secondary)',
-                color: active ? '#fff' : 'var(--text-secondary)'
-              }}
-            >
-              {active && (
-                <motion.span
-                  layoutId={mcTabLayoutId}
-                  className="absolute inset-0 rounded-full"
-                  style={{ background: 'var(--fill-primary)' }}
-                  transition={{ type: 'spring', bounce: 0.2, duration: 0.4 }}
-                />
-              )}
-              <span className="relative z-10">{mc}</span>
-            </button>
-          )
-        })}
-      </div>
+      {/* MC 版本分栏：与全局分栏控制同一实现（横向滚动、隐藏滚动条、文字居中） */}
+      <Segmented
+        scroll
+        value={activeMc}
+        onChange={setMcTab}
+        options={mcTabs.map((mc) => ({ value: mc, label: mc }))}
+      />
 
       {/* 加载器抽屉 / 版本列表 */}
       <div className="min-h-0 flex-1 overflow-y-auto pr-1">

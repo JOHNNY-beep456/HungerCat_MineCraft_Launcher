@@ -39,7 +39,7 @@ function sizeText(bytes: number): string {
 }
 
 export function HomepagePage(): JSX.Element {
-  const { settings, reloadSettings } = useApp()
+  const { settings, reloadSettings, openFileManager } = useApp()
   const [tab, setTab] = useState<Tab>('installed')
   const [entries, setEntries] = useState<HomepageEntry[]>([])
   const [loading, setLoading] = useState(true)
@@ -168,7 +168,7 @@ export function HomepagePage(): JSX.Element {
           <p className="caption mt-1">用单文件 HTML 脚本替换「启动游戏」界面，或从主页市场安装</p>
         </div>
         <div className="flex items-center gap-2">
-          <Button icon="folder" onClick={() => void window.api.homepage.openDir()}>
+          <Button icon="folder" onClick={() => void window.api.homepage.openDir().then(openFileManager)}>
             脚本目录
           </Button>
           <Button icon="plus" onClick={() => void importLocal()}>
@@ -221,10 +221,7 @@ export function HomepagePage(): JSX.Element {
                         <div className="flex items-center gap-2">
                           <span className="truncate text-[15px] font-semibold">{e.meta.name || e.id}</span>
                           {active && (
-                            <span
-                              className="chip shrink-0"
-                              style={{ background: 'var(--fill-secondary)', color: 'var(--fill-primary)' }}
-                            >
+                            <span className="chip shrink-0" style={{ color: 'var(--fill-primary)' }}>
                               使用中
                             </span>
                           )}
@@ -369,9 +366,40 @@ function SubmitPane({ onDone }: { onDone: () => void }): JSX.Element {
     version: string
   } | null>(null)
   const [visibility, setVisibility] = useState<'public' | 'private'>('public')
+  const [email, setEmail] = useState('')
+  const [code, setCode] = useState('')
+  const [cooldown, setCooldown] = useState(0)
+  const [sending, setSending] = useState(false)
+  const [codeHint, setCodeHint] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [result, setResult] = useState<HomepageSubmitResult | null>(null)
+
+  // 验证码重发倒计时：由服务端返回的 cooldown 驱动，避免刷新页面绕过冷却。
+  useEffect(() => {
+    if (cooldown <= 0) return
+    const timer = window.setTimeout(() => setCooldown((v) => (v > 0 ? v - 1 : 0)), 1000)
+    return () => window.clearTimeout(timer)
+  }, [cooldown])
+
+  const sendCode = async (): Promise<void> => {
+    const to = email.trim()
+    if (!to) {
+      setCodeHint('请先填写开发者邮箱')
+      return
+    }
+    setSending(true)
+    setCodeHint(null)
+    try {
+      const res = await window.api.homepage.sendEmailCode(to)
+      setCooldown(res.cooldown > 0 ? res.cooldown : 60)
+      setCodeHint(`验证码已发送，${Math.round(res.ttl / 60) || 10} 分钟内有效，请查收邮件（含垃圾箱）`)
+    } catch (err) {
+      setCodeHint(err instanceof Error ? err.message : String(err))
+    } finally {
+      setSending(false)
+    }
+  }
 
   const pick = async (): Promise<void> => {
     setError(null)
@@ -409,7 +437,9 @@ function SubmitPane({ onDone }: { onDone: () => void }): JSX.Element {
         author: draft.author,
         description: draft.description,
         version: draft.version,
-        visibility
+        visibility,
+        email: email.trim(),
+        code: code.trim()
       })
       // 服务端注入编号后回传最终脚本；私密投稿审核后服务端会删文件，只能靠它留存。
       await window.api.homepage.installNumbered({
@@ -434,6 +464,8 @@ function SubmitPane({ onDone }: { onDone: () => void }): JSX.Element {
         <p className="caption mt-1">
           提交后由服务端分配编号（HC-XXXXXX）并计算 SHA256，同时把编号注入脚本。公开投稿将长期保留在服务端；
           私密投稿审核通过后服务端会删除文件，脚本只保存在你的本地。
+          投稿前需绑定开发者邮箱并通过邮件验证码验证，审核结果会发到该邮箱，通过后邮件里会附上永久管理链接
+          （可随时下架 / 提交更新 / 变更公开与私密）。
         </p>
       </div>
 
@@ -492,11 +524,44 @@ function SubmitPane({ onDone }: { onDone: () => void }): JSX.Element {
               ]}
             />
           </Field>
+          <Field label="开发者邮箱（必填）">
+            <div className="flex gap-2">
+              <input
+                className="input w-full"
+                type="email"
+                placeholder="用于接收验证码 / 审核结果 / 永久管理链接"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+              />
+              <Button
+                className="shrink-0"
+                disabled={sending || cooldown > 0 || !email.trim()}
+                onClick={() => void sendCode()}
+              >
+                {cooldown > 0 ? `${cooldown}s 后重发` : sending ? '发送中…' : '发送验证码'}
+              </Button>
+            </div>
+          </Field>
+          <Field label="邮箱验证码（6 位数字）">
+            <input
+              className="input w-full"
+              inputMode="numeric"
+              maxLength={6}
+              placeholder="请查收邮件并填入 6 位验证码"
+              value={code}
+              onChange={(e) => setCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
+            />
+          </Field>
+          {codeHint && <div className="caption -mt-1">{codeHint}</div>}
           <div className="flex gap-2">
             <Button onClick={() => setDraft(null)} disabled={busy}>
               取消
             </Button>
-            <Button variant="primary" disabled={busy || !draft.name.trim()} onClick={() => void submit()}>
+            <Button
+              variant="primary"
+              disabled={busy || !draft.name.trim() || !email.trim() || !/^\d{6}$/.test(code.trim())}
+              onClick={() => void submit()}
+            >
               {busy ? '提交中…' : '提交投稿'}
             </Button>
           </div>

@@ -53,8 +53,7 @@ export function Sidebar({
                 {isActive && (
                   <motion.span
                     layoutId="nav-active"
-                    className="absolute inset-0 rounded-[16px]"
-                    style={{ background: 'var(--fill-secondary)' }}
+                    className="mica absolute inset-0 rounded-[16px]"
                     transition={{ type: 'spring', bounce: 0.2, duration: 0.4 }}
                   />
                 )}

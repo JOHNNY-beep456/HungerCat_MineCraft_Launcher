@@ -31,6 +31,17 @@ export interface HomepageBlockRule {
 export const HOMEPAGE_BLOCK_RULES: HomepageBlockRule[] = [
   // --- 删除文件 / 格式化 ---
   { re: /\brm\s+-[a-z]*[rf][a-z]*\s/i, reason: '包含删除文件的 shell 命令（rm -rf）' },
+  // 先用 alias 把删除命令改名，再以别名调用：`alias aa="rm"` + `aa -rf /`。
+  // 上面的字面规则只看得到 rm 本身，别名形态必须单独拦截（B02 / B06 / B08）。
+  {
+    re: /\balias\s+[A-Za-z0-9_.-]+\s*=\s*["']?\s*(?:rm|del|erase|rmdir|rd|Remove-Item)\b/i,
+    reason: '定义指向删除命令的 shell 别名（疑似规避检测的伪装代码）'
+  },
+  // 递归强制删除根目录的参数（-rf / -fr / -Rf …），无论命令名是否被别名替换。
+  {
+    re: /(?:^|\s)-[a-z]*[rf][a-z]*[rf][a-z]*\s+\/(?:\s|$|["'`])/i,
+    reason: '包含递归强制删除根目录的命令参数'
+  },
   { re: /\b(?:rmdir|rd\s+\/s)\s|\bdel\s+\/[a-z]|\berase\s+[a-z]:/i, reason: '包含删除文件或目录的命令' },
   {
     re: /\bformat\s+[a-z]:|diskpart|\bmkfs(?:\.\w+)?\b|diskutil\s+erase|Clear-Disk|Format-Volume|shutdown\s+\/|\bwipefs\b/i,
@@ -74,8 +85,25 @@ export const HOMEPAGE_BLOCK_RULES: HomepageBlockRule[] = [
   },
   // --- 动态执行 / 混淆伪装 ---
   { re: /\beval\s*\(|new\s+Function\s*\(|\bFunction\s*\(\s*['"`]/i, reason: '包含动态执行代码（eval / new Function），属疑似伪装代码' },
-  { re: /constructor\s*\.\s*constructor|__proto__\s*\[|Object\.getPrototypeOf\s*\(\s*function/i, reason: '包含绕过沙箱的构造器链访问（疑似伪装代码）' },
-  { re: /document\.write\s*\([\s\S]{0,400}?<script/i, reason: '使用 document.write 动态注入脚本（疑似伪装代码）' },
+  // 以字符串下标访问敏感 API：window['eval'] / d['write'] / window['atob'] 等写法，
+  // 专门用来躲开上面的字面规则（F-09 / F-10 / F-11 的共同手法）。
+  {
+    re: /\[\s*["'`]\s*(?:eval|atob|btoa|write|writeln|Function|constructor|fetch|XMLHttpRequest|WebSocket|EventSource|sendBeacon|importScripts|execScript)\s*["'`]\s*\]/i,
+    reason: '以字符串下标访问敏感 API（疑似规避检测的伪装代码）'
+  },
+  // 构造器链访问：constructor.constructor、__proto__[、Object.getPrototypeOf(function)、
+  // (function(){}).constructor(...) —— 都能拿回被 CSP 限制的动态执行能力（F-09）。
+  {
+    re: /constructor\s*\.\s*constructor|__proto__\s*\[|Object\.getPrototypeOf\s*\(\s*function|\}\s*\)\s*\.\s*constructor|\)\s*\.\s*constructor\s*\(\s*["'`]/i,
+    reason: '包含绕过沙箱的构造器链访问（疑似伪装代码）'
+  },
+  // document.write / writeln 会重写整个页面并按字符串注入内容，是典型的伪装手法。
+  // 不再用「调用后 400 字符内出现 <script」这种带窗口的判定——垫长参数即可绕过（F-10），
+  // 因此任何形式的调用（含 document['write']）一律拒绝。
+  {
+    re: /document\s*(?:\.\s*write(?:ln)?\s*\(|\[\s*["'`]\s*write(?:ln)?\s*["'`]\s*\]\s*\()/i,
+    reason: '使用 document.write / writeln 重写页面并注入内容（疑似伪装代码）'
+  },
   { re: /(?:atob|unescape|decodeURIComponent)\s*\([\s\S]{0,120}?(?:eval|Function|document\.write|innerHTML|outerHTML)/i, reason: '对编码字符串做动态执行（疑似混淆代码）' },
   { re: /setTimeout\s*\(\s*['"`]|setInterval\s*\(\s*['"`]/, reason: '以字符串形式延迟执行代码（疑似混淆代码）' },
   { re: /[A-Za-z0-9+/]{400,}={0,2}/, reason: '包含超长的疑似混淆编码块（Base64）', skipInPayload: true },
@@ -110,19 +138,54 @@ function collapseInlineBase64(source: string): string {
 }
 
 /**
+ * 把相邻的字符串字面量拼接合并成一个（`'r' + 'm'` → `'rm'`）。
+ *
+ * 拆字面量是最常用的静态绕过手法：把 `rm -rf /`、`<script>`、被禁 API 名拆成多段再用 + 拼起来，
+ * 静态正则就看不到完整的关键字。合并后再扫一遍即可还原（F-01）。
+ */
+export function mergeAdjacentLiterals(source: string): string {
+  let out = source
+  for (let i = 0; i < 3; i++) {
+    const next = out.replace(/["'`]\s*\+\s*["'`]/g, '')
+    if (next === out) break
+    out = next
+  }
+  return out
+}
+
+/** 扫描参数。 */
+export interface HomepageScanOptions {
+  /**
+   * 最多扫描的字符数；0 表示不截断。
+   * 静态检测传 0：脚本落地时已有体积上限（2MB），截断反而给了「把载荷放在上限之后」的绕过空间（F-01）。
+   */
+  maxLength?: number
+}
+
+/**
  * 用统一规则表扫描一段文本，返回命中的中文原因（去重）。
  *
  * 纯函数、同步执行：主进程的静态检测与渲染层的运行时检测共用，保证两处判定一致。
+ *
+ * code 范围会扫「原文」与「合并相邻字面量后的文本」两份，用于还原拆字躲避。
  */
-export function scanHomepageCode(source: string, scope: HomepageScanScope = 'code'): string[] {
+export function scanHomepageCode(
+  source: string,
+  scope: HomepageScanScope = 'code',
+  options?: HomepageScanOptions
+): string[] {
   if (!source) return []
-  const raw = source.length > MAX_SCAN_LENGTH ? source.slice(0, MAX_SCAN_LENGTH) : source
-  const scan = scope === 'payload' ? raw : collapseInlineBase64(raw)
+  const limit = options?.maxLength ?? MAX_SCAN_LENGTH
+  const bounded = limit > 0 && source.length > limit ? source.slice(0, limit) : source
+  const variants =
+    scope === 'payload'
+      ? [bounded]
+      : [collapseInlineBase64(bounded), collapseInlineBase64(mergeAdjacentLiterals(bounded))]
   const blocks: string[] = []
   for (const rule of HOMEPAGE_BLOCK_RULES) {
     if (scope === 'library' && rule.skipInLibrary) continue
     if (scope === 'payload' && rule.skipInPayload) continue
-    if (rule.re.test(scan) && !blocks.includes(rule.reason)) blocks.push(rule.reason)
+    if (variants.some((v) => rule.re.test(v)) && !blocks.includes(rule.reason)) blocks.push(rule.reason)
   }
   return blocks
 }

@@ -74,6 +74,7 @@ export function getDefaultSettings(): LauncherSettings {
     versionIsolation: false,
     accentColor: '#0a84ff',
     background: 'midnight',
+    backgroundImage: '',
     mode: 'normal',
     disabledVersions: [],
     isolatedVersions: [],
@@ -89,7 +90,11 @@ export function getDefaultSettings(): LauncherSettings {
 
 export const settings = {
   get(): LauncherSettings {
-    return { ...getDefaultSettings(), ...readJson<Partial<LauncherSettings>>('settings.json', {}) }
+    const s = { ...getDefaultSettings(), ...readJson<Partial<LauncherSettings>>('settings.json', {}) }
+    // 旧版本有独立的「原毛玻璃」实验项（'glass'），现已取消并成为默认观感，
+    // 读到旧值时归一为 'off'，避免落到一个已不存在的皮肤上。
+    if ((s.experimental as string) === 'glass') s.experimental = 'off'
+    return s
   },
   set(partial: Partial<LauncherSettings>): LauncherSettings {
     const next = { ...this.get(), ...partial }

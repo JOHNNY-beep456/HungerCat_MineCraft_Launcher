@@ -32,6 +32,8 @@ import { loaderVersions, installLoader } from './loaders'
 import { forgeVersions, installForge } from './forge'
 import { searchMods, getVersions as getModVersions, installMod, downloadTo, findFabricApi } from './modrinth'
 import { listResources, removeResource, openResourceDir } from './resources'
+import { listDir, listPlaces, openPath, revealPath } from './files'
+import { clearWallpaper, pickWallpaper, wallpaperData } from './wallpaper'
 import { probeModpack, importModpack, importModpackFromUrl, exportModpack, collectExportInventory, downloadModpack } from './modpack'
 import { fetchAbout, fetchAgreement, fetchUpdateInfo, downloadUpdate, runUpdate, compareVersions } from './server'
 import {
@@ -59,6 +61,7 @@ import {
   openHomepageDir,
   fetchMarket,
   submitHomepage,
+  sendEmailCode,
   installNumbered
 } from './homepage'
 import {
@@ -135,6 +138,24 @@ function mainWindowHandleId(w: BrowserWindow): string {
   return hwnd.toString()
 }
 
+/**
+ * 判断某个导航目标是不是「外泄型外部地址」（F-05）。
+ *
+ * 自定义主页跑在 sandbox="allow-scripts" 的 iframe 里，虽然拿不到顶层控制权，
+ * 但仍可对「自身」导航（location 赋值 / meta refresh），把拼接出的数据带出去。
+ * 这类导航型外泄不受 CSP connect-src 管辖，必须在主进程先行拦截。
+ * 协议相对 // 与 http(s) 视为外部；渲染层自身入口（dev server / file / about）放行。
+ */
+function isExternalNavTarget(rawUrl: string): boolean {
+  const url = rawUrl.trim()
+  if (!url) return false
+  if (url.startsWith('file://') || url.startsWith('about:') || url.startsWith('devtools:')) return false
+  const dev = process.env['ELECTRON_RENDERER_URL']
+  if (dev && url.startsWith(dev)) return false
+  if (url.startsWith('//')) return true
+  return /^https?:\/\//i.test(url)
+}
+
 function createWindow(): void {
   const iconPath = app.isPackaged
     ? join(process.resourcesPath, 'icon.png')
@@ -158,6 +179,19 @@ function createWindow(): void {
   })
 
   mainWindow.once('ready-to-show', () => mainWindow?.show())
+
+  // 安全：主页沙箱（iframe）只能渲染，绝不允许自我导航把数据带出去
+  // （d01 meta refresh / d02 location 赋值）。这类导航不受 connect-src 管辖，
+  // 因此在导航发生「前」拦截，并通知渲染层立刻弹出封锁遮罩（F-05）。
+  mainWindow.webContents.on('will-frame-navigate', (details) => {
+    if (details.isMainFrame) return
+    const url = details.url
+    if (!isExternalNavTarget(url)) return
+    details.preventDefault()
+    const wc = mainWindow?.webContents
+    if (wc && !wc.isDestroyed()) wc.send('homepage:nav-blocked', url)
+    console.warn(`[主页安全] 已拦截沙箱主页的对外导航：${url}`)
+  })
 
   // 实验性 Win10 桌面把 MC / 资源管理器的窗口摆进桌面（它们仍是独立顶层窗口，
   // 只是位置被挪到预留矩形里，启动器窗口在这些矩形上挖洞透出）。因此：
@@ -655,9 +689,8 @@ function registerIpc(): void {
   })
   ipcMain.handle('manage:openDir', async (_e, versionId: string, kind: VersionDirKind) => {
     const s = settings.get()
-    const dir = await openVersionDir(s.gameDir, versionId, isIsolated(versionId), kind)
-    void shell.openPath(dir)
-    return dir
+    // 只返回目录路径：由渲染层用启动器自实现的资源管理器打开（不再唤起系统资源管理器）
+    return await openVersionDir(s.gameDir, versionId, isIsolated(versionId), kind)
   })
 
   // ---- Java ----
@@ -786,6 +819,10 @@ function registerIpc(): void {
     return next
   })
   ipcMain.handle('app:version', () => app.getVersion())
+  // 自定义壁纸：选图（复制进数据目录）/ 清除 / 取 data URL
+  ipcMain.handle('settings:pickWallpaper', () => pickWallpaper())
+  ipcMain.handle('settings:clearWallpaper', () => clearWallpaper())
+  ipcMain.handle('settings:wallpaperData', () => wallpaperData())
   ipcMain.handle('system:memory', () => {
     const total = Math.round(totalmem() / 1024 / 1024)
     const free = Math.round(freemem() / 1024 / 1024)
@@ -805,6 +842,7 @@ function registerIpc(): void {
   ipcMain.handle('homepage:block', (_e, id: string, reason: string) => blockHomepage(id, reason))
   ipcMain.handle('homepage:openDir', () => openHomepageDir())
   ipcMain.handle('homepage:market', () => fetchMarket())
+  ipcMain.handle('homepage:send-email-code', (_e, email: string) => sendEmailCode(email))
   ipcMain.handle('homepage:submit', (_e, payload: HomepageSubmitPayload) => submitHomepage(payload))
   ipcMain.handle(
     'homepage:installNumbered',
@@ -813,7 +851,12 @@ function registerIpc(): void {
   ipcMain.handle('homepage:log', (_e, level: DebugLogEntry['level'], message: string) => {
     // 脚本日志只在 Debug 模式落地：调试日志窗口仅在 Debug 模式存在。
     if (!settings.get().debugMode) return
-    const line = `[主页脚本] ${String(message).slice(0, 4000)}`
+    // 折叠换行 / 控制字符：一条脚本日志绝不能伪造出多行「启动器日志」（F-14 / D07）。
+    const text = String(message)
+      .replace(/[\r\n\u2028\u2029]+/g, ' ⏎ ')
+      .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, '')
+      .slice(0, 4000)
+    const line = `[主页脚本] ${text}`
     if (level === 'error') console.error(line)
     else if (level === 'warn') console.warn(line)
     else console.info(line)
@@ -941,6 +984,18 @@ function registerIpc(): void {
     return true
   })
   ipcMain.handle('desktop:focus', (_e, id: string) => focusWindow(id))
+
+  // ---- 自实现的资源管理器（浏览 + 打开；替代系统资源管理器）----
+  ipcMain.handle('files:places', () => {
+    const s = settings.get()
+    return listPlaces([
+      // 游戏目录排在最前：这是用户最常来的地方
+      { name: '游戏目录', path: s.gameDir, kind: 'place' }
+    ])
+  })
+  ipcMain.handle('files:list', (_e, path: string) => listDir(path))
+  ipcMain.handle('files:open', (_e, path: string) => openPath(path))
+  ipcMain.handle('files:reveal', (_e, path: string) => revealPath(path))
 
   // ---- Shell ----
   ipcMain.handle('shell:openExternal', (_e, url: string) => shell.openExternal(url))

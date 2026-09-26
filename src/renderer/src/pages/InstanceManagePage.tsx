@@ -17,7 +17,7 @@ export function InstanceManagePage({
   onBack: () => void
   onRename: (newId: string) => void
 }): JSX.Element {
-  const { settings, selectedAccount, updateSettings, reloadSettings } = useApp()
+  const { settings, selectedAccount, updateSettings, reloadSettings, openFileManager } = useApp()
   const { launch } = useRuntimeActions()
 
   const [tab, setTab] = useState<Tab>('mods')
@@ -320,7 +320,11 @@ export function InstanceManagePage({
               </Button>
             </Row>
             <Row label="打开版本目录">
-              <Button size="sm" icon="folder" onClick={() => void window.api.manage.openDir(versionId, 'version')}>
+              <Button
+                size="sm"
+                icon="folder"
+                onClick={() => void window.api.manage.openDir(versionId, 'version').then(openFileManager)}
+              >
                 打开
               </Button>
             </Row>
@@ -412,8 +416,8 @@ export function InstanceManagePage({
                       <button
                         onClick={() => void toggleMod(m)}
                         disabled={busyId === m.path}
-                        className="no-drag rounded-lg px-2 py-1 text-[12px] font-medium"
-                        style={{ background: m.enabled ? 'var(--fill-secondary)' : 'var(--fill-secondary-hover)' }}
+                        className="mica no-drag rounded-lg px-2 py-1 text-[12px] font-medium"
+                        style={{ opacity: m.enabled ? 1 : 0.7 }}
                       >
                         {busyId === m.path ? '…' : m.enabled ? '禁用' : '启用'}
                       </button>
@@ -687,8 +691,7 @@ function ModDetailSheet({ mod, onClose }: { mod: ModEntry; onClose: () => void }
             {mod.slug && (
               <button
                 onClick={() => void window.api.shell.openExternal(`https://modrinth.com/mod/${mod.slug}`)}
-                className="no-drag shrink-0 rounded-lg px-2 py-1 text-[12px] font-medium opacity-70 hover:opacity-100"
-                style={{ background: 'var(--fill-secondary)' }}
+                className="mica no-drag shrink-0 rounded-lg px-2 py-1 text-[12px] font-medium"
               >
                 更多信息..
               </button>

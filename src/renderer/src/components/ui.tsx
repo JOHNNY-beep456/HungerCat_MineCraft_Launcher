@@ -381,29 +381,35 @@ export function Checkbox({
 export function Segmented<T extends string>({
   options,
   value,
-  onChange
+  onChange,
+  scroll = false
 }: {
   options: Array<{ value: T; label: string }>
   value: T
   onChange: (v: T) => void
+  /** 选项较多时横向滚动（隐藏滚动条、文字垂直居中），而不是换行 */
+  scroll?: boolean
 }): JSX.Element {
   const layoutId = useId()
   return (
-    <div className="inline-flex flex-wrap rounded-xl p-1 gap-1" style={{ background: 'var(--fill-secondary)' }}>
+    <div
+      className={`mica-well inline-flex items-center gap-1 rounded-xl p-1 ${
+        scroll ? 'no-scrollbar min-w-0 max-w-full overflow-x-auto' : 'flex-wrap'
+      }`}
+    >
       {options.map((o) => {
         const active = o.value === value
         return (
           <button
             key={o.value}
             onClick={() => onChange(o.value)}
-            className="relative rounded-lg px-3 py-1.5 text-[13px] font-medium transition-colors no-drag whitespace-nowrap"
+            className="relative shrink-0 rounded-lg px-3 py-1.5 text-[13px] font-medium transition-colors no-drag whitespace-nowrap"
             style={{ color: active ? 'var(--text-primary)' : 'var(--text-secondary)' }}
           >
             {active && (
               <motion.span
                 layoutId={layoutId}
-                className="absolute inset-0 rounded-lg"
-                style={{ background: 'var(--fill-secondary-hover)' }}
+                className="mica absolute inset-0 rounded-lg"
                 transition={{ type: 'spring', bounce: 0.2, duration: 0.4 }}
               />
             )}

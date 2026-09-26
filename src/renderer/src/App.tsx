@@ -12,12 +12,13 @@ import { SecurityBlockedOverlay } from './components/SecurityBlockedOverlay'
 import { CursorGlow } from './components/CursorGlow'
 import { DownloadOrb } from './components/DownloadOrb'
 import { Win10Desktop } from './components/Win10Desktop'
+import { FileManager } from './components/FileManager'
 import { Button, Icon } from './components/ui'
 import { renderPage, type ResourcePreset } from './pages/router'
 import { InstanceManagePage } from './pages/InstanceManagePage'
 
 function Shell(): JSX.Element {
-  const { settings, reloadAccounts, securityAlert, clearSecurityAlert } = useApp()
+  const { settings, reloadAccounts, securityAlert, clearSecurityAlert, fileManagerPath, closeFileManager } = useApp()
   const [page, setPage] = useState<PageId>('home')
   const [managingId, setManagingId] = useState<string | null>(null)
   const [tokenExpiredError, setTokenExpiredError] = useState<string | null>(null)
@@ -138,6 +139,30 @@ function Shell(): JSX.Element {
             <CursorGlow />
           </>
         )}
+
+        {/* 自实现资源管理器（非桌面模式）：覆盖层，替代系统文件资源管理器。
+            桌面模式下由 Win10Desktop 以「窗口」形式承载，这里不重复渲染。 */}
+        <AnimatePresence>
+          {!desktop && fileManagerPath && (
+            <motion.div
+              className="fixed inset-0 z-[100] flex items-center justify-center p-6"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+            >
+              <div className="absolute inset-0" style={{ background: 'var(--scrim)' }} onClick={closeFileManager} />
+              <motion.div
+                className="glass-strong relative z-10 h-[72vh] w-full max-w-4xl overflow-hidden rounded-[24px]"
+                initial={{ scale: 0.97, opacity: 0, y: 14 }}
+                animate={{ scale: 1, opacity: 1, y: 0 }}
+                exit={{ scale: 0.97, opacity: 0, y: 10 }}
+                transition={{ type: 'spring', bounce: 0.14, duration: 0.4 }}
+              >
+                <FileManager initialPath={fileManagerPath} onClose={closeFileManager} />
+              </motion.div>
+            </motion.div>
+          )}
+        </AnimatePresence>
 
         <JavaPrompt />
         <FlyDot />

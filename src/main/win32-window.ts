@@ -1,11 +1,16 @@
 // ---------------------------------------------------------------------------
 // Win32 外部窗口显示（实验性 Win10 桌面用）。
 //
-// 目标：把 Minecraft / 文件资源管理器这些**别的进程的窗口**显示在启动器桌面里，
-// 并且保持完全可交互（不是截图镜像）。
+// 目标：把 Minecraft（javaw.exe 的 GLFW 窗口）这类**别的进程的窗口**显示在启动器
+// 桌面里，并且保持完全可交互（不是截图镜像）。
+//
+// 只捕获 Minecraft：文件资源管理器改由启动器**自己实现**的资源管理器页面呈现
+// （见 renderer 的 FileManager），不再把 explorer.exe 的窗口搬进桌面。
+// 原因：资源管理器窗口的标题栏画在客户区里（XAML 岛），被搬动 / 遮蔽后要额外抖动
+// 尺寸才能恢复渲染表面，是「移动窗口崩溃 / 白屏」的主要来源；自家页面没有这些问题。
 //
 // 做法（关键：**绝不 SetParent**）：
-//   1. EnumWindows 列出顶层窗口，按进程名 + 窗口类识别出 MC 与文件资源管理器；
+//   1. EnumWindows 列出顶层窗口，按进程名 + 窗口类识别出 MC；
 //   2. 把外部窗口**按客户区对齐**摆到桌面窗口预留矩形的屏幕位置上：
 //      窗口整体上移/左移一个非客户区尺寸，使其客户区正好落在预留矩形里，
 //      于是它自己的标题栏/边框被启动器窗口的界面挡住，看起来就是「嵌在桌面里」；
@@ -16,15 +21,11 @@
 // 为什么不能 SetParent（已实测）：
 //   跨进程重父化会让 DirectComposition / XAML island 子窗口不再合成 ——
 //   资源管理器的文件列表整块空白、Chromium（与 MC 的 GL 交换链同类）100% 不渲染，
-//   MC 表现为白屏，且强制改尺寸也无法恢复。改窗口样式同样无效（Win11 资源管理器
-//   的标题栏是它自己画的 XAML 子窗口，去 WS_CAPTION 去不掉）。
+//   MC 表现为白屏，且强制改尺寸也无法恢复。
 //   只搬位置、不动窗口层级，则外部窗口的渲染完全不受影响。
 //
-// 两个必须处理的点：
-//   * explorer.exe 也拥有桌面外壳窗口（Progman / Shell_TrayWnd / WorkerW），
-//     绝不能被当成「文件资源管理器」，所以只认 CabinetWClass / ExploreWClass；
-//   * 必须记住外部窗口的原始位置，退出桌面模式/关窗/退出程序时 releaseAll()
-//     把它们放回原处（这里不会销毁任何外部窗口，仅恢复位置）。
+// 必须记住外部窗口的原始位置，退出桌面模式/关窗/退出程序时 releaseAll()
+// 把它们放回原处（这里不会销毁任何外部窗口，仅恢复位置）。
 //
 // 非 Windows 或缺少原生模块时整体降级为「不支持」，不影响启动器其它功能。
 // ---------------------------------------------------------------------------
@@ -54,13 +55,16 @@ const RDW_INVALIDATE = 0x0001
 const RDW_ERASE = 0x0004
 const RDW_ALLCHILDREN = 0x0080
 const RDW_FRAME = 0x0400
-/** 重新露出时用来逼外部窗口重建渲染表面的 1 像素尺寸抖动 */
-const REVEAL_NUDGE = 1
+
+/** 连续失败多少次后进入退避（不再对同一个窗口反复下发） */
+const MAX_APPLY_FAILURES = 5
+/** 退避时长：期间对它的摆放请求一律跳过，避免把一个已经异常的窗口打死 */
+const APPLY_COOLDOWN_MS = 5000
+/** 被推迟（用户正在拖它 / 退避中）后多久重试一次 */
+const PLACE_RETRY_MS = 400
 
 const PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
 
-/** 文件资源管理器**文件夹窗口**的窗口类（桌面外壳 Progman / WorkerW 等一律排除） */
-const EXPLORER_CLASSES = ['CabinetWClass', 'ExploreWClass']
 /** Java 进程可能的名字 */
 const JAVA_EXES = ['javaw.exe', 'java.exe', 'minecraft.exe']
 /** Minecraft 的窗口类（GLFW / LWJGL） */
@@ -106,10 +110,6 @@ interface Gdi32 {
   DeleteObject: (obj: unknown) => boolean
 }
 
-interface DwmApi {
-  DwmGetWindowAttribute: (hwnd: bigint, attr: number, value: number[], size: number) => number
-}
-
 /** koffi 模块（延迟加载；缺失时整体降级） */
 /* eslint-disable @typescript-eslint/no-explicit-any */
 /** FFI 边界用动态签名：真正的类型约束由上面的 Win32 / Gdi32 接口保证 */
@@ -128,11 +128,7 @@ type KoffiModule = {
 let koffiModule: KoffiModule | null = null
 let win32: Win32 | null = null
 let gdi32: Gdi32 | null = null
-let dwmapi: DwmApi | null = null
 let bindFailed = false
-
-/** DWMWA_CAPTION_BUTTON_BOUNDS：最小化/最大化/关闭按钮的矩形（窗口坐标） */
-const DWMWA_CAPTION_BUTTON_BOUNDS = 5
 
 /** 被摆到桌面里的窗口：id -> 原始位置 / 当前空洞矩形（客户端设备像素） */
 interface Placed {
@@ -143,18 +139,18 @@ interface Placed {
   lastHole?: NativeWindowRect
   /** 最近一次真正下发到系统的窗口矩形，用来跳过无变化的重排 */
   applied?: NativeWindowRect
-  /**
-   * 客户区内标题栏按钮的高度（首次量到后固定）。
-   * 它由「非客户区上边框 + 按钮高度」决定，在窗口生命周期内是常量；
-   * 缓存它可避免 DWM 偶发返回不同值 → 目标高度抖动 → WM_SIZE 风暴。
-   */
-  titleH?: number
   /** 当前是否已经把它提到过最上层，避免每次下发都重复改层级 */
   raised?: boolean
+  /** 连续下发失败次数；达到上限进入退避 */
+  failCount?: number
+  /** 退避截止时间（epoch ms）；期间跳过一切下发 */
+  cooldownUntil?: number
 }
 const placed = new Map<string, Placed>()
 /** 窗口元信息缓存（用于列表展示） */
-const metaCache = new Map<string, { title: string; exe: string; kind: 'minecraft' | 'explorer' }>()
+const metaCache = new Map<string, { title: string; exe: string; kind: 'minecraft' }>()
+/** 被推迟的下发：用户正在亲手拖它 / 退避结束时重新摆放一次 */
+const retryTimers = new Map<string, ReturnType<typeof setTimeout>>()
 /** 宿主（启动器）窗口句柄 */
 let hostHwnd: bigint | null = null
 
@@ -218,17 +214,6 @@ function loadWin32(): Win32 | null {
       CreateRectRgn: gdi.func('void *__stdcall CreateRectRgn(int l, int t, int r, int b)'),
       CombineRgn: gdi.func('int __stdcall CombineRgn(void *dst, void *a, void *b, int mode)'),
       DeleteObject: gdi.func('bool __stdcall DeleteObject(void *obj)')
-    }
-    try {
-      const dwm = koffi.load('dwmapi.dll')
-      dwmapi = {
-        DwmGetWindowAttribute: dwm.func(
-          'long __stdcall DwmGetWindowAttribute(void *hwnd, uint32 attr, _Out_ int *value, uint32 size)'
-        )
-      }
-    } catch {
-      // 没有 dwmapi 也能用，只是不去隐藏客户区里的标题栏按钮
-      dwmapi = null
     }
     return win32
   } catch (err) {
@@ -303,34 +288,6 @@ function rectOf(hwnd: bigint): NativeWindowRect | null {
   return { x: r[0], y: r[1], w: r[2] - r[0], h: r[3] - r[1] }
 }
 
-/**
- * 标题栏按钮（最小化 / 最大化 / 关闭）在**客户区**内的下边缘。
- *
- * Win11 的资源管理器等应用把标题栏画在客户区里（DWM 也据此报告按钮位置），
- * 于是按钮会出现在桌面窗口的洞口内。返回值 > 0 时把窗口再上移这么多，
- * 按钮就落到洞外、被启动器界面挡住；按钮本来就在非客户区（MC 的 GLFW 窗口、
- * 普通窗口）时返回 0，不做任何多余额外偏移。
- */
-function captionButtonBottom(hwnd: bigint, clientTop: number): number {
-  const api = win32
-  const dwm = dwmapi
-  if (!api || !dwm) return 0
-  try {
-    const rect = [0, 0, 0, 0]
-    // 返回非 0 表示该窗口没有按钮信息（例如无边框窗口）
-    if (dwm.DwmGetWindowAttribute(hwnd, DWMWA_CAPTION_BUTTON_BOUNDS, rect, 16) !== 0) return 0
-    const win = rectOf(hwnd)
-    if (!win) return 0
-    if (rect[2] <= rect[0] || rect[3] <= rect[1]) return 0
-    // rect 是窗口坐标：换算成「按钮下边缘相对客户区顶部」的距离
-    const bottomRel = win.y + rect[3] - clientTop
-    return bottomRel > 0 ? bottomRel : 0
-  } catch {
-    return 0
-  }
-}
-
-
 function clientSizeOf(hwnd: bigint): { w: number; h: number } | null {
   const api = win32
   if (!api) return null
@@ -342,9 +299,9 @@ function clientSizeOf(hwnd: bigint): { w: number; h: number } | null {
 /**
  * 该窗口所属线程是否正处在「移动 / 缩放」的模态循环里（即用户正在亲手拖动这个窗口）。
  *
- * 此时绝对不能再对它 SetWindowPos：两个线程同时对同一个窗口做移动，
- * 资源管理器这类窗口会直接崩溃（实测）。Windows 的 GetGUIThreadInfo 能跨进程
- * 读到这个状态，拿不到就当作「不在拖动」，退回原来的行为。
+ * 此时绝对不能再对它 SetWindowPos：两个线程同时对同一个窗口做移动，GL 窗口（MC）
+ * 会直接崩掉（实测）。Windows 的 GetGUIThreadInfo 能跨进程读到这个状态，
+ * 拿不到就当作「不在拖动」，退回原来的行为。
  */
 function inMoveSizeLoop(hwnd: bigint): boolean {
   const api = win32
@@ -365,18 +322,13 @@ function inMoveSizeLoop(hwnd: bigint): boolean {
 }
 
 /**
- * 让外部窗口重新画出内容。
+ * 让被重新露出的外部窗口重画一次。
  *
  * 「最小化」在这里不是真的最小化，而是**收起空洞**：启动器界面（topmost + 全不透明）
- * 把外部窗口整个盖住。资源管理器这类把内容画在客户区里的 DirectComposition / XAML
- * 岛窗口，被完全遮挡一段时间后会丢掉渲染表面，重新露出时就只剩一片空白（白屏）。
- *
- * 所以露出瞬间要做两件事：
- *   1. 请求重绘（异步 invalidate，不用 RDW_UPDATENOW，免得同步等外部窗口线程）；
- *   2. 做一次 1 像素的尺寸抖动并立刻改回 —— 用一次 WM_SIZE 逼它重建渲染表面。
- *      GL 窗口（MC）自己每帧都在重绘，不需要也不该被抖动，故只对资源管理器做。
+ * 会把它整个盖住。露出瞬间异步请求一次重绘即可（不带 RDW_UPDATENOW，免得同步
+ * 等外部窗口的线程）。
  */
-function refreshExternal(hwnd: bigint, kind: 'minecraft' | 'explorer' | undefined): void {
+function refreshExternal(hwnd: bigint): void {
   const api = win32
   if (!api) return
   try {
@@ -384,22 +336,30 @@ function refreshExternal(hwnd: bigint, kind: 'minecraft' | 'explorer' | undefine
   } catch {
     /* 忽略 */
   }
-  if (kind !== 'explorer') return
-  const r = rectOf(hwnd)
-  if (!r) return
-  try {
-    api.SetWindowPos(
-      hwnd,
-      null,
-      r.x,
-      r.y,
-      r.w,
-      r.h + REVEAL_NUDGE,
-      SWP_NOZORDER | SWP_NOACTIVATE | SWP_SHOWWINDOW
-    )
-    api.SetWindowPos(hwnd, null, r.x, r.y, r.w, r.h, SWP_NOZORDER | SWP_NOACTIVATE | SWP_SHOWWINDOW)
-  } catch {
-    /* 忽略 */
+}
+
+/**
+ * 推迟一次摆放：用户正在亲手拖这个窗口（或它正处在失败退避期）时，
+ * 本轮跳过 SetWindowPos，但稍后必须补上，否则窗口会永远停在旧位置。
+ */
+function schedulePlaceRetry(id: string): void {
+  if (retryTimers.has(id)) return
+  const timer = setTimeout(() => {
+    retryTimers.delete(id)
+    const entry = placed.get(id)
+    if (!entry || !entry.hole) return
+    placeWindow(id, entry.hole, entry.raised === true)
+  }, PLACE_RETRY_MS)
+  // 别让这个定时器拖住进程退出
+  timer.unref()
+  retryTimers.set(id, timer)
+}
+
+function clearRetry(id: string): void {
+  const timer = retryTimers.get(id)
+  if (timer) {
+    clearTimeout(timer)
+    retryTimers.delete(id)
   }
 }
 
@@ -412,11 +372,8 @@ function clientOriginOf(hwnd: bigint): { x: number; y: number } | null {
   return { x: p[0], y: p[1] }
 }
 
-/** 该窗口是否属于我们要显示的目标 */
-function classify(exe: string, cls: string, title: string): 'minecraft' | 'explorer' | null {
-  if (exe === 'explorer.exe') {
-    return EXPLORER_CLASSES.includes(cls) ? 'explorer' : null
-  }
+/** 该窗口是否属于我们要显示的目标（只认 Minecraft） */
+function classify(exe: string, cls: string, title: string): 'minecraft' | null {
   if (JAVA_EXES.includes(exe) && (MC_CLASSES.includes(cls) || /minecraft/i.test(title))) {
     return 'minecraft'
   }
@@ -485,7 +442,7 @@ function enumerateTopLevel(): RawWindow[] {
   return out
 }
 
-/** 列出可显示在桌面里的外部窗口（MC / 资源管理器文件夹窗口） */
+/** 列出可显示在桌面里的外部窗口（目前只有 Minecraft） */
 export function listWindows(): NativeWindowInfo[] {
   const api = loadWin32()
   if (!api) return []
@@ -512,13 +469,12 @@ export function listWindows(): NativeWindowInfo[] {
     if (!out.some((w) => w.id === id) && !resolve(id)) {
       placed.delete(id)
       metaCache.delete(id)
+      clearRetry(id)
       pruned++
     }
   }
   if (pruned > 0) applyRegion()
-  return out.sort((a, b) =>
-    a.kind === b.kind ? a.title.localeCompare(b.title) : a.kind === 'explorer' ? -1 : 1
-  )
+  return out.sort((a, b) => a.title.localeCompare(b.title))
 }
 
 /** 解析句柄字符串；窗口已销毁返回 null */
@@ -633,14 +589,25 @@ export function placeWindow(id: string, hole: NativeWindowRect, raise = false): 
   if (!hostOrigin) return false
 
   const entry = placed.get(id)
+  // 失败退避期：这个窗口的下发已经连续失败过，先晾一会儿再试，别把它打死。
+  if (entry?.cooldownUntil !== undefined && Date.now() < entry.cooldownUntil) {
+    schedulePlaceRetry(id)
+    return true
+  }
   // 用户正亲手拖动 / 缩放这个窗口（它的线程在移动循环里）：这时候再 SetWindowPos
-  // 就是两个线程同时移动同一个窗口，资源管理器会直接崩溃 —— 什么都不做，
-  // 等它松手后下一轮下发会把它摆回来。
-  if (entry && inMoveSizeLoop(hwnd)) return true
+  // 就是两个线程同时移动同一个窗口，MC 的 GL 窗口会直接崩掉 —— 本轮什么都不做，
+  // 记一个延迟重试，等它松手后补上（否则窗口会永远停在用户拖到的位置）。
+  if (inMoveSizeLoop(hwnd)) {
+    if (entry) {
+      entry.hole = hole
+      entry.lastHole = hole
+    }
+    schedulePlaceRetry(id)
+    return true
+  }
 
-  const kind = metaCache.get(id)?.kind
   // 「最小化」= 收起空洞（entry.hole 变 undefined）。本轮如果是从「无洞」恢复成「有洞」，
-  // 说明窗口刚被重新露出，做完摆放后要额外让它重绘 / 重建渲染表面，否则会是白屏。
+  // 说明窗口刚被重新露出，做完摆放后要额外让它重绘一次。
   const wasHidden = entry !== undefined && entry.hole === undefined
 
   const win = rectOf(hwnd)
@@ -652,17 +619,12 @@ export function placeWindow(id: string, hole: NativeWindowRect, raise = false): 
   const ncTop = clientOrigin.y - win.y
   const ncW = win.w - clientSize.w
   const ncH = win.h - clientSize.h
-  // 客户区里的标题栏按钮（Win11 资源管理器等）要挤到洞外，否则会露在桌面窗口里。
-  // 量到过非 0 值就固定下来（它对同一个窗口是常量），免得 DWM 偶发返回不同值
-  // 导致目标高度来回抖 → 每帧 WM_SIZE → 外部窗口崩溃。
-  const cachedTitleH = entry?.titleH
-  const titleH = cachedTitleH && cachedTitleH > 0 ? cachedTitleH : captionButtonBottom(hwnd, clientOrigin.y)
 
   const target: NativeWindowRect = {
     x: hostOrigin.x + hole.x - ncLeft,
-    y: hostOrigin.y + hole.y - ncTop - titleH,
+    y: hostOrigin.y + hole.y - ncTop,
     w: hole.w + ncW,
-    h: hole.h + ncH + titleH
+    h: hole.h + ncH
   }
 
   const prev = entry?.applied
@@ -677,7 +639,7 @@ export function placeWindow(id: string, hole: NativeWindowRect, raise = false): 
     entry.lastHole = hole
     // 这里也必须重建区域：从「收起空洞」恢复时位置没变，但空洞要从无到有
     applyRegion()
-    if (wasHidden) refreshExternal(hwnd, kind)
+    if (wasHidden) refreshExternal(hwnd)
     return true
   }
   // 尺寸没变就用 SWP_NOSIZE：只挪位置不触发 WM_SIZE，
@@ -687,15 +649,14 @@ export function placeWindow(id: string, hole: NativeWindowRect, raise = false): 
   const needTop = raise && !raised
 
   if (!entry) {
-    placed.set(id, { original: win, hole, lastHole: hole, titleH })
+    placed.set(id, { original: win, hole, lastHole: hole })
   } else {
     entry.hole = hole
     entry.lastHole = hole
-    entry.titleH = titleH
   }
 
   try {
-    api.SetWindowPos(
+    const ok = api.SetWindowPos(
       hwnd,
       needTop ? HWND_TOP : null,
       target.x,
@@ -708,16 +669,32 @@ export function placeWindow(id: string, hole: NativeWindowRect, raise = false): 
         (sizeChanged ? 0 : SWP_NOSIZE)
     )
     const current = placed.get(id)
+    if (!ok) {
+      // 下发被系统拒绝：计数，连续失败到上限就退避一段时间，避免高频空转。
+      if (current) {
+        const fails = (current.failCount ?? 0) + 1
+        current.failCount = fails
+        if (fails >= MAX_APPLY_FAILURES) {
+          current.cooldownUntil = Date.now() + APPLY_COOLDOWN_MS
+          current.failCount = 0
+          console.warn(`[桌面] 窗口 ${id} 连续摆放失败，暂停 ${APPLY_COOLDOWN_MS}ms 后重试`)
+          schedulePlaceRetry(id)
+        }
+      }
+      return true
+    }
     if (current) {
       current.applied = target
       current.raised = raise
+      current.failCount = 0
+      current.cooldownUntil = undefined
     }
   } catch (err) {
     console.warn(`[桌面] 摆放窗口 ${id} 失败：`, err)
     return false
   }
   applyRegion()
-  if (wasHidden) refreshExternal(hwnd, kind)
+  if (wasHidden) refreshExternal(hwnd)
   return true
 }
 
@@ -755,6 +732,7 @@ export function setHoleVisible(id: string, visible: boolean): boolean {
 
 /** 忘掉某个窗口（已销毁 / 被关掉）：清记录并重建区域 */
 function forget(id: string): void {
+  clearRetry(id)
   if (!placed.delete(id)) return
   metaCache.delete(id)
   applyRegion()
@@ -765,6 +743,7 @@ export function releaseWindow(id: string): boolean {
   const api = loadWin32()
   const entry = placed.get(id)
   placed.delete(id)
+  clearRetry(id)
   const hwnd = resolve(id)
   if (!api || !hwnd || !entry) {
     applyRegion()
@@ -798,6 +777,7 @@ export function releaseAll(): number {
   for (const id of Array.from(placed.keys())) {
     if (releaseWindow(id)) n++
   }
+  for (const id of Array.from(retryTimers.keys())) clearRetry(id)
   metaCache.clear()
   // releaseWindow 内部会重建区域；这里兜底确保宿主窗口恢复整块（并让区域缓存失效）
   lastRegionKey = null

@@ -16,6 +16,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type {
+  HomepageExternal,
   HomepageSource,
   InstalledVersion,
   LaunchOptions,
@@ -23,6 +24,7 @@ import type {
   SystemMemoryInfo
 } from '@shared/types'
 import { scanHomepageCode } from '@shared/homepage-runtime'
+import { buildSrcDoc } from '@shared/srcdoc'
 import { useApp } from '../store'
 import { useRuntime } from '../runtime'
 import { HomepageGate } from '../components/HomepageGate'
@@ -51,6 +53,14 @@ const TOKENS: Array<[string, string]> = [
 const SDK = [
   '(function () {',
   "  'use strict'",
+  '  // 先按引用抓住原生 API：脚本随后可能覆盖 window.requestAnimationFrame / String /',
+  '  // MutationObserver 等，让运行时探针彻底瘫痪（F-03）。此处早于任何脚本执行，',
+  '  // 拿到的必然是原生实现，探针从此不受覆盖影响。',
+  '  var nativeRaf = window.requestAnimationFrame',
+  '  var nativeSetTimeout = window.setTimeout',
+  '  var nativeString = String',
+  '  var nativeObserver = window.MutationObserver',
+  '  var nativeNow = Date.now',
   '  var pending = new Map()',
   '  var seq = 0',
   '  var listeners = Object.create(null)',
@@ -82,7 +92,8 @@ const SDK = [
   '      var id = ++seq',
   '      pending.set(id, { resolve: resolve, reject: reject })',
   '      parent.postMessage({ hc: 1, kind: "call", id: id, method: method, params: params || {} }, "*")',
-  '      setTimeout(function () {',
+  '      // 用原生定时器：脚本覆盖 window.setTimeout 也不能让 SDK 的超时保护失效（F-03）。',
+  '      nativeSetTimeout(function () {',
   '        if (pending.has(id)) { pending.delete(id); reject(new Error("调用超时：" + method)) }',
   '      }, 10000)',
   '    })',
@@ -118,10 +129,11 @@ const SDK = [
   '',
   '  // CSP 看门狗：脚本若移除策略 meta，立即按原内容补回。',
   '  function guard() {',
-  '    if (!cspContent || !window.MutationObserver) return',
+  '    // 用初始化时抓住的原生观察器：脚本覆盖 window.MutationObserver 会让看门狗失效（F-03）。',
+  '    if (!cspContent || typeof nativeObserver !== "function") return',
   '    try {',
   '      var head = document.head || document.documentElement',
-  '      new MutationObserver(function () {',
+  '      new nativeObserver(function () {',
   '        if (document.getElementById("hc-csp")) return',
   '        var m = document.createElement("meta")',
   '        m.id = "hc-csp"',
@@ -184,18 +196,37 @@ const SDK = [
   '  var probeScheduled = false',
   '  var probeDropped = false',
   '  var PROBE_MAX_ITEMS = 20000',
-  '  var PROBE_MAX_CHARS = 200000',
+  '  var PROBE_MAX_CHARS = 1000000',
+  '  // 短时间内的元素插入速率：脚本可能一次性插入海量元素，把危险载荷挤出探针队列（F-06 / B07）。',
+  '  // 队列长度会被逐帧排空，单看队列会漏判，所以要额外按「每秒插入量」判断。',
+  '  var burstCount = 0',
+  '  var burstAt = 0',
+  '  var PROBE_BURST_MAX = 20000',
+  '',
+  '  function countInsert() {',
+  '    var now = nativeNow()',
+  '    if (now - burstAt > 1000) { burstAt = now; burstCount = 0 }',
+  '    burstCount++',
+  '    if (burstCount > PROBE_BURST_MAX) {',
+  '      // 达标即刻预约上报：离屏洪水不经过 MutationObserver，探针队列可能一直是空的，',
+  '      // 不能再指望 probe() 来触发 flushProbe，否则 element-flood 永远发不出去（F-06 / B07）。',
+  '      probeDropped = true',
+  '      scheduleProbe()',
+  '    }',
+  '  }',
   '',
   '  function scheduleProbe() {',
   '    if (probeScheduled) return',
   '    probeScheduled = true',
-  '    if (window.requestAnimationFrame) window.requestAnimationFrame(flushProbe)',
-  '    else setTimeout(flushProbe, 16)',
+  '    // 用初始化时抓住的原生引用：脚本覆盖 window.requestAnimationFrame 也瘫痪不了探针（F-03 / B02）。',
+  '    if (typeof nativeRaf === "function") nativeRaf(flushProbe)',
+  '    else nativeSetTimeout(flushProbe, 16)',
   '  }',
   '',
   '  function flushProbe() {',
   '    probeScheduled = false',
-  '    if (!probeQueue.length) return',
+  '    // 队列空但已判定洪水时也要上报：element-flood 是 fail-closed 信号，不能被早退吞掉（B07）。',
+  '    if (!probeQueue.length && !probeDropped) return',
   '    var batch = probeQueue.splice(0, 200)',
   '    for (var k = 0; k < batch.length; k++) probeChars -= batch[k].text.length',
   '    if (probeDropped) { probeDropped = false; batch.push({ where: "element-flood", text: "" }) }',
@@ -205,9 +236,11 @@ const SDK = [
   '',
   '  function probe(where, text) {',
   '    if (text === null || text === undefined) return',
-  '    var s = String(text)',
+  '    // 用原生 String：脚本覆盖 window.String 让探针把内容转成空串以躲过检查（F-03 / B03）。',
+  '    var s = nativeString(text)',
   '    if (!s) return',
-  '    if (s.length > 8000) s = s.slice(0, 8000)',
+  '    // 不再对单条做 8000 字符截断：截断后危险关键字可能落在被砍掉的部分，',
+  '    // 只要把载荷塞到超长注释之后即可漏检（F-01 / B01）。容量由累计上限兜底。',
   '    if (probeQueue.length >= PROBE_MAX_ITEMS || probeChars >= PROBE_MAX_CHARS) {',
   '      probeDropped = true',
   '      return',
@@ -217,50 +250,178 @@ const SDK = [
   '    scheduleProbe()',
   '  }',
   '',
-  '  var WATCH_TAGS = { SCRIPT: 1, IFRAME: 1, OBJECT: 1, EMBED: 1, FORM: 1, BASE: 1, META: 1, LINK: 1, A: 1 }',
-  '  var WATCH_ATTR = { LINK: "href", A: "href" }',
+  '  // 需要观察「属性后改」的属性：脚本常先插入一个干净元素，之后再赋值 src / href（F-06 / B04 / B05）。',
+  '  var URL_ATTRS = ["src", "href", "xlink:href", "action", "formaction", "poster", "data", "background", "cite", "ping", "srcset", "manifest", "longdesc"]',
+  '  var ATTR_FILTER = ["src", "href", "xlink:href", "action", "formaction", "poster", "data", "background", "cite", "ping", "srcset", "manifest", "longdesc", "style", "srcdoc", "http-equiv", "content"]',
   '',
-  '  function probeNode(n) {',
-  '    try {',
-  '      var tag = n.tagName ? String(n.tagName).toUpperCase() : ""',
-  '      if (!WATCH_TAGS[tag]) return',
-  '      var name = "element:" + tag.toLowerCase()',
-  '      var attr = WATCH_ATTR[tag]',
-  '      if (attr) { probe(name, attr + "=" + (n.getAttribute(attr) || "")); return }',
-  '      if (tag === "SCRIPT") {',
-  '        var src = n.getAttribute("src") || ""',
-  '        probe(name + ":src", src)',
-  '        if (!src) probe(name + ":inline", n.textContent || "")',
-  '        return',
+  '  // 只认 http(s):// 与 // 开头的真正外链；data: / blob: / 相对路径 / #锚点都不算。',
+  '  function isExternalUrl(u) {',
+  '    var s = nativeString(u).trim()',
+  '    if (!s) return false',
+  '    if (/^(?:data|blob|file|about|javascript|mailto|tel):/i.test(s)) return false',
+  '    if (s.charAt(0) === "#") return false',
+  '    return /^(?:https?:)?\\/\\//i.test(s)',
+  '  }',
+  '',
+  '  // 外部资源 / 导航地址：交给宿主按「是否已授权联网」判断（B04 / B05）；',
+  '  // javascript: 伪协议直接标记为伪装代码。',
+  '  function probeUrl(where, url) {',
+  '    if (url === null || url === undefined) return',
+  '    var s = nativeString(url).trim()',
+  '    if (!s) return',
+  '    if (/^javascript:/i.test(s)) { probe("element:" + where + "#javascript", s); return }',
+  '    if (/^(?:data|blob):/i.test(s)) return',
+  '    if (isExternalUrl(s)) probe("net:" + where, s)',
+  '  }',
+  '',
+  '  // CSS 里的 url(...)：外部地址按联网事件上报，是隐蔽信标的常用手法（F-06 / B09）。',
+  '  function probeCss(text) {',
+  '    var css = nativeString(text)',
+  '    if (!css) return',
+  '    if (css.length > 20000) css = css.slice(0, 20000)',
+  '    var re = /url\\(\\s*["\']?([^"\')]+)["\']?\\s*\\)/gi',
+  '    var m',
+  '    while ((m = re.exec(css)) !== null) {',
+  '      if (isExternalUrl(m[1])) probe("net:css", m[1].trim())',
+  '    }',
+  '  }',
+  '',
+  '  // 摘掉 <meta http-equiv="refresh">（F-05 / D01）：meta refresh 能让沙箱「自我导航」，',
+  '  // 把拼接出的数据带出去，这条通路不受 connect-src 管辖，必须在生效「前」就地消灭。',
+  '  // 立即改写 http-equiv 使其失效；再从 DOM 移除。改属性会再触发一次 attributes 记录，',
+  '  // 但那时 http-equiv 已不是 refresh，函数会直接返回，不会自激。',
+  '  function defuseMetaRefresh(el) {',
+  '    var eq = ""',
+  '    try { eq = (el.getAttribute("http-equiv") || "").toLowerCase() } catch (e) { eq = "" }',
+  '    if (eq !== "refresh") return',
+  '    try { if (el.setAttribute) el.setAttribute("http-equiv", "x-hc-defused") } catch (e) {}',
+  '    try { if (el.removeAttribute) el.removeAttribute("content") } catch (e) {}',
+  '    var drop = function () {',
+  '      try { if (el.parentNode) el.parentNode.removeChild(el) } catch (e) {}',
+  '    }',
+  '    if (typeof nativeSetTimeout === "function") nativeSetTimeout(drop, 0)',
+  '    else drop()',
+  '  }',
+  '',
+  '  // 元素本体：先查 URL 属性（外链按联网上报），再按标签补充正文。',
+  '  function probeElement(el) {',
+  '    var tag = el.tagName ? nativeString(el.tagName).toUpperCase() : ""',
+  '    var hasAttr = true',
+  '    try { hasAttr = !el.attributes || el.attributes.length > 0 } catch (e) { hasAttr = true }',
+  '    if (hasAttr) {',
+  '      for (var i = 0; i < URL_ATTRS.length; i++) {',
+  '        var a = URL_ATTRS[i]',
+  '        var v = null',
+  '        try { v = el.getAttribute ? el.getAttribute(a) : null } catch (e) { v = null }',
+  '        if (v) probeUrl(tag.toLowerCase() + ":" + a, v)',
   '      }',
-  '      probe(name, n.outerHTML || "")',
-  '    } catch (e) {}',
+  '      var cv = null',
+  '      try { cv = el.getAttribute ? el.getAttribute("srcdoc") : null } catch (e) { cv = null }',
+  '      if (cv) probe("element:" + tag.toLowerCase() + ":srcdoc", cv)',
+  '      var st = null',
+  '      try { st = el.getAttribute ? el.getAttribute("style") : null } catch (e) { st = null }',
+  '      if (st) probeCss(st)',
+  '    }',
+  '    if (tag === "SCRIPT") {',
+  '      var src = ""',
+  '      try { src = el.getAttribute("src") || "" } catch (e) { src = "" }',
+  '      if (!src) probe("element:script:inline", el.textContent || "")',
+  '      return',
+  '    }',
+  '    if (tag === "STYLE") {',
+  '      var css = el.textContent || ""',
+  '      probeCss(css)',
+  '      probe("element:style", css)',
+  '      return',
+  '    }',
+  '    if (tag === "TEMPLATE") { probe("element:template", el.innerHTML || ""); return }',
+  '    if (tag === "META") {',
+  '      var eq = ""',
+  '      try { eq = (el.getAttribute("http-equiv") || "").toLowerCase() } catch (e) { eq = "" }',
+  '      if (eq === "refresh") {',
+  '        var c = ""',
+  '        try { c = el.getAttribute("content") || "" } catch (e) { c = "" }',
+  '        var um = /url\\s*=\\s*([^;\\s]+)/i.exec(c)',
+  '        if (um) probeUrl("meta:refresh", um[1])',
+  '        // 先上报再摘除：导航必须在这条 meta 生效前被消灭（F-05 / D01）。',
+  '        defuseMetaRefresh(el)',
+  '      }',
+  '    }',
+  '  }',
+  '',
+  '  // 递归遍历新增子树：文本节点也要查（createTextNode 注入危险内容，F-06 / B03 / B08）。',
+  '  function probeSubtree(n) {',
+  '    if (!n) return',
+  '    if (n.nodeType === 3) { probe("text", n.data || n.nodeValue || ""); return }',
+  '    if (n.nodeType !== 1) return',
+  '    countInsert()',
+  '    probeElement(n)',
+  '    var kids = n.childNodes',
+  '    if (!kids) return',
+  '    for (var i = 0; i < kids.length; i++) probeSubtree(kids[i])',
   '  }',
   '',
   '  function watch() {',
-  '    if (window.MutationObserver) {',
+  '    if (typeof nativeObserver === "function") {',
   '      try {',
-  '        new window.MutationObserver(function (records) {',
+  '        new nativeObserver(function (records) {',
   '          for (var i = 0; i < records.length; i++) {',
-  '            var added = records[i].addedNodes',
-  '            for (var j = 0; j < added.length; j++) {',
-  '              var n = added[j]',
-  '              if (n && n.nodeType === 1) probeNode(n)',
+  '            var rec = records[i]',
+  '            if (rec.type === "attributes") {',
+  '              var an = rec.attributeName',
+  '              var target = rec.target',
+  '              var av = null',
+  '              try { av = target.getAttribute ? target.getAttribute(an) : null } catch (e) { av = null }',
+  '              if (!av) continue',
+  '              if (an === "style") { probeCss(av); continue }',
+  '              if (an === "srcdoc") { probe("element:iframe:srcdoc", av); continue }',
+  '              var t = target.tagName ? nativeString(target.tagName).toLowerCase() : "element"',
+  '              probeUrl(t + ":" + an, av)',
+  '              // 先插一个干净的 meta，之后再改 http-equiv / content 造出 refresh 也要摘掉（F-05 / D01）。',
+  '              if (t === "meta") defuseMetaRefresh(target)',
+  '              continue',
   '            }',
+  '            var added = rec.addedNodes',
+  '            if (!added) continue',
+  '            for (var j = 0; j < added.length; j++) probeSubtree(added[j])',
   '          }',
-  '        }).observe(document.documentElement, { childList: true, subtree: true })',
+  '        }).observe(document.documentElement, {',
+  '          childList: true,',
+  '          subtree: true,',
+  '          attributes: true,',
+  '          attributeFilter: ATTR_FILTER',
+  '        })',
   '      } catch (e) {}',
+  '    }',
+  '    // write / writeln 会把整页重写并按字符串注入内容。探针本身会被探针队列截断，',
+  '    // 所以「是否含脚本/事件处理器」在沙箱内按完整字符串判定，再用 # 标记回传（F-10）。',
+  '    var writeInject = function (s) {',
+  '      var str = s === null || s === undefined ? "" : nativeString(s)',
+  '      var flags = []',
+  '      if (/<script[\\s>]/i.test(str)) flags.push("script")',
+  '      if (/<iframe[\\s>]/i.test(str)) flags.push("iframe")',
+  '      if (/\\son[a-z]+\\s*=/i.test(str)) flags.push("handler")',
+  '      if (/javascript:/i.test(str)) flags.push("javascript")',
+  '      return flags',
   '    }',
   '    try {',
   '      var rawWrite = document.write',
   '      if (typeof rawWrite === "function") {',
-  '        document.write = function (s) { probe("document.write", s); return rawWrite.apply(document, arguments) }',
+  '        document.write = function (s) {',
+  '          var f = writeInject(s)',
+  '          probe("document.write" + (f.length ? "#" + f.join(",") : ""), s)',
+  '          return rawWrite.apply(document, arguments)',
+  '        }',
   '      }',
   '    } catch (e) {}',
   '    try {',
   '      var rawWriteln = document.writeln',
   '      if (typeof rawWriteln === "function") {',
-  '        document.writeln = function (s) { probe("document.writeln", s); return rawWriteln.apply(document, arguments) }',
+  '        document.writeln = function (s) {',
+  '          var f = writeInject(s)',
+  '          probe("document.writeln" + (f.length ? "#" + f.join(",") : ""), s)',
+  '          return rawWriteln.apply(document, arguments)',
+  '        }',
   '      }',
   '    } catch (e) {}',
   '    try {',
@@ -279,6 +440,101 @@ const SDK = [
   '    }',
   '    wrapTimer("setTimeout")',
   '    wrapTimer("setInterval")',
+  '',
+  '    // 元素创建洪水：脚本可以把海量节点建进离屏的 DocumentFragment，再在 setTimeout 之前',
+  '    // 同步 appendChild（此刻 fragment 还是空的）——节点永远不进实时 DOM，MutationObserver',
+  '    // 与插入计数都看不到。故在 createElement/createElementNS 上按「创建量/秒」直接计数，',
+  '    // 创建即算，堵住这条离屏洪水通道（F-06 / B07）。',
+  '    var wrapCreate = function (name) {',
+  '      try {',
+  '        var raw = document[name]',
+  '        if (typeof raw !== "function") return',
+  '        document[name] = function () {',
+  '          countInsert()',
+  '          return raw.apply(document, arguments)',
+  '        }',
+  '      } catch (e) {}',
+  '    }',
+  '    wrapCreate("createElement")',
+  '    wrapCreate("createElementNS")',
+  '',
+  '    // ---- 运行时网络探针 ----',
+  '    // CSP 的 connect-src 是兜底；这里再主动上报「实际发起的外部请求」的地址，',
+  '    // 由宿主判断该脚本是否已获准联网 —— 拼接/模板构造出的地址静态收集不到（F-08）。',
+  '    var wrapNet = function (name, where) {',
+  '      var Ctor = window[name]',
+  '      if (typeof Ctor !== "function") return',
+  '      var wrapped = function (url) {',
+  '        try { probe(where, url) } catch (e) {}',
+  '        var args = [].slice.call(arguments)',
+  '        if (window.Reflect && window.Reflect.construct) return window.Reflect.construct(Ctor, args)',
+  '        var o = Object.create(Ctor.prototype)',
+  '        Ctor.apply(o, args)',
+  '        return o',
+  '      }',
+  '      try { window[name] = wrapped } catch (e) {}',
+  '    }',
+  '    try {',
+  '      var rawFetch = window.fetch',
+  '      if (typeof rawFetch === "function") {',
+  '        window.fetch = function (input) {',
+  '          try { probe("net:fetch", input && input.url ? input.url : input) } catch (e) {}',
+  '          return rawFetch.apply(window, arguments)',
+  '        }',
+  '      }',
+  '    } catch (e) {}',
+  '    try {',
+  '      var xhrProto = window.XMLHttpRequest && window.XMLHttpRequest.prototype',
+  '      var rawOpen = xhrProto && xhrProto.open',
+  '      if (typeof rawOpen === "function") {',
+  '        xhrProto.open = function (method, url) {',
+  '          try { probe("net:xhr", url) } catch (e) {}',
+  '          return rawOpen.apply(this, arguments)',
+  '        }',
+  '      }',
+  '    } catch (e) {}',
+  '    wrapNet("WebSocket", "net:websocket")',
+  '    wrapNet("EventSource", "net:sse")',
+  '    // ---- WebRTC 探针（D08）：RTCPeerConnection 完全绕过 connect-src，可借 STUN 泄露内网',
+  '    // 地址、借 data channel 外发数据。任何构造都按「隐蔽通道」上报，由宿主一律封锁。',
+  '    try {',
+  '      var RawRTC = window.RTCPeerConnection || window.webkitRTCPeerConnection',
+  '      if (typeof RawRTC === "function") {',
+  '        var wrapRtc = function (Ctor) {',
+  '          var Wrapped = function (cfg) {',
+  '            var urls = []',
+  '            try {',
+  '              var servers = cfg && cfg.iceServers',
+  '              if (servers && servers.length) {',
+  '                for (var i = 0; i < servers.length; i++) {',
+  '                  var s = servers[i] || {}',
+  '                  var u = s.urls',
+  '                  if (typeof u === "string") urls.push(u)',
+  '                  else if (u && u.length) { for (var j = 0; j < u.length; j++) urls.push(nativeString(u[j])) }',
+  '                }',
+  '              }',
+  '            } catch (e) {}',
+  '            try { probe("danger:webrtc", "RTCPeerConnection" + (urls.length ? " iceServers=" + urls.join(",") : "")) } catch (e) {}',
+  '            if (window.Reflect && window.Reflect.construct) return window.Reflect.construct(Ctor, [].slice.call(arguments))',
+  '            return new Ctor(cfg)',
+  '          }',
+  '          try { Wrapped.prototype = Ctor.prototype } catch (e) {}',
+  '          return Wrapped',
+  '        }',
+  '        var RtcWrapped = wrapRtc(RawRTC)',
+  '        try { window.RTCPeerConnection = RtcWrapped } catch (e) {}',
+  '        try { if (window.webkitRTCPeerConnection) window.webkitRTCPeerConnection = RtcWrapped } catch (e) {}',
+  '      }',
+  '    } catch (e) {}',
+  '    try {',
+  '      if (navigator && typeof navigator.sendBeacon === "function") {',
+  '        var rawBeacon = navigator.sendBeacon',
+  '        navigator.sendBeacon = function (url) {',
+  '          try { probe("net:beacon", url) } catch (e) {}',
+  '          return rawBeacon.apply(navigator, arguments)',
+  '        }',
+  '      }',
+  '    } catch (e) {}',
   '  }',
   '',
   '  guard()',
@@ -410,43 +666,57 @@ function avatarUrl(acc: MinecraftAccount | null): string {
   return `https://mc-heads.net/avatar/${acc.id}`
 }
 
-/** 组装 iframe 的 CSP：默认断网，仅保留内联脚本/样式与 data: 资源。 */
-function buildCsp(networkApproved: boolean, avatarHost: string): string {
+/** 取 http(s)（含协议相对 //）地址的「源」；data: / javascript: / 相对路径一律返回空串。 */
+function httpOrigin(raw: unknown): string {
+  const s = String(raw ?? '').trim()
+  if (!s) return ''
+  try {
+    if (s.startsWith('//')) return new URL(`https:${s}`).origin
+    if (/^https?:\/\//i.test(s)) return new URL(s).origin
+  } catch {
+    return ''
+  }
+  return ''
+}
+
+/**
+ * 授权联网时真正放行的「源」清单（F-04）：只允许安装时静态收集到、且用户在闸门看过的那些源，
+ * 而不是整个 https:。CSP 与运行期探针共用这一份清单，任何越界源都视为外泄。
+ */
+function homepageOrigins(externals: HomepageExternal[] | undefined, extra: string[] = []): string[] {
+  const set = new Set<string>()
+  for (const item of externals ?? []) {
+    const origin = httpOrigin(item?.url)
+    if (origin) set.add(origin)
+  }
+  for (const e of extra) if (e) set.add(e)
+  return [...set]
+}
+
+/** 组装 iframe 的 CSP：默认断网；仅在用户授权后，按「安装清单里的源」逐条放行（F-04）。 */
+function buildCsp(sources: string[], avatarHost: string): string {
+  const allow = sources.filter(Boolean)
+  const net = allow.length > 0
   const dirs: string[] = []
   const add = (name: string, values: string): void => {
     dirs.push(`${name} ${values}`)
   }
   add('default-src', "'none'")
-  add('script-src', networkApproved ? "'unsafe-inline' https:" : "'unsafe-inline'")
-  add('style-src', networkApproved ? "'unsafe-inline' https:" : "'unsafe-inline'")
+  add('script-src', net ? `'unsafe-inline' ${allow.join(' ')}` : "'unsafe-inline'")
+  add('style-src', net ? `'unsafe-inline' ${allow.join(' ')}` : "'unsafe-inline'")
   const img = ['data:', 'blob:']
   // 头像图来自启动器自身使用的官方/认证站源，与脚本外链无关，单独放行。
   if (avatarHost) img.push(avatarHost)
-  if (networkApproved) img.push('https:')
+  if (net) img.push(...allow)
   add('img-src', img.join(' '))
-  add('font-src', networkApproved ? 'data: https:' : 'data:')
-  add('media-src', networkApproved ? 'data: https:' : "'none'")
-  add('connect-src', networkApproved ? 'https:' : "'none'")
+  add('font-src', net ? `data: ${allow.join(' ')}` : 'data:')
+  add('media-src', net ? `data: ${allow.join(' ')}` : "'none'")
+  add('connect-src', net ? allow.join(' ') : "'none'")
   add('form-action', "'none'")
   add('frame-src', "'none'")
   add('object-src', "'none'")
   add('base-uri', "'none'")
   return dirs.join('; ')
-}
-
-/** 把注入内容插到 <head> 最前面；没有 head 就补一个。 */
-function buildSrcDoc(html: string, inject: string): string {
-  const head = /<head[^>]*>/i.exec(html)
-  if (head) {
-    const at = head.index + head[0].length
-    return html.slice(0, at) + inject + html.slice(at)
-  }
-  const htmlTag = /<html[^>]*>/i.exec(html)
-  if (htmlTag) {
-    const at = htmlTag.index + htmlTag[0].length
-    return `${html.slice(0, at)}<head>${inject}</head>${html.slice(at)}`
-  }
-  return `<!DOCTYPE html><html><head>${inject}</head><body>${html}</body></html>`
 }
 
 /** 「启动游戏」板块的替代界面：有自定义主页时顶替内置启动页。 */
@@ -474,6 +744,8 @@ export function CustomHomePage({ id }: { id: string }): JSX.Element {
     async () => null
   )
   const sentLogRef = useRef(0)
+  /** 沙箱内 SDK 是否已握手（收到 hello）。用于判定 CSP/SDK 注入是否真的生效。 */
+  const helloRef = useRef(false)
 
   /* ---------------- 数据装载 ---------------- */
 
@@ -562,6 +834,14 @@ export function CustomHomePage({ id }: { id: string }): JSX.Element {
     launchState === 'starting' || launchState === 'downloading' || launchState === 'launching'
   const running = launchState === 'running'
 
+  // 授权联网时真正放行的「源」（F-04）：只含安装清单里的源（外加启动器自身的头像源）。
+  // CSP、能力桥（openExternal）与运行期探针共用这一份清单，任何清单外的源都视为越权外泄。
+  const avatarOrigin = accountInfo?.avatarUrl ? httpOrigin(accountInfo.avatarUrl) : ''
+  const approvedOrigins = useMemo(
+    () => homepageOrigins(entry?.risk.externals, avatarOrigin ? [avatarOrigin] : []),
+    [entry, avatarOrigin]
+  )
+
   /* ---------------- 运行时安全拦截 ---------------- */
 
   /** 已触发过封锁：同一脚本的多次命中只提示一次。 */
@@ -601,11 +881,21 @@ export function CustomHomePage({ id }: { id: string }): JSX.Element {
   const clampMemory = useCallback(
     (raw: unknown): number => {
       const mb = Math.round(Number(raw))
-      if (!Number.isFinite(mb)) throw new Error('内存参数非法')
+      if (!Number.isFinite(mb)) {
+        lockdown('主页脚本传入了非法的内存参数（疑似伪造 / 探测）', `memoryMb=${String(raw)}`)
+        throw new Error('内存参数非法')
+      }
       const cap = Math.max(1024, Math.floor((memInfo?.free ?? 16384) / 512) * 512)
-      return Math.max(1024, Math.min(mb, cap))
+      if (mb < 1024 || mb > cap) {
+        lockdown(
+          '主页脚本请求写入超出范围的内存参数（疑似越权篡改启动配置）',
+          `memoryMb=${mb}（允许 1024–${cap} MB）`
+        )
+        throw new Error(`内存参数超出允许范围（1024–${cap} MB）`)
+      }
+      return mb
     },
-    [memInfo]
+    [memInfo, lockdown]
   )
 
   const dispatch = useCallback(
@@ -685,10 +975,15 @@ export function CustomHomePage({ id }: { id: string }): JSX.Element {
           return { ok: true, stopped: true }
         case 'log.write': {
           const level = params['level']
+          // 单条日志必须折叠成一行：换行能让脚本伪造出多条「启动器日志」，
+          // 在控制台 / 日志里混淆真实输出（F-14 / D07）。顺带剔除其它控制字符。
           const message = String(params['message'] ?? '')
+            .replace(/[\r\n\u2028\u2029]+/g, ' ⏎ ')
+            .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, '')
+            .slice(0, 4000)
           window.api.homepage.log(
             level === 'warn' || level === 'error' ? level : 'info',
-            message.slice(0, 4000)
+            message
           )
           return null
         }
@@ -705,6 +1000,12 @@ export function CustomHomePage({ id }: { id: string }): JSX.Element {
           if (!entry?.networkApproved) throw new Error('该脚本未获得联网授权，禁止打开外部链接')
           const url = String(params['url'] ?? '')
           if (!/^https?:\/\//i.test(url)) throw new Error('仅允许打开 http/https 链接')
+          // 只放行安装清单里声明过的源：拼接 / 运行期生成的地址静态收集不到，多半是诱骗外链（F-13 / D06 / C10③）。
+          const origin = httpOrigin(url)
+          if (!origin || !approvedOrigins.includes(origin)) {
+            lockdown('脚本请求打开安装清单之外的链接（疑似诱骗外链）', url)
+            throw new Error('该链接不在安装时声明的外部地址清单内，已拒绝打开')
+          }
           await window.api.shell.openExternal(url)
           return url
         }
@@ -739,6 +1040,7 @@ export function CustomHomePage({ id }: { id: string }): JSX.Element {
       launch,
       stopLaunch,
       entry?.networkApproved,
+      approvedOrigins,
       theme
     ]
   )
@@ -837,11 +1139,45 @@ export function CustomHomePage({ id }: { id: string }): JSX.Element {
         if (!Array.isArray(data.batch)) return
         for (const item of data.batch) {
           const where = String(item?.where ?? 'element')
+          const text = String(item?.text ?? '')
           if (where === FLOOD_WHERE) {
             lockdown('短时间内在页面中插入大量元素，疑似规避安全检查', '运行时探针队列溢出')
             return
           }
-          const hits = scanHomepageCode(String(item?.text ?? ''), 'code')
+          // 绕过 CSP 的隐蔽通道（WebRTC / STUN）：与是否授权联网无关，一律封锁（D08）。
+          if (where.startsWith('danger:')) {
+            lockdown('脚本使用了绕过 CSP 的隐蔽通道（WebRTC，疑似外泄 / 内网探测）', `${where.slice(7)} → ${text}`)
+            return
+          }
+          // 未获准联网的脚本真的发起外部请求时立即封锁：拼接 / 模板构造出的地址静态收集不到（F-08），
+          // 这是 CSP 之外的第二道兜底。
+          if (where.startsWith('net:')) {
+            if (!entry?.networkApproved) {
+              lockdown('未获准联网的脚本发起了外部请求（疑似伪装行为）', `${where.slice(4)} → ${text}`)
+              return
+            }
+            // 已授权也要比对「源」：清单只放行安装时看到的那些源，其余一律按越权外泄处理（F-04 / D03 / D04）。
+            const origin = httpOrigin(text)
+            if (origin && !approvedOrigins.includes(origin)) {
+              lockdown(
+                '脚本访问了安装清单之外的外部地址（疑似越权外泄）',
+                `${where.slice(4)} → ${text}（不在授权源清单内）`
+              )
+              return
+            }
+            continue
+          }
+          // write / writeln 注入脚本，或元素属性写成 javascript: 伪协议：按「伪装代码」处理（F-10 / B06）。
+          if (where.includes('#')) {
+            const [kind, flags] = where.split('#')
+            lockdown(
+              '运行时动态写入了脚本 / 事件处理器 / javascript: 伪协议内容（疑似伪装代码）',
+              `${kind} 写入内容含：${flags}`
+            )
+            return
+          }
+          // 不截断：截断会让危险关键字落在被砍掉的部分而漏检（F-01 / B01）。
+          const hits = scanHomepageCode(text, 'code', { maxLength: 0 })
           if (hits.length > 0) {
             lockdown(hits[0], `${where}：${hits.join('；')}`)
             return
@@ -851,6 +1187,7 @@ export function CustomHomePage({ id }: { id: string }): JSX.Element {
       }
 
       if (data.kind === 'hello') {
+        helloRef.current = true
         sentLogRef.current = 0
         postToFrame({ hc: 1, kind: 'init', data: { tokens: readTokens(), snapshot } })
         if (settings.debugMode && launchLog.length > 0) {
@@ -880,7 +1217,7 @@ export function CustomHomePage({ id }: { id: string }): JSX.Element {
     }
     window.addEventListener('message', onMessage)
     return () => window.removeEventListener('message', onMessage)
-  }, [postToFrame, readTokens, snapshot, settings.debugMode, launchLog, lockdown])
+  }, [postToFrame, readTokens, snapshot, settings.debugMode, launchLog, lockdown, entry?.networkApproved, approvedOrigins])
 
   // 运行日志：仅在 Debug 模式推送给脚本，且只推增量。
   useEffect(() => {
@@ -898,7 +1235,7 @@ export function CustomHomePage({ id }: { id: string }): JSX.Element {
 
   const srcDoc = useMemo(() => {
     if (!entry) return ''
-    const csp = buildCsp(entry.networkApproved, accountInfo?.avatarUrl ? new URL(accountInfo.avatarUrl).origin : '')
+    const csp = buildCsp(entry.networkApproved ? approvedOrigins : [], avatarOrigin)
     const inject = [
       `<meta id="hc-csp" http-equiv="Content-Security-Policy" content="${csp}">`,
       `<style id="hc-base">
@@ -909,7 +1246,38 @@ export function CustomHomePage({ id }: { id: string }): JSX.Element {
       `<script id="hc-sdk">${SDK}</script>`
     ].join('')
     return buildSrcDoc(entry.content, inject)
-  }, [entry, accountInfo?.avatarUrl])
+  }, [entry, approvedOrigins, avatarOrigin])
+
+  // 闸门放行的脚本在本会话内直接运行；已验证的联网脚本不写 confirmed，
+  // 所以需要单独记住「本次已通过」，否则会在闸门与运行之间来回抖动。
+  const approved = !!entry && (passed || (entry.risk.level !== 'reject' && entry.confirmed))
+
+  // 安全组件握手看门狗：SDK 会在解析期同步发一条 hello。迟迟收不到，说明注入点被
+  // 注释 / 畸形结构劫持（F-02）——CSP 与 window.hc 都可能没生效。无法确认隔离就一律封锁，
+  // 绝不带着未知状态继续跑。
+  useEffect(() => {
+    helloRef.current = false
+  }, [srcDoc])
+  useEffect(() => {
+    if (!approved || !srcDoc) return
+    const timer = window.setTimeout(() => {
+      if (helloRef.current) return
+      lockdown(
+        '主页安全组件未生效，已拒绝运行',
+        '未收到沙箱内安全检查 SDK 的握手（window.hc 缺失，CSP 也可能未注入）'
+      )
+    }, 6000)
+    return () => window.clearTimeout(timer)
+  }, [approved, srcDoc, lockdown])
+
+  // 主进程在导航发生「前」拦下沙箱主页的对外跳转（F-05 / D01 / D02）：meta refresh 由 SDK
+  // 就地摘除、location 赋值由主进程阻断。这类导航不受 connect-src 管辖，命中即视为外泄，
+  // 这里负责把全屏封锁遮罩弹出来。
+  useEffect(() => {
+    return window.api.homepage.onNavBlocked((url) => {
+      lockdown('沙箱主页尝试跳转到外部地址（导航外泄）', url)
+    })
+  }, [lockdown])
 
   if (error) {
     return (
@@ -921,10 +1289,6 @@ export function CustomHomePage({ id }: { id: string }): JSX.Element {
   }
 
   if (!entry) return <LoadingState text="正在载入自定义主页…" />
-
-  // 闸门放行的脚本在本会话内直接运行；已验证的联网脚本不写 confirmed，
-  // 所以需要单独记住「本次已通过」，否则会在闸门与运行之间来回抖动。
-  const approved = passed || (entry.risk.level !== 'reject' && entry.confirmed)
 
   return (
     <div className="relative h-full">

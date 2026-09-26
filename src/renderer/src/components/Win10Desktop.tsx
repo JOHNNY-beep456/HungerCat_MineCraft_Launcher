@@ -16,10 +16,14 @@ import { useApp } from '../store'
 import { useRuntime } from '../runtime'
 import { renderPage } from '../pages/router'
 import { InstanceManagePage } from '../pages/InstanceManagePage'
+import { FileManager } from './FileManager'
 import logo from '../assets/logo.png'
 
 /** 任务栏高度，窗口拖动与最大化都以此留边。 */
 const TASKBAR_H = 48
+
+/** 自实现资源管理器在桌面里只保留一个窗口，用固定 key 标识。 */
+const FILES_KEY = 'files'
 
 interface WinState {
   /** 同一页面只保留一个窗口，故 key 即页面 id；实例管理窗口用 manage:<实例id>；外部窗口用 native:<hwnd> */
@@ -29,6 +33,8 @@ interface WinState {
   icon: string
   /** 实例管理窗口正在管理的实例 id */
   managingId?: string
+  /** 自实现资源管理器窗口当前显示的目录 */
+  filePath?: string
   /** 被搬进桌面的外部窗口（MC / 资源管理器） */
   native?: { id: string; kind: NativeWindowInfo['kind'] }
   x: number
@@ -114,9 +120,10 @@ function NativeView({
       if (!r) return
       const prev = lastSent.current
       if (!force && prev && prev.x === r.x && prev.y === r.y && prev.w === r.w && prev.h === r.h) return
-      // 拖动时限制下发频率：每帧 SetWindowPos 会拖垮外部窗口（MC 会因此崩溃）
+      // 兜底节流：即使矩形一直在变，也不比下面这个间隔更密地下发。
+      // 高频 SetWindowPos 会把外部窗口（尤其 MC 的 GL 窗口）拖崩。
       const now = Date.now()
-      if (!force && now - lastAt.current < 50) return
+      if (!force && now - lastAt.current < 80) return
       lastSent.current = r
       lastAt.current = now
       void window.api.desktop.place(id, r, raise).then((ok) => {
@@ -132,16 +139,18 @@ function NativeView({
 
   useEffect(() => {
     if (hidden) {
-      // 收起空洞：宿主窗口恢复整块，外部窗口被压在下面，启动器界面完整可见
+      // 收起空洞：宿主窗口恢复整块，外部窗口被压在下面，启动器界面完整可见。
+      // 用户正在拖动这个桌面窗口时也走这里 —— 拖动期间**一次都不下发 SetWindowPos**，
+      // 松手后由下一次 sync(true) 一次性摆到新位置。
       void window.api.desktop.setVisible(id, false)
       return
     }
     sync(true)
 
     // 位置变化没有可靠的事件源（拖动、最大化、宿主缩放）。
-    // 用「变化检测 + 50ms 节流」的轻量轮询兜底：拖动时才能跟手，静止时
-    // sync() 会在测完矩形后直接返回，不产生任何 IPC 与 SetWindowPos。
-    const timer = setInterval(() => sync(), 40)
+    // 用「变化检测 + 节流」的轻量轮询兜底，静止时 sync() 会在测完矩形后直接返回，
+    // 不产生任何 IPC 与 SetWindowPos。
+    const timer = setInterval(() => sync(), 100)
     const el = ref.current
     const observer =
       el && typeof ResizeObserver !== 'undefined' ? new ResizeObserver(() => sync()) : null
@@ -159,7 +168,7 @@ function NativeView({
 /* ---------------- 桌面 ---------------- */
 
 export function Win10Desktop(): JSX.Element {
-  const { settings, selectedAccount } = useApp()
+  const { settings, selectedAccount, fileManagerPath, closeFileManager } = useApp()
   const { downloads } = useRuntime()
   const [wins, setWins] = useState<WinState[]>([])
   const [selected, setSelected] = useState<PageId | null>(null)
@@ -167,6 +176,14 @@ export function Win10Desktop(): JSX.Element {
   const [now, setNow] = useState(() => new Date())
   const zRef = useRef(10)
   const dragRef = useRef<{ key: string; dx: number; dy: number } | null>(null)
+  /**
+   * 正在被拖动的桌面窗口 key。
+   *
+   * 拖动**外部窗口**（MC）的桌面窗口时不能跟着下发布局：两个线程同时移动同一个
+   * 窗口会把 MC 的 GL 窗口拖崩。所以拖动期间把它的空洞收起来（外部窗口被启动器
+   * 界面盖住），松手后一次性摆到新位置。
+   */
+  const [dragKey, setDragKey] = useState<string | null>(null)
 
   // 本地模式隐藏联网相关入口，与侧栏保持一致。
   const nav = useMemo(
@@ -288,6 +305,42 @@ export function Win10Desktop(): JSX.Element {
     })
   }, [nativeList, nativeOk])
 
+  /* --- 自实现资源管理器：把 store 里的目标目录同步成桌面上唯一的「文件」窗口 --- */
+  useEffect(() => {
+    if (!fileManagerPath) return
+    setWins((ws) => {
+      const exist = ws.find((w) => w.key === FILES_KEY)
+      if (exist) {
+        if (exist.filePath === fileManagerPath && !exist.minimized) {
+          return ws.map((w) => (w.key === FILES_KEY ? { ...w, z: (zRef.current += 1) } : w))
+        }
+        return ws.map((w) =>
+          w.key === FILES_KEY ? { ...w, filePath: fileManagerPath, minimized: false, z: (zRef.current += 1) } : w
+        )
+      }
+      const vw = window.innerWidth
+      const vh = window.innerHeight
+      const idx = ws.length
+      return [
+        ...ws,
+        {
+          key: FILES_KEY,
+          page: 'home',
+          title: '文件资源管理器',
+          icon: 'folder',
+          filePath: fileManagerPath,
+          x: Math.min(96 + idx * 26, Math.max(0, vw - 560)),
+          y: Math.min(56 + idx * 24, Math.max(0, vh - TASKBAR_H - 420)),
+          w: Math.min(960, Math.max(560, vw - 200)),
+          h: Math.min(640, Math.max(380, vh - TASKBAR_H - 160)),
+          z: (zRef.current += 1),
+          minimized: false,
+          maximized: false
+        }
+      ]
+    })
+  }, [fileManagerPath])
+
   /* --- 任务栏时钟 --- */
   useEffect(() => {
     const timer = setInterval(() => setNow(new Date()), 20_000)
@@ -386,6 +439,12 @@ export function Win10Desktop(): JSX.Element {
     setWins((ws) => ws.filter((w) => w.key !== key))
   }, [])
 
+  /** 关闭自实现资源管理器窗口：同时清掉 store 里的目录，避免被同步逻辑又拉回来。 */
+  const closeFiles = useCallback(() => {
+    closeFileManager()
+    setWins((ws) => ws.filter((w) => w.key !== FILES_KEY))
+  }, [closeFileManager])
+
   /**
    * 关闭桌面里的外部窗口 = 还给系统（**不会**关掉玩家的 MC / 资源管理器），
    * 并记住本次会话不再自动搬回。
@@ -446,6 +505,7 @@ export function Win10Desktop(): JSX.Element {
     if (w.maximized) return
     if ((e.target as HTMLElement).closest('button')) return
     dragRef.current = { key: w.key, dx: e.clientX - w.x, dy: e.clientY - w.y }
+    setDragKey(w.key)
     e.currentTarget.setPointerCapture(e.pointerId)
   }
 
@@ -462,6 +522,7 @@ export function Win10Desktop(): JSX.Element {
 
   const endDrag = (): void => {
     dragRef.current = null
+    setDragKey(null)
   }
 
   const topKey = wins
@@ -573,23 +634,31 @@ export function Win10Desktop(): JSX.Element {
                 className="win10-ctl is-close"
                 title={w.native ? '从桌面移出（不关闭该窗口）' : '关闭'}
                 aria-label={w.native ? '从桌面移出（不关闭该窗口）' : '关闭'}
-                onClick={() => (w.native ? closeNative(w.key, w.native.id) : closeWin(w.key))}
+                onClick={() =>
+                  w.native ? closeNative(w.key, w.native.id) : w.key === FILES_KEY ? closeFiles() : closeWin(w.key)
+                }
               >
                 <Glyph d="M4 4l8 8M12 4l-8 8" size={13} />
               </button>
             </div>
           </div>
 
-          <div className="win10-body" style={w.native ? { position: 'relative', padding: 0 } : undefined}>
+          <div
+            className="win10-body"
+            style={w.native ? { position: 'relative', padding: 0 } : w.filePath ? { padding: 0, overflow: 'hidden' } : undefined}
+          >
             {w.native ? (
               // 外部窗口被摆在这块矩形的屏幕位置上，宿主窗口在此挖洞透出，
               // 所以这里只留占位；被自己的窗口盖住或菜单打开时收起空洞。
               <NativeView
                 id={w.native.id}
-                hidden={nativeHoleHidden(w)}
+                hidden={nativeHoleHidden(w) || dragKey === w.key}
                 raise={topKey === w.key}
                 onGone={refreshNative}
               />
+            ) : w.filePath ? (
+              // 自实现资源管理器：key 用当前目录，换目录时整块重挂载，内部状态干净
+              <FileManager key={w.filePath} initialPath={w.filePath} />
             ) : w.managingId ? (
               <InstanceManagePage
                 versionId={w.managingId}

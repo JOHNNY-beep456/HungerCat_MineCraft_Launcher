@@ -29,11 +29,53 @@ export interface StreamDownloadOptions {
 
 /* ---------- 瞬时 HTTP 错误（429 限流 / 408 / 5xx）自动重试 ---------- */
 const TRANSIENT_STATUS = new Set([408, 425, 429, 500, 502, 503, 504])
-function httpError(status: number, res: Response): Error & { status: number; retryAfter?: string } {
+
+/** 错误响应正文的读取上限：只取一小段，够透出服务端的中文说明即可。 */
+const ERROR_BODY_LIMIT = 4 * 1024
+
+/** 压缩成单行，避免把多行正文塞进错误消息后难以阅读。 */
+function oneLine(s: string): string {
+  return s.replace(/\s+/g, ' ').trim()
+}
+
+/**
+ * 读取错误响应正文（最多 ERROR_BODY_LIMIT 字节）。
+ * 服务端（如 script.php）在 4xx 时会用正文写中文原因，这里取回来附到错误消息上，
+ * 让上层（主进程 / 渲染层）能透出具体说明，而不是只剩一个 HTTP 状态码。
+ */
+async function readErrorBody(res: Response): Promise<string> {
+  try {
+    const reader = res.body?.getReader()
+    if (!reader) return ''
+    const chunks: Buffer[] = []
+    let total = 0
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+      total += value.byteLength
+      chunks.push(Buffer.from(value))
+      if (total >= ERROR_BODY_LIMIT) {
+        await reader.cancel().catch(() => {})
+        break
+      }
+    }
+    return Buffer.concat(chunks).subarray(0, ERROR_BODY_LIMIT).toString('utf-8')
+  } catch {
+    return ''
+  }
+}
+
+async function httpError(
+  status: number,
+  res: Response
+): Promise<Error & { status: number; retryAfter?: string }> {
   const e = new Error(`下载失败 (HTTP ${status})`) as Error & { status: number; retryAfter?: string }
   e.status = status
   const ra = res.headers.get('retry-after')
   if (ra) e.retryAfter = ra
+  // 把服务端正文里的说明拼进消息：跨进程只传 message，附加字段会丢失，必须放进 message。
+  const body = oneLine(await readErrorBody(res))
+  if (body) e.message = `下载失败 (HTTP ${status})：${body}`
   return e
 }
 function retryDelayMs(err: { status?: number; retryAfter?: string }, attempt: number): number {
@@ -129,7 +171,7 @@ async function streamOnce(url: string, dest: string, opts: StreamDownloadOptions
 async function singleDownload(url: string, dest: string, opts: StreamDownloadOptions): Promise<void> {
   const { signal, onBytes, headers } = opts
   const res = await fetch(url, { headers: { ...UA, ...(headers ?? {}) }, signal })
-  if (!res.ok || !res.body) throw httpError(res.status, res)
+  if (!res.ok || !res.body) throw await httpError(res.status, res)
   const reader = res.body.getReader()
   const out = createWriteStream(dest)
   try {
@@ -177,7 +219,7 @@ async function parallelDownload(
             // 服务器忽略了 Range，回退单连接
             return false
           }
-          if (res.status !== 206 || !res.body) throw httpError(res.status, res)
+          if (res.status !== 206 || !res.body) throw await httpError(res.status, res)
           const reader = res.body.getReader()
           let pos = start
           for (;;) {
