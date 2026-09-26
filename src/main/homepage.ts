@@ -17,6 +17,7 @@ import { promises as fsp } from 'fs'
 import { join } from 'path'
 import { createHash } from 'crypto'
 import type {
+  HomepageBlock,
   HomepageEntry,
   HomepageExternal,
   HomepageRisk,
@@ -47,6 +48,11 @@ interface StoredState {
   networkSha: string
   /** 最近一次联网校验结果。 */
   verify: HomepageVerify
+  /**
+   * 运行时被安全策略拦截的封锁记录。
+   * 与内容哈希无关：只在删除脚本时清除，避免「改几个字再启用」绕过封锁。
+   */
+  blocked?: HomepageBlock
 }
 
 function homepageDir(): string {
@@ -233,10 +239,19 @@ async function buildEntry(
   const hash = sha256(buf)
   const stat = await fsp.stat(file)
   const meta = parseHomepageMeta(content, id)
+  const st = state[id] ?? { confirmedSha: '', networkSha: '', verify: 'unchecked' as HomepageVerify }
   let risk = analyzeScript(content)
   // 静态已判拒绝时结论不会再变，不必再去取回外链脚本正文。
   if (deep && risk.level !== 'reject') risk = await deepAnalyzeRisk(risk, hash)
-  const st = state[id] ?? { confirmedSha: '', networkSha: '', verify: 'unchecked' as HomepageVerify }
+  if (st.blocked) {
+    // 运行时被抓到过危险行为的脚本：一律维持「拒绝运行」。
+    // 封锁与内容哈希无关，改几个字不会解除，只能删除或重新导入。
+    risk = {
+      ...risk,
+      level: 'reject',
+      blocks: [`运行时被安全策略拦截：${st.blocked.reason}`, ...risk.blocks]
+    }
+  }
   return {
     id,
     meta,
@@ -249,6 +264,7 @@ async function buildEntry(
     confirmed: st.confirmedSha === hash,
     networkApproved: st.networkSha === hash,
     active: settings.get().homepageId === id,
+    blocked: st.blocked,
     content
   }
 }
@@ -358,6 +374,13 @@ export async function verifyHomepage(id: string): Promise<HomepageVerifyResult> 
   const state = await loadState()
   const st = state[id] ?? { confirmedSha: '', networkSha: '', verify: 'unchecked' as HomepageVerify }
 
+  if (source.blocked) {
+    return {
+      entry: stripContent(source),
+      reachable: true,
+      message: `该脚本在运行时被安全策略拦截并封锁（${source.blocked.reason}），已禁止运行`
+    }
+  }
   if (source.risk.level === 'reject') {
     return { entry: stripContent(source), reachable: true, message: '静态检测未通过，已拒绝运行' }
   }
@@ -397,6 +420,9 @@ export async function verifyHomepage(id: string): Promise<HomepageVerifyResult> 
 /** 记录用户对当前脚本内容的确认；network=true 时同时授权联网能力。 */
 export async function confirmHomepage(id: string, network: boolean): Promise<HomepageEntry> {
   const source = await readHomepage(id)
+  if (source.blocked) {
+    throw new Error(`该脚本已被安全策略封锁（${source.blocked.reason}），不允许运行`)
+  }
   if (source.risk.level === 'reject') throw new Error('该脚本未通过静态安全检测，不允许运行')
   const state = await loadState()
   const st = state[id] ?? { confirmedSha: '', networkSha: '', verify: source.verify }
@@ -414,8 +440,32 @@ export async function setActiveHomepage(id: string): Promise<void> {
     return
   }
   const source = await readHomepage(id)
+  if (source.blocked) {
+    throw new Error(`该脚本已被安全策略封锁（${source.blocked.reason}），不能设为默认主页`)
+  }
   if (source.risk.level === 'reject') throw new Error('该脚本未通过静态安全检测，不能设为默认主页')
   settings.set({ homepageId: id })
+}
+
+/**
+ * 运行时检测到危险代码（删除 / 修改文件、格式化、伪装代码）时调用：
+ * 封锁脚本并立即停用（回到内置界面）。
+ *
+ * 封锁是持久的：与脚本内容哈希无关，也不会被「重新确认」解除，
+ * 只能从主页管理页删除脚本、或删掉后重新导入（新的标识）。
+ */
+export async function blockHomepage(id: string, reason: string): Promise<void> {
+  resolveEntry(id)
+  const state = await loadState()
+  const st = state[id] ?? { confirmedSha: '', networkSha: '', verify: 'unchecked' as HomepageVerify }
+  const text = String(reason ?? '').trim().slice(0, 300) || '检测到危险代码'
+  if (!st.blocked) st.blocked = { at: Date.now(), reason: text }
+  // 封锁后此前的确认与联网授权一并作废。
+  st.confirmedSha = ''
+  st.networkSha = ''
+  state[id] = st
+  await saveState(state)
+  if (settings.get().homepageId === id) settings.set({ homepageId: '' })
 }
 
 /** 拉取主页市场列表。 */

@@ -236,6 +236,11 @@ export function HomepagePage(): JSX.Element {
                         </div>
                       </div>
                       <div className="flex shrink-0 flex-col items-end gap-1">
+                        {e.blocked && (
+                          <span className="chip" style={{ color: 'var(--fill-danger)' }}>
+                            已封锁
+                          </span>
+                        )}
                         <span className="chip" style={{ color: rb.color }}>
                           {rb.text}
                         </span>

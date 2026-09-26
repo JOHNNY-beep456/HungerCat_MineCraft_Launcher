@@ -9,8 +9,9 @@
 //   - 注入 SDK，脚本通过 window.hc 使用宿主能力（postMessage 白名单桥）。
 //
 // 宿主能力（与需求一一对应）：总内存 / 已用内存 / 分配给游戏的内存（可改）/
-// 玩家头像 / 玩家名 / 版本列表 / 选中版本（可改）/ 运行日志（仅 Debug 模式）/
-// 启动游戏（带 Java 检测回退）/ 结束游戏 / 运行状态 / 明暗模式 / 当前主题。
+// 玩家头像 / 玩家名 / 版本列表 / 选中版本（可改）/ 选中版本的加载器与版本号 /
+// 启动器版本号 / 运行日志（仅 Debug 模式）/ 启动游戏（带 Java 检测回退）/
+// 结束游戏 / 运行状态 / 明暗模式 / 当前主题。
 // ---------------------------------------------------------------------------
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
@@ -21,6 +22,7 @@ import type {
   MinecraftAccount,
   SystemMemoryInfo
 } from '@shared/types'
+import { scanHomepageCode } from '@shared/homepage-runtime'
 import { useApp } from '../store'
 import { useRuntime } from '../runtime'
 import { HomepageGate } from '../components/HomepageGate'
@@ -150,8 +152,12 @@ const SDK = [
   '    versions: {',
   '      list: function () { return send("versions.list") },',
   '      selected: function () { return send("versions.selected") },',
-  '      select: function (id) { return send("versions.select", { id: id }) }',
+  '      select: function (id) { return send("versions.select", { id: id }) },',
+  '      info: function () { return send("versions.info") },',
+  '      loader: function () { return send("versions.loader") },',
+  '      number: function () { return send("versions.number") }',
   '    },',
+  '    launcher: { version: function () { return send("launcher.version") } },',
   '    game: {',
   '      launch: function () { return send("game.launch") },',
   '      stop: function () { return send("game.stop") },',
@@ -170,11 +176,173 @@ const SDK = [
   '    Object.defineProperty(window, "hc", { value: api, writable: false, configurable: false })',
   '  } catch (e) { window.hc = api }',
   '',
+  '  // ---- 运行时安全探针 ----',
+  '  // 每个「新加载进来的元素」与「动态写入/执行的源码」都要交给宿主检查：',
+  '  // 脚本可以用字符串拼接绕过静态匹配，只能在运行时按实际发生的行为再查一遍。',
+  '  var probeQueue = []',
+  '  var probeChars = 0',
+  '  var probeScheduled = false',
+  '  var probeDropped = false',
+  '  var PROBE_MAX_ITEMS = 20000',
+  '  var PROBE_MAX_CHARS = 200000',
+  '',
+  '  function scheduleProbe() {',
+  '    if (probeScheduled) return',
+  '    probeScheduled = true',
+  '    if (window.requestAnimationFrame) window.requestAnimationFrame(flushProbe)',
+  '    else setTimeout(flushProbe, 16)',
+  '  }',
+  '',
+  '  function flushProbe() {',
+  '    probeScheduled = false',
+  '    if (!probeQueue.length) return',
+  '    var batch = probeQueue.splice(0, 200)',
+  '    for (var k = 0; k < batch.length; k++) probeChars -= batch[k].text.length',
+  '    if (probeDropped) { probeDropped = false; batch.push({ where: "element-flood", text: "" }) }',
+  '    if (probeQueue.length) scheduleProbe()',
+  '    parent.postMessage({ hc: 1, kind: "probe", batch: batch }, "*")',
+  '  }',
+  '',
+  '  function probe(where, text) {',
+  '    if (text === null || text === undefined) return',
+  '    var s = String(text)',
+  '    if (!s) return',
+  '    if (s.length > 8000) s = s.slice(0, 8000)',
+  '    if (probeQueue.length >= PROBE_MAX_ITEMS || probeChars >= PROBE_MAX_CHARS) {',
+  '      probeDropped = true',
+  '      return',
+  '    }',
+  '    probeQueue.push({ where: where, text: s })',
+  '    probeChars += s.length',
+  '    scheduleProbe()',
+  '  }',
+  '',
+  '  var WATCH_TAGS = { SCRIPT: 1, IFRAME: 1, OBJECT: 1, EMBED: 1, FORM: 1, BASE: 1, META: 1, LINK: 1, A: 1 }',
+  '  var WATCH_ATTR = { LINK: "href", A: "href" }',
+  '',
+  '  function probeNode(n) {',
+  '    try {',
+  '      var tag = n.tagName ? String(n.tagName).toUpperCase() : ""',
+  '      if (!WATCH_TAGS[tag]) return',
+  '      var name = "element:" + tag.toLowerCase()',
+  '      var attr = WATCH_ATTR[tag]',
+  '      if (attr) { probe(name, attr + "=" + (n.getAttribute(attr) || "")); return }',
+  '      if (tag === "SCRIPT") {',
+  '        var src = n.getAttribute("src") || ""',
+  '        probe(name + ":src", src)',
+  '        if (!src) probe(name + ":inline", n.textContent || "")',
+  '        return',
+  '      }',
+  '      probe(name, n.outerHTML || "")',
+  '    } catch (e) {}',
+  '  }',
+  '',
+  '  function watch() {',
+  '    if (window.MutationObserver) {',
+  '      try {',
+  '        new window.MutationObserver(function (records) {',
+  '          for (var i = 0; i < records.length; i++) {',
+  '            var added = records[i].addedNodes',
+  '            for (var j = 0; j < added.length; j++) {',
+  '              var n = added[j]',
+  '              if (n && n.nodeType === 1) probeNode(n)',
+  '            }',
+  '          }',
+  '        }).observe(document.documentElement, { childList: true, subtree: true })',
+  '      } catch (e) {}',
+  '    }',
+  '    try {',
+  '      var rawWrite = document.write',
+  '      if (typeof rawWrite === "function") {',
+  '        document.write = function (s) { probe("document.write", s); return rawWrite.apply(document, arguments) }',
+  '      }',
+  '    } catch (e) {}',
+  '    try {',
+  '      var rawWriteln = document.writeln',
+  '      if (typeof rawWriteln === "function") {',
+  '        document.writeln = function (s) { probe("document.writeln", s); return rawWriteln.apply(document, arguments) }',
+  '      }',
+  '    } catch (e) {}',
+  '    try {',
+  '      var rawEval = window.eval',
+  '      if (typeof rawEval === "function") {',
+  '        window.eval = function (s) { probe("eval", s); return rawEval.apply(window, arguments) }',
+  '      }',
+  '    } catch (e) {}',
+  '    var wrapTimer = function (name) {',
+  '      var raw = window[name]',
+  '      if (typeof raw !== "function") return',
+  '      window[name] = function (fn) {',
+  '        if (typeof fn === "string") probe(name + ":string", fn)',
+  '        return raw.apply(window, arguments)',
+  '      }',
+  '    }',
+  '    wrapTimer("setTimeout")',
+  '    wrapTimer("setInterval")',
+  '  }',
+  '',
   '  guard()',
+  '  watch()',
   '  parent.postMessage({ hc: 1, kind: "hello" }, "*")',
   '  emit("ready", snapshot)',
   '})()'
 ].join('\n')
+
+/**
+ * SDK 语法自检（模块加载时执行一次）。
+ *
+ * SDK 是字符串常量，tsc 与构建都不会校验其内部语法：一处笔误（例如漏写逗号）
+ * 就会让整块 SDK 解析失败、window.hc 永不挂载，而且运行期没有任何提示。
+ *
+ * 渲染进程的 CSP 是 script-src 'self' 'unsafe-inline'（不含 'unsafe-eval'），
+ * new Function / eval 会被直接拦成 EvalError，所以这里改用「插入一段只解析、不执行的
+ * <script>」：把源码包进一个永不调用的函数，语法错误会以 SyntaxError 形式上报到
+ * window 的 error 事件，从而在不放宽 CSP 的前提下完成自检。
+ */
+function checkSdkSyntax(): void {
+  let settled = false
+  const script = document.createElement('script')
+  script.textContent = `void function () {\n${SDK}\n}`
+
+  const onError = (e: ErrorEvent): void => {
+    if (settled) return
+    // 只认「本文档内联脚本」的语法错误，避免把别处的运行时错误算到 SDK 头上
+    if (e.filename && e.filename !== location.href) return
+    if (!(e.error instanceof SyntaxError)) return
+    settled = true
+    window.removeEventListener('error', onError, true)
+    const detail = `SDK 存在语法错误，window.hc 将不可用：${e.error.message}`
+    console.error('[自定义主页]', detail)
+    try {
+      window.api.homepage.log('error', `[自定义主页] ${detail}`)
+    } catch {
+      /* 启动早期日志通道可能尚未就绪，此时仅保留控制台输出 */
+    }
+  }
+
+  window.addEventListener('error', onError, true)
+  ;(document.head ?? document.documentElement).appendChild(script)
+  script.remove()
+  // 解析失败是异步上报的：留一个短窗口后撤掉监听，避免长期占用 error 事件。
+  window.setTimeout(() => {
+    if (settled) return
+    settled = true
+    window.removeEventListener('error', onError, true)
+  }, 50)
+}
+
+checkSdkSyntax()
+
+/** 选中版本的加载器 / 版本号摘要。 */
+interface SelectedVersionInfo {
+  id: string
+  /** 版本号（Minecraft 版本，如 1.21.4）。 */
+  number: string
+  /** 加载器标识（fabric / quilt / forge / neoforge），原版为空串。 */
+  loader: string
+  /** 加载器显示名，无加载器为「原版」。 */
+  loaderName: string
+}
 
 /** 宿主 → 脚本的初始/增量载荷。 */
 interface HostSnapshot {
@@ -184,6 +352,10 @@ interface HostSnapshot {
   account: { name: string; id: string; avatarUrl: string; authType: string } | null
   versions: InstalledVersion[]
   selectedVersionId: string
+  /** 选中版本的加载器与版本号；无已安装版本时为 null。 */
+  selectedVersion: SelectedVersionInfo | null
+  /** 启动器版本号（如 0.4.11）。 */
+  launcherVersion: string
   launch: {
     state: string | null
     running: boolean
@@ -207,6 +379,22 @@ interface FrameCall {
 interface FrameHello {
   hc: 1
   kind: 'hello'
+}
+
+/** 沙箱内运行时探针上报：新增元素 / 动态写入的源码，需要宿主再查一遍。 */
+interface FrameProbe {
+  hc: 1
+  kind: 'probe'
+  batch?: Array<{ where?: string; text?: string }>
+}
+
+/** 探针队列溢出（脚本在极短时间内插入海量元素）：按规避检查处理。 */
+const FLOOD_WHERE = 'element-flood'
+
+/** 加载器显示名，与内置页 HomePage 的保持一致：无加载器即「原版」。 */
+function loaderLabel(loader: string | null): string {
+  if (!loader) return '原版'
+  return loader.charAt(0).toUpperCase() + loader.slice(1)
 }
 
 /** 推导玩家头像地址（与启动器内头像组件的优先级保持一致）。 */
@@ -269,7 +457,7 @@ export function HomeRoute(): JSX.Element {
 }
 
 export function CustomHomePage({ id }: { id: string }): JSX.Element {
-  const { settings, selectedAccount, theme, updateSettings } = useApp()
+  const { settings, selectedAccount, theme, updateSettings, reloadSettings, raiseSecurityAlert } = useApp()
   const { launchState, launchLog, launchPid, busy, launch, stopLaunch } = useRuntime()
 
   const [entry, setEntry] = useState<HomepageSource | null>(null)
@@ -278,6 +466,8 @@ export function CustomHomePage({ id }: { id: string }): JSX.Element {
   const [passed, setPassed] = useState(false)
   const [memInfo, setMemInfo] = useState<SystemMemoryInfo | null>(null)
   const [installed, setInstalled] = useState<InstalledVersion[]>([])
+  /** 启动器版本号（暴露给脚本，用于自检 / 提示最低版本）。 */
+  const [launcherVersion, setLauncherVersion] = useState('')
 
   const frameRef = useRef<HTMLIFrameElement>(null)
   const dispatchRef = useRef<(method: string, params: Record<string, unknown>) => Promise<unknown>>(
@@ -303,6 +493,14 @@ export function CustomHomePage({ id }: { id: string }): JSX.Element {
         if (alive) setInstalled(list)
       } catch {
         /* 已安装列表偶发失败不阻塞主页 */
+      }
+    })()
+    void (async () => {
+      try {
+        const v = await window.api.getVersion()
+        if (alive) setLauncherVersion(v)
+      } catch {
+        /* 取不到版本号不影响主页运行 */
       }
     })()
     const refreshMemory = (): void => {
@@ -336,6 +534,17 @@ export function CustomHomePage({ id }: { id: string }): JSX.Element {
     [installed, settings.selectedVersionId]
   )
 
+  const selectedVersion = useMemo<SelectedVersionInfo | null>(() => {
+    const v = installed.find((item) => item.id === selectedVersionId)
+    if (!v) return null
+    return {
+      id: v.id,
+      number: v.mcVersion || v.id,
+      loader: v.loader ?? '',
+      loaderName: loaderLabel(v.loader)
+    }
+  }, [installed, selectedVersionId])
+
   const accountInfo = useMemo(
     () =>
       selectedAccount
@@ -353,6 +562,40 @@ export function CustomHomePage({ id }: { id: string }): JSX.Element {
     launchState === 'starting' || launchState === 'downloading' || launchState === 'launching'
   const running = launchState === 'running'
 
+  /* ---------------- 运行时安全拦截 ---------------- */
+
+  /** 已触发过封锁：同一脚本的多次命中只提示一次。 */
+  const lockedRef = useRef(false)
+
+  /**
+   * 运行时发现「删除 / 修改文件、格式化、伪装代码」时立即处置：
+   *   1. 立刻弹出全屏提示（同步执行，先于异步的停用动作）；
+   *   2. 封锁该脚本并停用（主进程顺手清空 homepageId）；
+   *   3. 刷新设置，让「启动游戏」页退回内置界面 —— 遮罩仍在最上层，脚本不会再跑。
+   *
+   * 检查点有两处：每条指令运行前、沙箱内每个元素加载后（见下面的 dispatch 与 probe）。
+   */
+  const lockdown = useCallback(
+    (reason: string, detail: string): void => {
+      if (lockedRef.current) return
+      lockedRef.current = true
+      raiseSecurityAlert({ homepageId: id, reason, detail })
+      void (async () => {
+        try {
+          await window.api.homepage.block(id, reason)
+        } catch {
+          /* 封锁失败也必须继续停用 */
+        }
+        try {
+          await reloadSettings()
+        } catch {
+          /* 忽略 */
+        }
+      })()
+    },
+    [id, raiseSecurityAlert, reloadSettings]
+  )
+
   /* ---------------- 能力桥 ---------------- */
 
   const clampMemory = useCallback(
@@ -367,6 +610,18 @@ export function CustomHomePage({ id }: { id: string }): JSX.Element {
 
   const dispatch = useCallback(
     async (method: string, params: Record<string, unknown>): Promise<unknown> => {
+      // 每条指令运行前都过一遍安全检查：脚本可能把危险代码藏进参数交给宿主执行。
+      let probeText = method
+      try {
+        probeText = `${method} ${JSON.stringify(params ?? {})}`
+      } catch {
+        /* 参数不可序列化时只查方法名 */
+      }
+      const hits = scanHomepageCode(probeText, 'payload')
+      if (hits.length > 0) {
+        lockdown(hits[0], `指令 ${method}：${hits.join('；')}`)
+        throw new Error('该指令被安全策略拦截，已停用该主页')
+      }
       switch (method) {
         case 'system.memory':
           return memInfo
@@ -391,6 +646,15 @@ export function CustomHomePage({ id }: { id: string }): JSX.Element {
           await updateSettings({ selectedVersionId: next })
           return next
         }
+        case 'versions.info':
+          return selectedVersion
+        case 'versions.loader':
+          // 无选中版本时同样视为「原版」：它没有加载器。
+          return selectedVersion?.loaderName ?? '原版'
+        case 'versions.number':
+          return selectedVersion?.number ?? ''
+        case 'launcher.version':
+          return launcherVersion
         case 'game.state':
           return {
             state: launchState,
@@ -434,6 +698,7 @@ export function CustomHomePage({ id }: { id: string }): JSX.Element {
             setting: settings.theme,
             accentColor: settings.accentColor,
             background: settings.background,
+            reducedMotion: settings.reducedMotion,
             debug: settings.debugMode
           }
         case 'shell.openExternal': {
@@ -450,6 +715,7 @@ export function CustomHomePage({ id }: { id: string }): JSX.Element {
     [
       memInfo,
       clampMemory,
+      lockdown,
       updateSettings,
       settings.memoryMb,
       settings.gameDir,
@@ -458,9 +724,12 @@ export function CustomHomePage({ id }: { id: string }): JSX.Element {
       settings.theme,
       settings.accentColor,
       settings.background,
+      settings.reducedMotion,
       accountInfo,
       installed,
       selectedVersionId,
+      selectedVersion,
+      launcherVersion,
       launchState,
       running,
       starting,
@@ -497,6 +766,8 @@ export function CustomHomePage({ id }: { id: string }): JSX.Element {
       account: accountInfo,
       versions: installed,
       selectedVersionId,
+      selectedVersion,
+      launcherVersion,
       launch: {
         state: launchState,
         running,
@@ -509,7 +780,8 @@ export function CustomHomePage({ id }: { id: string }): JSX.Element {
         mode: theme,
         setting: settings.theme,
         accentColor: settings.accentColor,
-        background: settings.background
+        background: settings.background,
+        reducedMotion: settings.reducedMotion
       }
     }),
     [
@@ -519,9 +791,12 @@ export function CustomHomePage({ id }: { id: string }): JSX.Element {
       settings.theme,
       settings.accentColor,
       settings.background,
+      settings.reducedMotion,
       accountInfo,
       installed,
       selectedVersionId,
+      selectedVersion,
+      launcherVersion,
       launchState,
       running,
       starting,
@@ -554,8 +829,26 @@ export function CustomHomePage({ id }: { id: string }): JSX.Element {
     const onMessage = (e: MessageEvent): void => {
       const frame = frameRef.current
       if (!frame || e.source !== frame.contentWindow) return
-      const data = e.data as FrameCall | FrameHello | null
+      const data = e.data as FrameCall | FrameHello | FrameProbe | null
       if (!data || typeof data !== 'object' || data.hc !== 1) return
+
+      // 沙箱内「每个元素加载」后的探针：把新增元素 / 动态写入的源码再查一遍。
+      if (data.kind === 'probe') {
+        if (!Array.isArray(data.batch)) return
+        for (const item of data.batch) {
+          const where = String(item?.where ?? 'element')
+          if (where === FLOOD_WHERE) {
+            lockdown('短时间内在页面中插入大量元素，疑似规避安全检查', '运行时探针队列溢出')
+            return
+          }
+          const hits = scanHomepageCode(String(item?.text ?? ''), 'code')
+          if (hits.length > 0) {
+            lockdown(hits[0], `${where}：${hits.join('；')}`)
+            return
+          }
+        }
+        return
+      }
 
       if (data.kind === 'hello') {
         sentLogRef.current = 0
@@ -587,7 +880,7 @@ export function CustomHomePage({ id }: { id: string }): JSX.Element {
     }
     window.addEventListener('message', onMessage)
     return () => window.removeEventListener('message', onMessage)
-  }, [postToFrame, readTokens, snapshot, settings.debugMode, launchLog])
+  }, [postToFrame, readTokens, snapshot, settings.debugMode, launchLog, lockdown])
 
   // 运行日志：仅在 Debug 模式推送给脚本，且只推增量。
   useEffect(() => {

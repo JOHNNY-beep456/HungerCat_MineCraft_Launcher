@@ -207,6 +207,29 @@ export function SettingsPage(): JSX.Element {
           </Row>
         </Section>
 
+        {/* 实验性功能（两项互斥） */}
+        <Section title="实验性功能" icon="info">
+          <Row label="仿 Mac 玻璃（苹方字体）">
+            <Switch
+              checked={settings.experimental === 'mac'}
+              onChange={(v) => void updateSettings({ experimental: v ? 'mac' : 'off' })}
+            />
+          </Row>
+          <Row label="Win10 桌面（自动全屏）">
+            <Switch
+              checked={settings.experimental === 'win10'}
+              onChange={(v) => void updateSettings({ experimental: v ? 'win10' : 'off' })}
+            />
+          </Row>
+          <p className="caption -mt-1">
+            两项互斥：开启其一会自动关闭另一个，都关闭即回到普通界面。
+            {settings.experimental === 'mac' &&
+              '当前：字体切换为苹方，玻璃更通透、文字色改为 macOS 风格，布局与功能不变。'}
+            {settings.experimental === 'win10' &&
+              '当前：进入后自动全屏并置顶，各功能以桌面图标呈现（双击打开），底部为任务栏；Minecraft 与文件资源管理器窗口会自动摆进桌面（真实窗口、可直接操作，✕ 仅收回不关闭），开始菜单里可退出启动器。'}
+          </p>
+        </Section>
+
         {/* 游戏 */}
         <Section title="游戏" icon="cube">
           <Row label="游戏目录">

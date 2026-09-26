@@ -82,7 +82,8 @@ export function getDefaultSettings(): LauncherSettings {
     debugMode: false,
     metadataOnlyMods: false,
     homepageId: '',
-    selectedVersionId: ''
+    selectedVersionId: '',
+    experimental: 'off'
   }
 }
 

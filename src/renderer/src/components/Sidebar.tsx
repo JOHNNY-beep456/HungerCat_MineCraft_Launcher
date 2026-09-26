@@ -13,7 +13,8 @@ export type PageId =
   | 'settings'
   | 'about'
 
-const NAV: Array<{ id: PageId; label: string; icon: string }> = [
+/** 侧栏条目；实验性 Win10 桌面也用它生成桌面图标与开始菜单。 */
+export const NAV: Array<{ id: PageId; label: string; icon: string }> = [
   { id: 'home', label: '启动游戏', icon: 'home' },
   { id: 'homepage', label: '主页', icon: 'palette' },
   { id: 'resources', label: '资源下载', icon: 'cube' },

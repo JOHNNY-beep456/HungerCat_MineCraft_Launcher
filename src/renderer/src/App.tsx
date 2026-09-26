@@ -1,102 +1,28 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { AnimatePresence, MotionConfig, motion } from 'motion/react'
 import { AppProvider, useApp } from './store'
-import { RuntimeProvider, useRuntime } from './runtime'
+import { RuntimeProvider } from './runtime'
 import { TitleBar } from './components/TitleBar'
 import { Sidebar, type PageId } from './components/Sidebar'
 import { JavaPrompt } from './components/JavaPrompt'
 import { FlyDot } from './components/FlyDot'
 import { AgreementModal } from './components/AgreementModal'
 import { OnboardingModal } from './components/OnboardingModal'
+import { SecurityBlockedOverlay } from './components/SecurityBlockedOverlay'
 import { CursorGlow } from './components/CursorGlow'
-import { Button, Icon, formatSpeed } from './components/ui'
-import { HomeRoute } from './pages/CustomHomePage'
-import { HomepagePage } from './pages/HomepagePage'
-import { ResourceDownloadPage, type Tab } from './pages/ResourceDownloadPage'
-import { AccountsPage } from './pages/AccountsPage'
-import { DownloadsPage } from './pages/DownloadsPage'
-import { SettingsPage } from './pages/SettingsPage'
-import { AboutPage } from './pages/AboutPage'
-import { InstancesPage } from './pages/InstancesPage'
+import { DownloadOrb } from './components/DownloadOrb'
+import { Win10Desktop } from './components/Win10Desktop'
+import { Button, Icon } from './components/ui'
+import { renderPage, type ResourcePreset } from './pages/router'
 import { InstanceManagePage } from './pages/InstanceManagePage'
 
-function renderPage(
-  page: PageId,
-  onManage: (versionId: string) => void,
-  resourcePreset: { tab: Extract<Tab, 'versions'>; search: string } | null
-): JSX.Element {
-  switch (page) {
-    case 'home':
-      return <HomeRoute />
-    case 'homepage':
-      return <HomepagePage />
-    case 'resources':
-      return <ResourceDownloadPage initialTab={resourcePreset?.tab} presetSearch={resourcePreset?.search} />
-    case 'instances':
-      return <InstancesPage onManage={onManage} />
-    case 'accounts':
-      return <AccountsPage />
-    case 'downloads':
-      return <DownloadsPage />
-    case 'settings':
-      return <SettingsPage />
-    case 'about':
-      return <AboutPage />
-  }
-}
-
-/**
- * 全局右下角常驻的下载进度光球：对所有进行中下载任务（phase !== 'done'）
- * 汇总总进度与实时速度。仅在有进行中任务时渲染，无任务即从 DOM 卸载，
- * 不产生常驻遮挡。点击跳到「进度」页。
- */
-function DownloadOrb({ onNavigate }: { onNavigate: (p: PageId) => void }): JSX.Element | null {
-  const { downloads } = useRuntime()
-  // done 的进度会被 runtime 即时移除，这里再过滤一次以兜底瞬时空窗。
-  const active = downloads.filter((d) => d.phase !== 'done')
-  const totalCurrent = active.reduce((s, d) => s + (d.currentBytes || 0), 0)
-  const totalTotal = active.reduce((s, d) => s + (d.totalBytes || 0), 0)
-  const percent = totalTotal > 0 ? Math.round((totalCurrent / totalTotal) * 100) : 0
-  const speed = active.reduce((s, d) => s + (d.speed || 0), 0)
-
-  return (
-    <AnimatePresence>
-      {active.length > 0 && (
-        <motion.button
-          key="download-orb"
-          onClick={() => onNavigate('downloads')}
-          className="glass-strong no-drag fixed right-5 bottom-6 z-[90] flex h-16 w-16 cursor-pointer flex-col items-center justify-center overflow-hidden rounded-full"
-          style={{ boxShadow: '0 8px 24px -6px var(--fill-primary)' }}
-          initial={{ opacity: 0, scale: 0.6, y: 16 }}
-          animate={{ opacity: 1, scale: 1, y: 0 }}
-          exit={{ opacity: 0, scale: 0.6, y: 16 }}
-          transition={{ type: 'spring', bounce: 0.18, duration: 0.45 }}
-          whileHover={{ scale: 1.06 }}
-          whileTap={{ scale: 0.95 }}
-          aria-label="查看下载进度"
-          title="查看下载进度"
-        >
-          <div
-            className="pointer-events-none absolute inset-0 rounded-full"
-            style={{ background: 'linear-gradient(140deg, var(--fill-primary) 0%, transparent 65%)', opacity: 0.55 }}
-          />
-          <span className="relative text-[15px] font-bold leading-none" style={{ color: 'var(--text-primary)' }}>
-            {percent}%
-          </span>
-          <span className="relative mt-1 text-[9px] leading-none opacity-80">{formatSpeed(speed)}</span>
-        </motion.button>
-      )}
-    </AnimatePresence>
-  )
-}
-
 function Shell(): JSX.Element {
-  const { settings, reloadAccounts } = useApp()
+  const { settings, reloadAccounts, securityAlert, clearSecurityAlert } = useApp()
   const [page, setPage] = useState<PageId>('home')
   const [managingId, setManagingId] = useState<string | null>(null)
   const [tokenExpiredError, setTokenExpiredError] = useState<string | null>(null)
   const [onboardingOpen, setOnboardingOpen] = useState(false)
-  const [resourcePreset, setResourcePreset] = useState<{ tab: Extract<Tab, 'versions'>; search: string } | null>(null)
+  const [resourcePreset, setResourcePreset] = useState<ResourcePreset>(null)
   const needAgreement = !settings.agreementAcceptedAt
 
   // 首次同意协议后自动弹出新手引导（仅一次；之后通过双击左上角图标再次唤起）。
@@ -150,45 +76,71 @@ function Shell(): JSX.Element {
     }
   }, [settings.mode, page])
 
+  // 实验性 Win10 桌面整块替换外壳（侧栏 / 标题栏 / 玻璃背景），
+  // 仿 Mac 玻璃只是皮肤，外壳保持不变。
+  const desktop = settings.experimental === 'win10'
+
+  // 安全拦截：命中危险代码时强制系统全屏（连 Windows 任务栏一起盖住），
+  // 关闭提示后由主进程按拦截前记住的状态精确还原（桌面模式的全屏不会被退掉）。
+  // 用 ref 记录「是否进过拦截态」：启动时不要在没拦截的情况下动窗口状态。
+  const securityAlertWasOn = useRef(false)
+  useEffect(() => {
+    if (securityAlert) {
+      securityAlertWasOn.current = true
+      void window.api.window.securityFullscreen(true)
+      return
+    }
+    if (!securityAlertWasOn.current) return
+    securityAlertWasOn.current = false
+    void window.api.window.securityFullscreen(false)
+  }, [securityAlert])
+
   return (
     <MotionConfig reducedMotion={settings.reducedMotion ? 'always' : 'user'}>
       <div className="relative h-full">
-        <div className="app-background" aria-hidden>
-          <div className="blob blob-1" />
-          <div className="blob blob-2" />
-          <div className="blob blob-3" />
-        </div>
+        {desktop ? (
+          <Win10Desktop />
+        ) : (
+          <>
+            <div className="app-background" aria-hidden>
+              <div className="blob blob-1" />
+              <div className="blob blob-2" />
+              <div className="blob blob-3" />
+            </div>
 
-        <TitleBar onLogoDoubleClick={() => setOnboardingOpen(true)} />
+            <TitleBar onLogoDoubleClick={() => setOnboardingOpen(true)} />
 
-        <div className="flex h-full pt-12">
-          <div className="w-[224px] shrink-0">
-            <Sidebar active={page} onNavigate={navigate} />
-          </div>
+            <div className="flex h-full pt-12">
+              <div className="w-[224px] shrink-0">
+                <Sidebar active={page} onNavigate={navigate} />
+              </div>
 
-          <main className="min-w-0 flex-1 p-5 pl-2">
-            {/* 页面 ⇄ 实例管理整页：用 key 切换同一容器内的两态视图，做淡入 + 轻微 y/scale 过渡。
-                这里只做入场（不加 AnimatePresence 退场），避免退场延后新页面挂载。 */}
-            <motion.div
-              key={managingId ? 'manage' : page}
-              className="h-full"
-              initial={{ opacity: 0, y: 12, scale: 0.995 }}
-              animate={{ opacity: 1, y: 0, scale: 1 }}
-              transition={{ type: 'spring', bounce: 0, duration: 0.35 }}
-            >
-              {managingId ? (
-                <InstanceManagePage versionId={managingId} onBack={() => setManagingId(null)} onRename={setManagingId} />
-              ) : (
-                renderPage(page, setManagingId, resourcePreset)
-              )}
-            </motion.div>
-          </main>
-        </div>
+              <main className="min-w-0 flex-1 p-5 pl-2">
+                {/* 页面 ⇄ 实例管理整页：用 key 切换同一容器内的两态视图，做淡入 + 轻微 y/scale 过渡。
+                    这里只做入场（不加 AnimatePresence 退场），避免退场延后新页面挂载。 */}
+                <motion.div
+                  key={managingId ? 'manage' : page}
+                  className="h-full"
+                  initial={{ opacity: 0, y: 12, scale: 0.995 }}
+                  animate={{ opacity: 1, y: 0, scale: 1 }}
+                  transition={{ type: 'spring', bounce: 0, duration: 0.35 }}
+                >
+                  {managingId ? (
+                    <InstanceManagePage versionId={managingId} onBack={() => setManagingId(null)} onRename={setManagingId} />
+                  ) : (
+                    renderPage(page, setManagingId, resourcePreset)
+                  )}
+                </motion.div>
+              </main>
+            </div>
+
+            <DownloadOrb onNavigate={navigate} />
+            <CursorGlow />
+          </>
+        )}
 
         <JavaPrompt />
         <FlyDot />
-        <DownloadOrb onNavigate={navigate} />
-        <CursorGlow />
         <AnimatePresence>{needAgreement && <AgreementModal />}</AnimatePresence>
         <OnboardingModal
           open={onboardingOpen}
@@ -243,6 +195,11 @@ function Shell(): JSX.Element {
               </motion.div>
             </motion.div>
           )}
+        </AnimatePresence>
+
+        {/* 自定义主页运行时被安全策略拦截：全屏提示（z 最高，压住桌面模式与其它弹窗） */}
+        <AnimatePresence>
+          {securityAlert && <SecurityBlockedOverlay alert={securityAlert} onClose={clearSecurityAlert} />}
         </AnimatePresence>
       </div>
     </MotionConfig>

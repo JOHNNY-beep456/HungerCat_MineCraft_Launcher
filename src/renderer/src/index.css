@@ -267,7 +267,6 @@ body {
   isolation: isolate;
   background: var(--glass-bg);
   backdrop-filter: blur(36px) saturate(180%);
-  -webkit-backdrop-filter: blur(36px) saturate(180%);
   border: 1px solid var(--glass-border);
   box-shadow: var(--glass-shadow);
 }
@@ -277,7 +276,6 @@ body {
   isolation: isolate;
   background: var(--glass-bg-strong);
   backdrop-filter: blur(48px) saturate(200%);
-  -webkit-backdrop-filter: blur(48px) saturate(200%);
   border: 1px solid var(--glass-border);
   box-shadow: var(--glass-shadow);
 }
@@ -287,7 +285,6 @@ body {
   isolation: isolate;
   background: var(--glass-bg-soft);
   backdrop-filter: blur(24px) saturate(160%);
-  -webkit-backdrop-filter: blur(24px) saturate(160%);
   border: 1px solid var(--glass-border);
 }
 
@@ -487,7 +484,6 @@ body {
   .glass-strong,
   .glass-soft {
     backdrop-filter: none;
-    -webkit-backdrop-filter: none;
     background: var(--glass-bg-strong);
   }
 }
@@ -525,7 +521,6 @@ body {
 [data-mode='minimal'] .glass-soft {
   background: var(--surface-flat);
   backdrop-filter: none;
-  -webkit-backdrop-filter: none;
   border: 1px solid var(--divider);
   box-shadow: none;
 }
@@ -537,4 +532,388 @@ body {
 }
 [data-mode='minimal'] .cursor-glow {
   display: none;
+}
+
+/* ------------------------------------------------------------------ */
+/*  实验性皮肤 1：仿 Mac 玻璃                                            */
+/*  令牌与字体定义在文件末尾的「实验性皮肤」段（必须未分层才能压过        */
+/*  :root / body）。这里只保留磨砂增强：它同样在层外，天然压过 @layer     */
+/*  里的 .glass，再用 :not([data-mode='minimal']) 让极简模式仍然优先。    */
+/* ------------------------------------------------------------------ */
+/* 只有用户未要求「减少透明度」且不是极简模式时，才加深磨砂 */
+@media (prefers-reduced-transparency: no-preference) {
+  [data-skin='mac']:not([data-mode='minimal']) .glass {
+    backdrop-filter: blur(52px) saturate(220%);
+  }
+  [data-skin='mac']:not([data-mode='minimal']) .glass-strong {
+    backdrop-filter: blur(64px) saturate(230%);
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/*  实验性皮肤 2：Win10 桌面                                            */
+/*  令牌与字体同样定义在文件末尾；这里处理同层可见的扁平化与桌面样式。     */
+/* ------------------------------------------------------------------ */
+[data-skin='win10'] .app-background {
+  display: none;
+}
+[data-skin='win10'] .glass,
+[data-skin='win10'] .glass-strong,
+[data-skin='win10'] .glass-soft {
+  background: var(--glass-bg);
+  backdrop-filter: none;
+  border: 1px solid var(--glass-border);
+  box-shadow: var(--glass-shadow);
+}
+[data-skin='win10'] .glass::before {
+  display: none;
+}
+[data-skin='win10'] .cursor-glow {
+  display: none;
+}
+
+/* --- Win10 桌面 --- */
+.win10-desktop {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  user-select: none;
+}
+.win10-wallpaper {
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(125% 125% at 16% 6%, #2f8fe0 0%, #0b63b8 42%, #063a75 100%);
+}
+.win10-wallpaper::before {
+  content: '';
+  position: absolute;
+  inset: -25%;
+  transform: rotate(-8deg);
+  background: linear-gradient(
+    112deg,
+    rgba(255, 255, 255, 0.16) 0 10%,
+    transparent 10% 24%,
+    rgba(255, 255, 255, 0.1) 24% 33%,
+    transparent 33% 100%
+  );
+}
+.win10-wallmark {
+  position: absolute;
+  left: 50%;
+  top: 46%;
+  width: 260px;
+  height: 260px;
+  transform: translate(-50%, -50%);
+  opacity: 0.13;
+  filter: invert(1) brightness(1.6);
+  pointer-events: none;
+}
+.win10-icons {
+  position: absolute;
+  top: 18px;
+  left: 18px;
+  bottom: 62px;
+  display: grid;
+  grid-auto-flow: column;
+  grid-template-rows: repeat(auto-fill, 98px);
+  gap: 4px;
+  align-content: start;
+}
+.win10-icon {
+  width: 88px;
+  height: 94px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 4px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: transparent;
+  cursor: default;
+}
+.win10-icon:hover {
+  background: rgba(255, 255, 255, 0.16);
+  border-color: rgba(255, 255, 255, 0.3);
+}
+.win10-icon.is-selected {
+  background: var(--win10-select);
+  border-color: rgba(255, 255, 255, 0.48);
+}
+.win10-icon-tile {
+  width: 46px;
+  height: 46px;
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  background: var(--win10-tile);
+  border: 1px solid var(--win10-tile-border);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.28);
+}
+.win10-icon-label {
+  font-size: 12px;
+  line-height: 1.25;
+  text-align: center;
+  color: var(--win10-label);
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.75);
+  word-break: break-all;
+}
+.win10-taskbar {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 9000;
+  height: 48px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 8px;
+  color: #fff;
+  background: var(--win10-taskbar);
+  backdrop-filter: blur(18px) saturate(140%);
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+.win10-task-btn {
+  height: 40px;
+  min-width: 42px;
+  padding: 0 10px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  border-radius: 3px;
+  color: inherit;
+  background: transparent;
+  cursor: pointer;
+}
+.win10-task-btn:hover {
+  background: rgba(255, 255, 255, 0.14);
+}
+.win10-task-btn.is-active {
+  background: rgba(255, 255, 255, 0.18);
+  border-bottom-color: #60cdff;
+}
+.win10-task-label {
+  font-size: 12px;
+  max-width: 130px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.win10-tray {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding-right: 6px;
+  font-size: 12px;
+  line-height: 1.3;
+  text-align: right;
+}
+.win10-startmenu {
+  position: absolute;
+  left: 8px;
+  bottom: 56px;
+  z-index: 9500;
+  width: 400px;
+  max-height: 66vh;
+  overflow-y: auto;
+  padding: 12px;
+  border-radius: 6px;
+  color: var(--win10-text);
+  background: var(--win10-surface);
+  border: 1px solid var(--glass-border);
+  box-shadow: 0 -4px 28px rgba(0, 0, 0, 0.4);
+}
+.win10-startitem {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 9px 10px;
+  border: 0;
+  border-radius: 4px;
+  text-align: left;
+  color: inherit;
+  background: transparent;
+  cursor: pointer;
+}
+.win10-startitem:hover {
+  background: var(--win10-hover);
+}
+.win10-window {
+  position: absolute;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border-radius: 6px;
+  color: var(--win10-text);
+  background: var(--win10-surface);
+  border: 1px solid var(--glass-border);
+  box-shadow: 0 14px 44px rgba(0, 0, 0, 0.42);
+}
+.win10-titlebar {
+  flex: 0 0 auto;
+  height: 34px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-left: 10px;
+  color: var(--win10-text);
+  background: var(--win10-titlebar);
+}
+.win10-titlebar.is-draggable {
+  cursor: default;
+}
+.win10-title {
+  font-size: 12.5px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.win10-controls {
+  margin-left: auto;
+  display: flex;
+  height: 100%;
+}
+.win10-ctl {
+  width: 44px;
+  height: 100%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  color: inherit;
+  background: transparent;
+  cursor: pointer;
+}
+.win10-ctl:hover {
+  background: var(--win10-hover);
+}
+.win10-ctl.is-close:hover {
+  background: var(--win10-close-hover);
+  color: #fff;
+}
+.win10-body {
+  flex: 1;
+  min-height: 0;
+  padding: 16px;
+  overflow: auto;
+}
+
+/* ==================================================================== */
+/*  实验性皮肤：令牌与字体                                               */
+/*                                                                      */
+/*  :root / [data-theme='dark'] / body 都是未分层样式，而未分层样式的     */
+/*  层叠优先级高于任何 @layer，因此皮肤要覆盖它们，自身也必须未分层。     */
+/*  本文件里 @layer components 只包到上面的组件类为止，这一整段都在层外， */
+/*  并且刻意排在 :root 之后（靠来源顺序取胜，不依赖 !important）。       */
+/*  调整顺序或挪进 @layer 都会让皮肤失效。                              */
+/* ==================================================================== */
+
+/* --- 仿 Mac 玻璃：苹方字体 + 更通透的玻璃 + macOS 系文字色 --- */
+[data-skin='mac'] body {
+  font-family: 'PingFang SC', 'PingFang TC', '苹方-简', 'Hiragino Sans GB', 'Heiti SC',
+    'Microsoft YaHei', system-ui, sans-serif;
+  letter-spacing: 0.006em;
+}
+
+[data-skin='mac'] {
+  --text-primary: rgba(0, 0, 0, 0.88);
+  --text-secondary: rgba(60, 60, 67, 0.62);
+  --text-tertiary: rgba(60, 60, 67, 0.34);
+
+  --glass-bg: rgba(255, 255, 255, 0.42);
+  --glass-bg-strong: rgba(255, 255, 255, 0.56);
+  --glass-bg-soft: rgba(255, 255, 255, 0.26);
+  --glass-border: rgba(255, 255, 255, 0.72);
+  --glass-highlight: rgba(255, 255, 255, 0.9);
+  --glass-shadow: 0 28px 70px -26px rgba(15, 23, 42, 0.42);
+
+  --fill-secondary: rgba(120, 120, 128, 0.12);
+  --fill-secondary-hover: rgba(120, 120, 128, 0.2);
+  --divider: rgba(60, 60, 67, 0.14);
+  --scrim: rgba(0, 0, 0, 0.34);
+}
+
+[data-skin='mac'][data-theme='dark'] {
+  --text-primary: rgba(245, 245, 247, 0.94);
+  --text-secondary: rgba(235, 235, 245, 0.62);
+  --text-tertiary: rgba(235, 235, 245, 0.36);
+
+  --glass-bg: rgba(28, 28, 36, 0.36);
+  --glass-bg-strong: rgba(32, 32, 42, 0.48);
+  --glass-bg-soft: rgba(24, 24, 32, 0.24);
+  --glass-border: rgba(255, 255, 255, 0.18);
+  --glass-highlight: rgba(255, 255, 255, 0.26);
+  --glass-shadow: 0 28px 70px -26px rgba(0, 0, 0, 0.7);
+
+  --fill-secondary: rgba(120, 120, 128, 0.24);
+  --fill-secondary-hover: rgba(120, 120, 128, 0.32);
+  --divider: rgba(235, 235, 245, 0.14);
+  --scrim: rgba(0, 0, 0, 0.5);
+}
+
+/* --- Win10 桌面：Segoe UI + 扁平化配色 + 桌面/任务栏/窗口变量 --- */
+[data-skin='win10'] body {
+  font-family: 'Segoe UI Variable Text', 'Segoe UI', 'Microsoft YaHei', system-ui, sans-serif;
+}
+
+[data-skin='win10'] {
+  --text-primary: rgba(0, 0, 0, 0.9);
+  --text-secondary: rgba(0, 0, 0, 0.62);
+  --text-tertiary: rgba(0, 0, 0, 0.42);
+
+  --glass-bg: #ffffff;
+  --glass-bg-strong: #ffffff;
+  --glass-bg-soft: rgba(255, 255, 255, 0.72);
+  --glass-border: rgba(0, 0, 0, 0.14);
+  --glass-highlight: transparent;
+  --glass-shadow: 0 2px 10px rgba(0, 0, 0, 0.14);
+
+  --fill-secondary: rgba(0, 0, 0, 0.06);
+  --fill-secondary-hover: rgba(0, 0, 0, 0.12);
+  --chip-bg: rgba(0, 0, 0, 0.06);
+  --divider: rgba(0, 0, 0, 0.14);
+  --scrim: rgba(0, 0, 0, 0.45);
+
+  --win10-titlebar: #f3f3f3;
+  --win10-surface: #ffffff;
+  --win10-text: #1a1a1a;
+  --win10-hover: rgba(0, 0, 0, 0.07);
+  --win10-close-hover: #e81123;
+  --win10-taskbar: rgba(16, 16, 16, 0.82);
+  --win10-tile: rgba(255, 255, 255, 0.22);
+  --win10-tile-border: rgba(255, 255, 255, 0.32);
+  --win10-label: #ffffff;
+  --win10-select: rgba(255, 255, 255, 0.3);
+}
+
+[data-skin='win10'][data-theme='dark'] {
+  --text-primary: rgba(255, 255, 255, 0.92);
+  --text-secondary: rgba(255, 255, 255, 0.66);
+  --text-tertiary: rgba(255, 255, 255, 0.44);
+
+  --glass-bg: #202020;
+  --glass-bg-strong: #272727;
+  --glass-bg-soft: rgba(40, 40, 40, 0.72);
+  --glass-border: rgba(255, 255, 255, 0.14);
+  --glass-shadow: 0 2px 10px rgba(0, 0, 0, 0.5);
+
+  --fill-secondary: rgba(255, 255, 255, 0.08);
+  --fill-secondary-hover: rgba(255, 255, 255, 0.14);
+  --chip-bg: rgba(255, 255, 255, 0.08);
+  --divider: rgba(255, 255, 255, 0.14);
+
+  --win10-titlebar: #1f1f1f;
+  --win10-surface: #202020;
+  --win10-text: #f0f0f0;
+  --win10-hover: rgba(255, 255, 255, 0.09);
 }

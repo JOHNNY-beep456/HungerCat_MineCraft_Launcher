@@ -15,64 +15,18 @@
 // ---------------------------------------------------------------------------
 
 import type { HomepageExternal, HomepageMeta, HomepageRisk } from '@shared/types'
+import { scanHomepageCode } from '@shared/homepage-runtime'
+
+/**
+ * 「危险代码」规则表见 @shared/homepage-runtime：主进程的静态检测与渲染层的运行时
+ * 检测共用同一份定义，避免两处判定漂移。
+ */
 
 /** 判定为「危险下载」的扩展名：可执行文件、压缩包、矢量图。 */
 const DANGEROUS_EXT_RE = /\.(exe|msi|msp|dll|com|scr|sys|bat|cmd|ps1|psm1|vbs|vbe|wsf|wsh|sh|bash|zsh|jar|class|apk|app|dmg|pkg|deb|rpm|iso|img|zip|rar|7z|tar|gz|tgz|bz2|xz|svg)(?=[?#"'`\s<>)]|$)/i
 
 /** 外链脚本扩展名：内容需取回后按同一套规则判断。 */
 const SCRIPT_EXT_RE = /\.(js|mjs|jse)(?=[?#"'`\s<>)]|$)/i
-
-interface BlockRule {
-  re: RegExp
-  reason: string
-  /** 分析第三方脚本库正文时跳过：UMD 包装普遍含 require / module.exports / process.env。 */
-  skipInLibrary?: boolean
-}
-
-/** 命中即「拒绝运行」的规则。 */
-const BLOCK_RULES: BlockRule[] = [
-  // --- 删除文件 / 格式化 ---
-  { re: /\brm\s+-[a-z]*[rf][a-z]*\s/i, reason: '包含删除文件的 shell 命令（rm -rf）' },
-  { re: /\b(?:rmdir|rd\s+\/s)\s|\bdel\s+\/[a-z]|\berase\s+[a-z]:/i, reason: '包含删除文件或目录的命令' },
-  {
-    re: /\bformat\s+[a-z]:|diskpart|\bmkfs(?:\.\w+)?\b|diskutil\s+erase|Clear-Disk|Format-Volume|shutdown\s+\/|\bwipefs\b/i,
-    reason: '包含格式化磁盘或破坏系统的命令'
-  },
-  {
-    re: /Remove-Item|shutil\.rmtree|os\.remove|os\.unlink|os\.rmdir|subprocess|child_process|execSync|spawnSync|execFileSync/i,
-    reason: '包含删除文件或执行系统命令的代码'
-  },
-  {
-    re: /fs\.(?:unlink|rm|rmdir|truncate)(?:Sync)?\s*\(|(?:unlink|rmdir|rm)Sync\s*\(|deleteFile\s*\(/,
-    reason: '包含删除文件的文件系统调用'
-  },
-  // --- Node / 进程能力 ---
-  {
-    re: /\brequire\s*\(\s*['"]|\bmodule\.exports\b|process\.binding|globalThis\.process|process\.env\b|process\.mainModule/,
-    reason: '尝试访问 Node 运行时能力',
-    skipInLibrary: true
-  },
-  // --- 动态执行 / 混淆伪装 ---
-  { re: /\beval\s*\(|new\s+Function\s*\(|\bFunction\s*\(\s*['"`]/i, reason: '包含动态执行代码（eval / new Function），属疑似伪装代码' },
-  { re: /constructor\s*\.\s*constructor|__proto__\s*\[|Object\.getPrototypeOf\s*\(\s*function/i, reason: '包含绕过沙箱的构造器链访问（疑似伪装代码）' },
-  { re: /document\.write\s*\([\s\S]{0,400}?<script/i, reason: '使用 document.write 动态注入脚本（疑似伪装代码）' },
-  { re: /(?:atob|unescape|decodeURIComponent)\s*\([\s\S]{0,120}?(?:eval|Function|document\.write|innerHTML|outerHTML)/i, reason: '对编码字符串做动态执行（疑似混淆代码）' },
-  { re: /setTimeout\s*\(\s*['"`]|setInterval\s*\(\s*['"`]/, reason: '以字符串形式延迟执行代码（疑似混淆代码）' },
-  { re: /[A-Za-z0-9+/]{400,}={0,2}/, reason: '包含超长的疑似混淆编码块（Base64）' },
-  { re: /(?:\\x[0-9a-f]{2}){6,}/i, reason: '包含大量十六进制转义（疑似混淆代码）' },
-  { re: /(?:\\u[0-9a-f]{4}){6,}/i, reason: '包含大量 Unicode 转义（疑似混淆代码）' },
-  { re: /String\.fromCharCode\s*\((?:\s*\d+\s*,){4,}/, reason: '拼接字符编码还原字符串（疑似混淆代码）' },
-  // --- 伪装界面 / 隐藏真实行为 ---
-  { re: /<iframe\b/i, reason: '包含页面嵌套（iframe），常用于伪装界面' },
-  { re: /<script[^>]*\bsrc\s*=\s*["']?\s*data:/i, reason: '以内联 data: 形式加载脚本（疑似伪装代码）' },
-  { re: /new\s+Image\s*\(\s*\)\s*\.\s*src\s*=\s*['"`]?https?:/i, reason: '通过图片对象隐蔽发起外部请求（疑似伪装行为）' },
-  // --- 触发文件下载 ---
-  {
-    re: /URL\.createObjectURL|\.download\s*=\s*['"`]|createElement\s*\(\s*['"`]a['"`]\s*\)[\s\S]{0,120}?\.click\s*\(/i,
-    reason: '包含触发文件下载的代码'
-  },
-  { re: /showSaveFilePicker|webkitRequestFileSystem|\bIndexedDB\b[\s\S]{0,60}?open\s*\(/i, reason: '尝试直接读写本地文件' }
-]
 
 /** 外部地址的用途推断：属性/调用点 → 中文说明。 */
 interface ExternalHit {
@@ -148,15 +102,9 @@ function normalizeUrl(url: string): string {
  *   跳过 UMD 包装相关的 Node 能力规则，且不把代码里的普通地址当成「链接的外部服务」。
  */
 export function analyzeScript(source: string, options?: { library?: boolean }): HomepageRisk {
-  // 先把内联的 base64 data URI（如脚本里嵌的图片）折叠掉，否则会被「超长编码块」
-  // 规则误判为混淆代码；真正的内联脚本仍由 `<script src="data:…">` 规则拦截。
-  const scan = source.replace(/data:[^"'`)\s]*base64,[A-Za-z0-9+/=\s]*/gi, 'data:…')
-
-  const rules = options?.library ? BLOCK_RULES.filter((r) => !r.skipInLibrary) : BLOCK_RULES
-  const blocks: string[] = []
-  for (const rule of rules) {
-    if (rule.re.test(scan) && !blocks.includes(rule.reason)) blocks.push(rule.reason)
-  }
+  // 规则匹配（含内联 base64 折叠）统一由 @shared/homepage-runtime 完成：
+  // 渲染层的运行时检测用的是同一份规则表。
+  const blocks = scanHomepageCode(source, options?.library ? 'library' : 'code')
 
   const found = new Map<string, ExternalHit>()
   collectAttributed(source, found)
