@@ -84,15 +84,63 @@ const BROWSER_UA = {
   'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
 }
 
-/** 计算文件的 SHA-1（十六进制小写），用于 AddonFile 完整性校验。 */
-function sha1File(path: string): Promise<string> {
+/** 计算文件的摘要（十六进制小写），用于下载后完整性校验。 */
+function hashFile(path: string, algo: 'sha1' | 'sha512'): Promise<string> {
   return new Promise((resolve, reject) => {
-    const hash = createHash('sha1')
+    const hash = createHash(algo)
     const stream = createReadStream(path)
     stream.on('data', (d) => hash.update(d))
     stream.on('error', reject)
     stream.on('end', () => resolve(hash.digest('hex')))
   })
+}
+
+/**
+ * 校验单个已下载文件（思路参考 PCL2 的 FileChecker，独立实现）：
+ * 先比对文件大小（可识别被截断 / 未写完的文件），再比对摘要（SHA-512 优先，其次 SHA-1）。
+ * 清单未提供任何可校验信息时直接通过（例如 CurseFile 探测不到哈希与大小）。
+ * 任一不符即抛错，由调用方删除后重下。
+ */
+async function verifyPackFile(path: string, f: PackFile): Promise<void> {
+  if (f.size && f.size > 0) {
+    const st = await fsp.stat(path)
+    if (st.size !== f.size) {
+      throw new Error(`文件大小不一致（期望 ${f.size} 字节，实际 ${st.size} 字节）`)
+    }
+  }
+  if (f.sha512) {
+    const actual = await hashFile(path, 'sha512')
+    if (actual.toLowerCase() !== f.sha512.toLowerCase()) {
+      throw new Error(`SHA-512 校验失败（期望 ${f.sha512}，实际 ${actual}）`)
+    }
+    return
+  }
+  if (f.sha1) {
+    const actual = await hashFile(path, 'sha1')
+    if (actual.toLowerCase() !== f.sha1.toLowerCase()) {
+      throw new Error(`SHA-1 校验失败（期望 ${f.sha1}，实际 ${actual}）`)
+    }
+  }
+}
+
+/** 模组文件后缀（含禁用态）；清单路径与落盘校验共用同一判定。 */
+const MOD_FILE_RE = /\.jar(\.disabled)?$/i
+
+/** 归一化清单中的相对路径（去首尾分隔符），用于判定落点是否属于 mods/。 */
+function normRelPath(p: string): string {
+  return p.replace(/\\/g, '/').replace(/^\.?\/+/, '').replace(/\/+$/, '')
+}
+
+/**
+ * 安装后模组完整性校验（思路参考 PCL2 的安装后自检，独立实现）：
+ * 逐个确认清单声明的模组文件确实落盘，返回缺失的相对路径列表（空数组表示全部就绪）。
+ */
+function findMissingMods(runDir: string, expectedMods: Set<string>): string[] {
+  const missing: string[] = []
+  for (const rel of expectedMods) {
+    if (!existsSync(join(runDir, ...rel.split('/')))) missing.push(rel)
+  }
+  return missing
 }
 
 /** 网络执行由网络进程承担（net:fetchJson，合并取消信号与 10s 超时）。 */
@@ -116,26 +164,25 @@ async function detectFileNameFromUrl(url: string): Promise<string | null> {
 }
 
 /**
- * CurseFile 缺 fileName 时探测真实文件名与下载地址，顺序对照 HMCL：
- *   1) 下载链接重定向 / Content-Disposition；
- *   2) cursemeta（fileNameOnDisk / downloadURL）；
- *   3) forgesvc（fileName / downloadURL）。
- * 全部失败返回 null，调用方回退占位文件名。
+ * 探测 CurseForge 文件的真实元数据（文件名、下载地址、SHA-1、大小），顺序：
+ *   1) cursemeta（fileNameOnDisk / downloadURL / sha1 / fileLength）；
+ *   2) forgesvc v2（fileName / downloadURL / hashes / fileLength）；
+ *   3) 下载链接重定向 / Content-Disposition 兜底探测文件名（无哈希 / 大小）。
+ * 前两级能一次拿到大小与哈希，供下载后完整性校验；全部失败返回 null。
+ * 注：CurseForge 另有批量 POST /v1/mods/files 接口，但本启动器网络层仅支持 GET，
+ * 故逐文件 GET 元数据（在并发工作池内并行执行）。
  */
-async function detectCurseFile(
+async function resolveCurseFile(
   projectID: number,
   fileID: number,
   fallbackUrl: string,
   signal?: AbortSignal
-): Promise<{ fileName: string; url: string } | null> {
-  const fromUrl = await detectFileNameFromUrl(fallbackUrl)
-  if (fromUrl) return { fileName: fromUrl, url: fallbackUrl }
-
+): Promise<{ fileName: string; url: string; sha1?: string; size?: number } | null> {
   try {
     const m = await fetchJson(`https://cursemeta.dries007.net/${projectID}/${fileID}.json`, signal)
     const name = String(m['fileNameOnDisk'] ?? m['fileName'] ?? '')
     const url = String(m['downloadURL'] ?? '')
-    if (name) return { fileName: sanitizeFileName(name), url: url || fallbackUrl }
+    if (name) return { fileName: sanitizeFileName(name), url: url || fallbackUrl, ...pickCurseMeta(m) }
   } catch {
     /* cursemeta 不可用，继续 */
   }
@@ -144,12 +191,39 @@ async function detectCurseFile(
     const m = await fetchJson(`https://addons-ecs.forgesvc.net/api/v2/addon/${projectID}/file/${fileID}`, signal)
     const name = String(m['fileName'] ?? '')
     const url = String(m['downloadURL'] ?? '')
-    if (name) return { fileName: sanitizeFileName(name), url: url || fallbackUrl }
+    if (name) return { fileName: sanitizeFileName(name), url: url || fallbackUrl, ...pickCurseMeta(m) }
   } catch {
     /* forgesvc 不可用，继续 */
   }
 
+  const fromUrl = await detectFileNameFromUrl(fallbackUrl)
+  if (fromUrl) return { fileName: fromUrl, url: fallbackUrl }
+
   return null
+}
+
+/** 从 CurseForge 系接口响应中提取 SHA-1 与文件大小（cursemeta 顶层字段 / forgesvc hashes[algo=1]）。 */
+function pickCurseMeta(m: Record<string, unknown>): { sha1?: string; size?: number } {
+  const out: { sha1?: string; size?: number } = {}
+  const direct = m['sha1']
+  if (typeof direct === 'string' && /^[0-9a-f]{40}$/i.test(direct.trim())) out.sha1 = direct.trim().toLowerCase()
+  const hashes = m['hashes']
+  if (!out.sha1 && Array.isArray(hashes)) {
+    for (const h of hashes) {
+      if (!h || typeof h !== 'object') continue
+      const rec = h as Record<string, unknown>
+      const algo = rec['algo']
+      const value = rec['value']
+      // CurseForge AddonFile.hashes：algo 1 = SHA-1，algo 2 = MD5
+      if ((algo === 1 || algo === '1' || String(algo).toLowerCase() === 'sha1') && typeof value === 'string' && /^[0-9a-f]{40}$/i.test(value.trim())) {
+        out.sha1 = value.trim().toLowerCase()
+        break
+      }
+    }
+  }
+  const len = Number(m['fileLength'] ?? m['size'] ?? 0)
+  if (Number.isFinite(len) && len > 0) out.size = len
+  return out
 }
 
 interface PackFile {
@@ -159,8 +233,14 @@ interface PackFile {
   optional?: boolean
   /** 附加请求头（例如 CurseForge 需要浏览器 UA）。 */
   headers?: Record<string, string>
-  /** AddonFile 的 SHA-1 完整性校验值。 */
-  hash?: string
+  /** 期望的 SHA-1 摘要（Modrinth hashes.sha1 / MCBBS AddonFile hash / CurseForge），下载后校验。 */
+  sha1?: string
+  /** 期望的 SHA-512 摘要（Modrinth hashes.sha512），下载后校验。 */
+  sha512?: string
+  /** 期望的文件字节数（Modrinth fileSize / CurseForge fileLength），下载后校验，可识别被截断的文件。 */
+  size?: number
+  /** 备用下载地址（Modrinth downloads 数组），主地址失败时顺序回退。 */
+  mirrors?: string[]
   /** CurseFile 缺 fileName 时，下载阶段据此探测真实文件名。 */
   curseFile?: { projectID: number; fileID: number }
 }
@@ -183,7 +263,13 @@ async function parseModrinth(archive: string): Promise<ParsedPack> {
     versionId?: string
     summary?: string
     dependencies?: Record<string, unknown>
-    files?: Array<{ path?: string; downloads?: string[] }>
+    files?: Array<{
+      path?: string
+      downloads?: string[]
+      hashes?: { sha1?: string; sha512?: string }
+      fileSize?: number
+      env?: { client?: string; server?: string }
+    }>
   }
   const deps: Record<string, unknown> = index.dependencies ?? {}
   let loader: string | null = null
@@ -201,12 +287,22 @@ async function parseModrinth(archive: string): Promise<ParsedPack> {
     loader = 'neoforge'
     loaderVersion = String(deps['neoforge'] ?? deps['neo-forge'])
   }
-  const files = (index.files ?? [])
-    .map((f: { path?: string; downloads?: string[] }) => ({
-      path: f.path ?? '',
-      url: Array.isArray(f.downloads) ? f.downloads[0] ?? '' : ''
-    }))
-    .filter((f: { path: string; url: string }) => f.path)
+  // Modrinth 每个文件可声明 env.client：unsupported 表示该文件仅供服务端、
+  // 不应安装到客户端（对照 PCL2 的处理），直接跳过，避免污染客户端模组目录。
+  const files: PackFile[] = (index.files ?? [])
+    .filter((f) => String(f.env?.client ?? '').toLowerCase() !== 'unsupported')
+    .map((f) => {
+      const mirrors = (Array.isArray(f.downloads) ? f.downloads : []).filter((u): u is string => typeof u === 'string' && u.length > 0)
+      const sha1 = typeof f.hashes?.sha1 === 'string' ? f.hashes.sha1.trim().toLowerCase() : ''
+      const sha512 = typeof f.hashes?.sha512 === 'string' ? f.hashes.sha512.trim().toLowerCase() : ''
+      const file: PackFile = { path: f.path ?? '', url: mirrors[0] ?? '' }
+      if (mirrors.length > 1) file.mirrors = mirrors
+      if (sha1) file.sha1 = sha1
+      if (sha512) file.sha512 = sha512
+      if (typeof f.fileSize === 'number' && Number.isFinite(f.fileSize) && f.fileSize > 0) file.size = f.fileSize
+      return file
+    })
+    .filter((f) => f.path)
   return {
     name: index.name ?? '',
     // MC 版本来自 dependencies.minecraft；versionId 是整合包自身的版本标识，不是 MC 版本。
@@ -348,14 +444,12 @@ async function parseMcbbs(archive: string): Promise<ParsedPack> {
       if (!url && projectID && fileID) url = curseUrl(projectID, fileID)
       if (!url) continue
       const fileName = normRel(String(raw['fileName'] ?? ''))
-      if (fileName) {
-        // fileName 已知，直接定位到 mods/ 目录
-        const dest = fileName.startsWith('mods/') ? fileName : `mods/${fileName}`
-        files.push({ path: dest, url, headers: BROWSER_UA })
-      } else if (projectID && fileID) {
-        // fileName 缺失：先用占位名，下载阶段再探测真实文件名
-        files.push({ path: `mods/${projectID}-${fileID}.jar`, url, headers: BROWSER_UA, curseFile: { projectID, fileID } })
-      }
+      // 无论 fileName 是否已知都记录 curseFile：下载阶段据此探测 SHA-1 与文件大小，
+      // 从而对 CurseForge 文件也能做下载后完整性校验（fileName 已知时仅补全校验信息）。
+      const dest = fileName ? (fileName.startsWith('mods/') ? fileName : `mods/${fileName}`) : `mods/${projectID}-${fileID}.jar`
+      const file: PackFile = { path: dest, url, headers: BROWSER_UA }
+      if (projectID && fileID) file.curseFile = { projectID, fileID }
+      files.push(file)
     } else {
       // AddonFile 或未标注类型：path + 可选 hash / url / downloads；fileApi 存在时优先构造下载地址
       const path = normRel(String(raw['path'] ?? ''))
@@ -363,7 +457,7 @@ async function parseMcbbs(archive: string): Promise<ParsedPack> {
       let url = String(raw['url'] ?? (Array.isArray(raw['downloads']) ? (raw['downloads'] as string[])[0] ?? '' : ''))
       if (!url && fileApi) url = `${fileApi}/overrides/${path}`
       const hash = String(raw['hash'] ?? '').trim()
-      if (url) files.push({ path, url, optional: true, ...(hash ? { hash } : {}) })
+      if (url) files.push({ path, url, optional: true, ...(hash ? { sha1: hash.toLowerCase() } : {}) })
     }
   }
 
@@ -471,7 +565,7 @@ async function installInstance(
     const s = settings.get()
     const java = await pickInstallerJava(gameDir, s.javaPath, requiredJavaForMc(mcVersion))
     if (!java) throw new Error('未找到 Java，无法安装 Forge/NeoForge 加载器')
-    const id = await installForge(loader as ForgeKind, mcVersion, loaderVersion, gameDir, java.path, onLog, instanceName, onProgress)
+    const id = await installForge(loader as ForgeKind, mcVersion, loaderVersion, gameDir, java.path, onLog, instanceName, onProgress, signal)
     await downloadInstance(id, gameDir, kind, onProgress, signal)
     return
   }
@@ -522,64 +616,209 @@ async function applyModpackFiles(
   }
 
   // 2) 再下载 files 列表（Modrinth 下载、MCBBS 的 CurseFile 与 fileApi 增量文件）
+  //
+  // 参考 downloader.ts 的并发工作池：整合包常含数十到数百个模组文件，串行下载会让
+  // 安装耗时线性累积。这里用 settings.maxDownloadConcurrency 个 worker 并行拉取，
+  // 共享字节 / 计数并节流上报，保持与原逐文件实现完全一致的单文件语义
+  // （CurseFile 探测、可选文件跳过、多候选源回退、下载后 SHA 校验）。
   const files = parsed.files
-  for (let i = 0; i < files.length; i++) {
-    const f = files[i]
-    // CurseFile 缺 fileName 时，下载前探测真实文件名与下载地址（cursemeta/forgesvc，回退 URL 重定向）
-    if (f.curseFile) {
-      const info = await detectCurseFile(f.curseFile.projectID, f.curseFile.fileID, f.url, signal)
-      if (info) {
-        f.path = info.fileName.startsWith('mods/') ? info.fileName : `mods/${info.fileName}`
-        f.url = info.url
-      }
+  const total = files.length
+  // 清单声明的模组文件按目标路径去重；在下载结束（CurseFile 改名完成后）据此校验落盘。
+  let done = 0
+  let doneBytes = 0
+  let totalBytes = 0
+
+  let speed = 0
+  let lastSpeedAt = Date.now()
+  let lastSpeedBytes = 0
+  const EMIT_INTERVAL = 80
+  let lastEmitAt = 0
+  let emitTimer: ReturnType<typeof setTimeout> | null = null
+  let latestLabel = ''
+  let finished = false
+
+  const sendProgress = (): void => {
+    if (finished) return
+    emitTimer = null
+    const now = Date.now()
+    const delta = now - lastSpeedAt
+    const bytes = doneBytes - lastSpeedBytes
+    lastSpeedAt = now
+    lastSpeedBytes = doneBytes
+    if (delta > 0) {
+      const inst = bytes / delta
+      speed = inst > 0 ? Math.max(0, Math.min(inst * 1000, 1024 * 1024 * 1024)) : speed * 0.5
     }
-    if (!f.url) continue
-    // 路径安全：去除首尾分隔符、拒绝目录穿越
-    const rel = f.path.replace(/\\/g, '/').replace(/^\.?\/+/, '').replace(/\/+$/, '')
-    if (!rel || rel.split('/').some((s) => s === '..' || s === '')) continue
-    const dest = join(runDir, ...rel.split('/'))
-    // 可选文件（MCBBS AddonFile）以 overrides 为准：已存在则跳过，避免重复下载
-    if (f.optional && existsSync(dest)) continue
-    await fsp.mkdir(dirname(dest), { recursive: true })
-    onProgress({ taskId: 'modpack', task: rel, current: i, total: files.length, currentBytes: 0, totalBytes: 0, phase: 'mod', percent: Math.round((i / Math.max(1, files.length)) * 100) })
-    // CurseForge 文件：主用解析出的地址/API download-with-ip，失败回退 API download；多个源顺序尝试
-    const candidates = f.curseFile
-      ? Array.from(
-          new Set([
-            f.url,
-            `https://www.curseforge.com/api/v1/mods/${f.curseFile.projectID}/files/${f.curseFile.fileID}/download-with-ip`,
-            `https://www.curseforge.com/api/v1/mods/${f.curseFile.projectID}/files/${f.curseFile.fileID}/download`
-          ])
-        )
-      : [f.url]
-    let lastErr: unknown = null
-    for (const candidate of candidates) {
-      if (candidate !== candidates[0]) await fsp.rm(dest, { force: true }).catch(() => {})
-      try {
-        await streamDownload(candidate, dest, { signal, headers: f.headers })
-        lastErr = null
-        break
-      } catch (e) {
-        lastErr = e
+    lastEmitAt = now
+    const percent =
+      totalBytes > 0
+        ? Math.min(100, Math.round((doneBytes / totalBytes) * 100))
+        : total > 0
+          ? Math.min(100, Math.round((done / total) * 100))
+          : 0
+    onProgress({
+      taskId: 'modpack',
+      task: latestLabel || '整合包文件',
+      current: done,
+      total,
+      currentBytes: doneBytes,
+      totalBytes,
+      phase: 'mod',
+      percent,
+      speed: Math.round(speed)
+    })
+  }
+
+  const emit = (label: string, force = false): void => {
+    latestLabel = label
+    if (force) {
+      if (emitTimer != null) {
+        clearTimeout(emitTimer)
+        emitTimer = null
       }
+      sendProgress()
+      return
     }
-    try {
-      if (lastErr) throw lastErr
-      // AddonFile 的 SHA-1 完整性校验（对照 HMCL 的 FileDownloadTask.IntegrityCheck）
-      if (f.hash) {
-        const actual = await sha1File(dest)
-        if (actual.toLowerCase() !== f.hash.toLowerCase()) {
-          await fsp.rm(dest, { force: true }).catch(() => {})
-          throw new Error(`SHA-1 校验失败（期望 ${f.hash}，实际 ${actual}）`)
+    const now = Date.now()
+    if (now - lastEmitAt >= EMIT_INTERVAL) {
+      sendProgress()
+    } else if (emitTimer == null) {
+      emitTimer = setTimeout(sendProgress, EMIT_INTERVAL)
+    }
+  }
+
+  const concurrency = Math.max(1, settings.get().maxDownloadConcurrency || 1)
+  let index = 0
+  const workers = Array.from({ length: Math.min(concurrency, Math.max(1, total)) }, async () => {
+    for (;;) {
+      if (signal?.aborted) return
+      const i = index++
+      if (i >= total) return
+      const f = files[i]
+      // CurseForge 文件：探测真实文件名、下载地址与校验信息（SHA-1 / 大小）
+      if (f.curseFile) {
+        const info = await resolveCurseFile(f.curseFile.projectID, f.curseFile.fileID, f.url, signal)
+        if (info) {
+          f.path = info.fileName.startsWith('mods/') ? info.fileName : `mods/${info.fileName}`
+          f.url = info.url
+          if (info.sha1) f.sha1 = info.sha1
+          if (info.size) f.size = info.size
         }
       }
-    } catch (e) {
-      // 可选文件（MCBBS AddonFile）下载失败不中断导入：overrides 里通常已包含该文件
-      if (f.optional) {
-        onLog(`[整合包] 下载 ${rel} 失败，已跳过：${(e as Error).message}`)
+      if (!f.url) {
+        done++
+        emit(latestLabel)
         continue
       }
-      throw e
+      // 路径安全：去除首尾分隔符、拒绝目录穿越
+      const rel = normRelPath(f.path)
+      if (!rel || rel.split('/').some((s) => s === '..' || s === '')) {
+        done++
+        emit(latestLabel)
+        continue
+      }
+      const dest = join(runDir, ...rel.split('/'))
+      // 可选文件（MCBBS AddonFile）以 overrides 为准：已存在则跳过，避免重复下载
+      if (f.optional && existsSync(dest)) {
+        done++
+        emit(rel)
+        continue
+      }
+      await fsp.mkdir(dirname(dest), { recursive: true })
+      emit(rel)
+      // 候选源：清单给出的地址（含 Modrinth 镜像）；CurseFile 再补 CurseForge API 端点
+      const candidates = Array.from(
+        new Set([
+          ...(f.mirrors && f.mirrors.length > 0 ? f.mirrors : [f.url]),
+          ...(f.curseFile
+            ? [
+                `https://www.curseforge.com/api/v1/mods/${f.curseFile.projectID}/files/${f.curseFile.fileID}/download-with-ip`,
+                `https://www.curseforge.com/api/v1/mods/${f.curseFile.projectID}/files/${f.curseFile.fileID}/download`
+              ]
+            : [])
+        ])
+      ).filter(Boolean)
+
+      // 下载 + 完整性校验：单次下载可能因服务器提前断流 / 镜像截断得到不完整文件，
+      // 用清单提供的 SHA 识别后删除并重下（最多 3 轮，每轮顺序尝试所有候选源），
+      // 避免把损坏的模组留在实例里（对应「最后几个模组不完整」）。
+      let lastErr: unknown = null
+      for (let attempt = 1; attempt <= 3 && !signal?.aborted; attempt++) {
+        for (const candidate of candidates) {
+          await fsp.rm(dest, { force: true }).catch(() => {})
+          try {
+            await streamDownload(candidate, dest, {
+              signal,
+              headers: f.headers,
+              onBytes: (n) => {
+                doneBytes += n
+                emit(rel)
+              },
+              onSize: (s) => {
+                totalBytes += s
+                emit(rel)
+              }
+            })
+            lastErr = null
+            break
+          } catch (e) {
+            lastErr = e
+          }
+        }
+        if (lastErr) continue
+        try {
+          await verifyPackFile(dest, f)
+          break
+        } catch (e) {
+          lastErr = e
+          await fsp.rm(dest, { force: true }).catch(() => {})
+          onLog(`[整合包] ${rel} 校验失败（第 ${attempt}/3 次），正在重下：${(e as Error).message}`)
+        }
+      }
+
+      try {
+        if (signal?.aborted) throw new Error('下载已取消')
+        if (lastErr) throw lastErr
+      } catch (e) {
+        // 可选文件（MCBBS AddonFile）下载失败不中断导入：overrides 里通常已包含该文件
+        if (f.optional) {
+          onLog(`[整合包] 下载 ${rel} 失败，已跳过：${(e as Error).message}`)
+          done++
+          emit(rel)
+          continue
+        }
+        throw e
+      }
+      done++
+      emit(rel)
+    }
+  })
+
+  try {
+    await Promise.all(workers)
+    if (signal?.aborted) throw new Error('下载已取消')
+
+    // 模组完整性校验：CurseForge 文件名探测完成后，逐个确认清单声明的模组均已落盘。
+    const expectedMods = new Set<string>()
+    for (const f of files) {
+      const rel = normRelPath(f.path)
+      if (rel.toLowerCase().startsWith('mods/') && MOD_FILE_RE.test(rel)) expectedMods.add(rel)
+    }
+    const missingMods = findMissingMods(runDir, expectedMods)
+    if (missingMods.length > 0) {
+      const shown = missingMods.slice(0, 5).join('、')
+      const more = missingMods.length > 5 ? ` 等 ${missingMods.length} 个` : ''
+      throw new Error(
+        `整合包模组数量校验失败：清单声明 ${expectedMods.size} 个模组，缺失 ${missingMods.length} 个（${shown}${more}），可能有模组下载失败或被跳过`
+      )
+    }
+    if (expectedMods.size > 0) onLog(`[整合包] 模组数量校验通过：${expectedMods.size}/${expectedMods.size}`)
+  } finally {
+    // 结束后丢弃所有尚未发出的节流上报，避免残留定时器在返回后「复活」渲染端进度条。
+    finished = true
+    if (emitTimer != null) {
+      clearTimeout(emitTimer)
+      emitTimer = null
     }
   }
 }

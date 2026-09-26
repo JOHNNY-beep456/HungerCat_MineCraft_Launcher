@@ -47,7 +47,8 @@ export async function installForge(
   javaPath: string,
   onLog: (line: string) => void,
   customId?: string,
-  onProgress?: (p: DownloadProgress) => void
+  onProgress?: (p: DownloadProgress) => void,
+  signal?: AbortSignal
 ): Promise<string> {
   const installerUrl = INSTALLER[kind].installer(version)
   const installerDir = join(gameDir, '.installers')
@@ -62,6 +63,7 @@ export async function installForge(
   let received = 0
   let totalBytes = 0
   await streamDownload(installerUrl, installerPath, {
+    signal,
     onBytes: (n) => {
       received += n
       onProgress?.({
@@ -84,11 +86,21 @@ export async function installForge(
   onProgress?.({ taskId, task: `运行安装器 ${label}`, current: 0, total: 1, currentBytes: 0, totalBytes: 0, phase: 'mod', percent: 0 })
 
   // The Forge/NeoForge client installer refuses to run unless the official
-  // launcher's `launcher_profiles.json` exists in the target directory (it
-  // injects the loader profile into it afterwards). Create a minimal one so the
-  // headless install can proceed.
+  // launcher's `launcher_profiles.json` exists AND parses to an object carrying a
+  // `profiles` map in the target directory (it injects the loader profile into it
+  // afterwards). A missing or malformed file makes the installer abort with
+  // "There is no minecraft launcher profile ...", so repair it before running.
   const launcherProfiles = join(gameDir, 'launcher_profiles.json')
-  if (!existsSync(launcherProfiles)) {
+  let profilesUsable = false
+  if (existsSync(launcherProfiles)) {
+    try {
+      const parsed = JSON.parse(await fsp.readFile(launcherProfiles, 'utf-8')) as { profiles?: unknown }
+      profilesUsable = !!parsed && typeof parsed === 'object' && !!parsed.profiles && typeof parsed.profiles === 'object'
+    } catch {
+      profilesUsable = false
+    }
+  }
+  if (!profilesUsable) {
     await fsp.writeFile(launcherProfiles, JSON.stringify({ profiles: {} }, null, 2), 'utf-8')
   }
 
@@ -97,6 +109,10 @@ export async function installForge(
   const before = await listVersionIds(gameDir)
 
   await new Promise<void>((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(new Error('下载已取消'))
+      return
+    }
     const child = spawn(javaPath, ['-jar', installerPath, '--installClient', gameDir], {
       cwd: gameDir,
       windowsHide: true
@@ -105,14 +121,23 @@ export async function installForge(
       child.kill()
       reject(new Error(`${kind} 安装器运行超时（超过 10 分钟），请重试或更换网络`))
     }, 10 * 60 * 1000)
+    const onAbort = (): void => {
+      child.kill()
+      reject(new Error('下载已取消'))
+    }
+    signal?.addEventListener('abort', onAbort, { once: true })
+    const cleanup = (): void => {
+      clearTimeout(timer)
+      signal?.removeEventListener('abort', onAbort)
+    }
     child.stdout.on('data', (d: Buffer) => onLog(d.toString()))
     child.stderr.on('data', (d: Buffer) => onLog(d.toString()))
     child.on('error', (err) => {
-      clearTimeout(timer)
+      cleanup()
       reject(err)
     })
     child.on('exit', (code) => {
-      clearTimeout(timer)
+      cleanup()
       if (code === 0) resolve()
       else reject(new Error(`${kind} 安装器退出码 ${code}`))
     })

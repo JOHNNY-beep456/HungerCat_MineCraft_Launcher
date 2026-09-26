@@ -1,6 +1,6 @@
 import { useEffect, useId, useMemo, useRef, useState } from 'react'
 import { AnimatePresence, motion } from 'motion/react'
-import type { InstalledVersion, ModpackProbe, ModrinthProject, ModrinthType, ModrinthVersion, VersionManifest } from '@shared/types'
+import type { InstalledVersion, ModEntry, ModpackProbe, ModrinthProject, ModrinthType, ModrinthVersion, VersionManifest } from '@shared/types'
 import { useRuntimeActions } from '../runtime'
 import { Button, Icon, LoadingState, Segmented, Select, Spinner } from '../components/ui'
 import { VersionsPage } from './VersionsPage'
@@ -40,6 +40,12 @@ function loaderLabel(l: string | null): string {
   if (!l) return '原版'
   const map: Record<string, string> = { iris: 'Iris', optifine: 'OptiFine' }
   return map[l] ?? l.charAt(0).toUpperCase() + l.slice(1)
+}
+
+/** 光影声明的「加载器」其实是运行时模组：按实例 mods 目录里的文件名判断是否已装。 */
+const RUNTIME_LOADER_PATTERNS: Record<string, RegExp> = {
+  iris: /^iris[-_]/i,
+  optifine: /optifine/i
 }
 
 function sortMc(list: string[]): string[] {
@@ -338,6 +344,29 @@ function ProjectDetail({
   const [modpackBusy, setModpackBusy] = useState(false)
   const [notice, setNotice] = useState<string | null>(null)
 
+  // 光影（及部分模组）声明的加载器 iris / optifine 是运行时模组，需要知道各实例装了哪些模组才能判断可用性
+  const needsRuntimeCheck = useMemo(
+    () => versions.some((v) => v.loaders.some((l) => RUNTIME_LOADER_PATTERNS[l.toLowerCase()])),
+    [versions]
+  )
+  const [instanceMods, setInstanceMods] = useState<Record<string, string[]>>({})
+  const installedIds = installed.map((ins) => ins.id).join('|')
+  useEffect(() => {
+    if (!needsRuntimeCheck || !installedIds) return
+    let cancelled = false
+    void Promise.all(
+      installedIds.split('|').map(async (id) => {
+        const list = await window.api.manage.mods(id).catch(() => [] as ModEntry[])
+        return [id, list.map((m) => m.name)] as const
+      })
+    ).then((pairs) => {
+      if (!cancelled) setInstanceMods(Object.fromEntries(pairs))
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [needsRuntimeCheck, installedIds])
+
   const installModpack = async (v: ModrinthVersion): Promise<void> => {
     const file = v.files.find((f) => f.primary) ?? v.files[0]
     if (!file) return
@@ -468,6 +497,7 @@ function ProjectDetail({
                 versions={vs}
                 type={type}
                 installed={installed}
+                instanceMods={instanceMods}
                 preferredLoader={preferredLoader}
                 isModpack={isModpack}
                 onInstallModpack={installModpack}
@@ -540,6 +570,7 @@ function LoaderDrawer({
   versions,
   type,
   installed,
+  instanceMods,
   preferredLoader,
   isModpack,
   onInstallModpack,
@@ -549,6 +580,7 @@ function LoaderDrawer({
   versions: ModrinthVersion[]
   type: ModrinthType
   installed: InstalledVersion[]
+  instanceMods: Record<string, string[]>
   preferredLoader?: string
   isModpack?: boolean
   onInstallModpack?: (v: ModrinthVersion) => void
@@ -579,6 +611,7 @@ function LoaderDrawer({
               v={v}
               type={type}
               installed={installed}
+              instanceMods={instanceMods}
               isModpack={isModpack}
               onInstallModpack={onInstallModpack}
               modpackBusy={modpackBusy}
@@ -594,6 +627,7 @@ function VersionEntry({
   v,
   type,
   installed,
+  instanceMods,
   isModpack,
   onInstallModpack,
   modpackBusy
@@ -601,6 +635,7 @@ function VersionEntry({
   v: ModrinthVersion
   type: ModrinthType
   installed: InstalledVersion[]
+  instanceMods: Record<string, string[]>
   isModpack?: boolean
   onInstallModpack?: (v: ModrinthVersion) => void
   modpackBusy?: boolean
@@ -610,17 +645,22 @@ function VersionEntry({
   const [busy, setBusy] = useState(false)
 
   const compatible = installed.filter((ins) => {
-    const mcOk = v.game_versions.length === 0 || v.game_versions.includes(ins.mcVersion)
-    if (!mcOk) return false
-    // 资源包 / 数据包与加载器无关，任意加载器（含原版）实例都能安装
-    if (type === 'resourcepack') return true
-    // 其余类型需匹配加载器；'minecraft' 视为原版（无加载器）实例
-    const loaderOk =
-      v.loaders.length === 0 ||
-      v.loaders.some((l) =>
-        l.toLowerCase() === 'minecraft' ? !ins.loader : (ins.loader ?? '').toLowerCase() === l.toLowerCase()
-      )
-    return loaderOk
+    // 资源包不限制加载器，只看游戏版本
+    if (type === 'resourcepack') {
+      return v.game_versions.length === 0 || v.game_versions.includes(ins.mcVersion)
+    }
+    // 其余类型：游戏版本与加载器必须同时匹配；资源未声明的维度一律视为不匹配，
+    // 否则会把版本或加载器不同的实例也列出来。
+    if (v.game_versions.length === 0 || !v.game_versions.includes(ins.mcVersion)) return false
+    if (v.loaders.length === 0) return false
+    const insLoader = (ins.loader ?? 'minecraft').toLowerCase()
+    return v.loaders.some((l) => {
+      const key = l.toLowerCase()
+      // 光影声明的加载器是运行时模组：实例装了 Iris / OptiFine 才能用
+      const pattern = RUNTIME_LOADER_PATTERNS[key]
+      if (pattern) return (instanceMods[ins.id] ?? []).some((name) => pattern.test(name))
+      return key === insLoader
+    })
   })
 
   const fire = async (e: React.MouseEvent, target: InstalledVersion | null): Promise<void> => {

@@ -10,7 +10,8 @@ import { AgreementModal } from './components/AgreementModal'
 import { OnboardingModal } from './components/OnboardingModal'
 import { CursorGlow } from './components/CursorGlow'
 import { Button, Icon, formatSpeed } from './components/ui'
-import { HomePage } from './pages/HomePage'
+import { HomeRoute } from './pages/CustomHomePage'
+import { HomepagePage } from './pages/HomepagePage'
 import { ResourceDownloadPage, type Tab } from './pages/ResourceDownloadPage'
 import { AccountsPage } from './pages/AccountsPage'
 import { DownloadsPage } from './pages/DownloadsPage'
@@ -26,7 +27,9 @@ function renderPage(
 ): JSX.Element {
   switch (page) {
     case 'home':
-      return <HomePage />
+      return <HomeRoute />
+    case 'homepage':
+      return <HomepagePage />
     case 'resources':
       return <ResourceDownloadPage initialTab={resourcePreset?.tab} presetSearch={resourcePreset?.search} />
     case 'instances':

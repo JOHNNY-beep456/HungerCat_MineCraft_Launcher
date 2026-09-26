@@ -63,12 +63,8 @@ function fetchVersionManifest(mirror: MirrorKind): Promise<VersionManifest> {
   })
 }
 
-/** 获取单个原版版本 JSON（不含 inheritsFrom 合并；合并仍由主进程 resolveVersionJson 承担）。 */
-function fetchRawVersionJson(id: string, mirror: MirrorKind): Promise<VersionJson> {
-  const fast = mirrorConfig(mirror).versionJson(id)
-  if (mirror !== 'mojang' && fast) {
-    return fetchJson(fast, AbortSignal.timeout(10_000)) as Promise<VersionJson>
-  }
+/** 通过版本清单定位并拉取版本 JSON（清单里的 entry.url 为官方地址，即官方源回退路径）。 */
+function fetchVersionJsonFromManifest(id: string, mirror: MirrorKind): Promise<VersionJson> {
   return fetch(mirrorConfig(mirror).manifest, { signal: AbortSignal.timeout(10_000) })
     .then((res) => res.json() as Promise<{ versions: RawManifestVersion[] }>)
     .then((data) => {
@@ -76,6 +72,21 @@ function fetchRawVersionJson(id: string, mirror: MirrorKind): Promise<VersionJso
       if (!entry) throw new Error(`未找到版本 ${id}`)
       return fetchJson(entry.url, AbortSignal.timeout(10_000)) as Promise<VersionJson>
     })
+}
+
+/** 获取单个原版版本 JSON（不含 inheritsFrom 合并；合并仍由主进程 resolveVersionJson 承担）。 */
+function fetchRawVersionJson(id: string, mirror: MirrorKind): Promise<VersionJson> {
+  const fast = mirrorConfig(mirror).versionJson(id)
+  if (mirror !== 'mojang' && fast) {
+    // 镜像源的快速接口返回 404（例如尚未同步该版本）时，自动回退官方源。
+    return fetchJson(fast, AbortSignal.timeout(10_000)).catch((err: unknown) => {
+      const msg = err instanceof Error ? err.message : String(err)
+      if (!/HTTP[^\d]*404/.test(msg)) throw err
+      console.warn(`[网络] 镜像源缺少版本 ${id} 的 JSON，回退官方源`)
+      return fetchVersionJsonFromManifest(id, mirror)
+    }) as Promise<VersionJson>
+  }
+  return fetchVersionJsonFromManifest(id, mirror)
 }
 
 /* ------------------------------------------------------------------ */
@@ -218,6 +229,31 @@ function serverApi(path: string): Promise<unknown> {
   return fetchJson(`${SERVER_BASE}/api.php?action=${path}`, AbortSignal.timeout(10_000))
 }
 
+/**
+ * 服务端写入类接口（JSON body）。服务端以 `{ ok:false, error:"中文原因" }` + 4xx 表达
+ * 业务失败，这里把 error 还原成异常抛给上层，避免前端只能看到 HTTP 状态码。
+ */
+async function serverApiPost(path: string, body: unknown): Promise<unknown> {
+  const res = await fetch(`${SERVER_BASE}/api.php?action=${path}`, {
+    method: 'POST',
+    headers: { ...UA, 'Content-Type': 'application/json' },
+    body: JSON.stringify(body ?? {}),
+    signal: AbortSignal.timeout(10_000)
+  })
+  const text = await res.text()
+  let data: unknown = null
+  try {
+    data = text ? JSON.parse(text) : null
+  } catch {
+    data = null
+  }
+  if (!res.ok) {
+    const msg = (data as { error?: string } | null)?.error
+    throw new Error(msg || `HTTP ${res.status}`)
+  }
+  return data
+}
+
 /* ------------------------------------------------------------------ */
 /* yggdrasil：第三方认证服务器 authenticate / refresh                   */
 /* ------------------------------------------------------------------ */
@@ -320,6 +356,37 @@ async function netFetchJson(p: NetJsonParams, ctx: NetHandlerCtx): Promise<unkno
   const res = await fetch(p.url, { headers: p.headers ?? {}, signal: combined })
   if (!res.ok) throw new Error(`HTTP ${res.status}`)
   return res.json()
+}
+
+interface FetchTextParams {
+  url: string
+  /** 体积上限，超出即中止（默认 256KB）。 */
+  maxBytes?: number
+  timeoutMs?: number
+}
+
+/** 取回外部脚本文本（流式读取并限制体积；10s 兜底超时，防止核对外链时卡死）。 */
+async function netFetchText(p: FetchTextParams, ctx: NetHandlerCtx): Promise<string> {
+  const ms = Math.min(p.timeoutMs ?? 10_000, 10_000)
+  const max = p.maxBytes ?? 256 * 1024
+  const combined = ctx.signal ? AbortSignal.any([ctx.signal, AbortSignal.timeout(ms)]) : AbortSignal.timeout(ms)
+  const res = await fetch(p.url, { signal: combined, redirect: 'follow' })
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  const reader = res.body?.getReader()
+  if (!reader) return ''
+  const chunks: Buffer[] = []
+  let total = 0
+  for (;;) {
+    const { done, value } = await reader.read()
+    if (done) break
+    total += value.byteLength
+    if (total > max) {
+      await reader.cancel()
+      throw new Error(`内容体积超过核对上限（${Math.round(max / 1024)}KB）`)
+    }
+    chunks.push(Buffer.from(value))
+  }
+  return Buffer.concat(chunks).toString('utf-8')
 }
 
 function sanitizeName(n: string): string {
@@ -630,6 +697,10 @@ interface ModrinthVersionsParams {
 interface ServerApiParams {
   path: string
 }
+interface ServerPostParams {
+  path: string
+  body?: unknown
+}
 interface StreamDownloadParams {
   url: string
   dest: string
@@ -654,10 +725,12 @@ const handlers: Record<string, NetHandler> = {
     searchModrinth(p.query, p.limit, p.type, p.category, p.gameVersion, p.loader, p.offset),
   'modrinth:versions': (p: ModrinthVersionsParams) => fetchModrinthVersions(p.slug, p.loaders, p.gameVersions),
   'server:api': (p: ServerApiParams) => serverApi(p.path),
+  'server:post': (p: ServerPostParams) => serverApiPost(p.path, p.body),
   'yggdrasil:authenticate': (p: YggAuthParams) => yggdrasilAuthenticate(p.server, p.email ?? '', p.password ?? '', p.clientToken),
   'yggdrasil:refresh': (p: YggAuthParams) =>
     yggdrasilRefresh(p.server, p.accessToken ?? '', p.clientToken ?? ''),
   'net:fetchJson': (p: NetJsonParams, ctx: NetHandlerCtx) => netFetchJson(p, ctx),
+  'net:fetchText': (p: FetchTextParams, ctx: NetHandlerCtx) => netFetchText(p, ctx),
   'net:detectFilename': (p: DetectFilenameParams) => netDetectFilename(p),
   'download:sha1': (p: Sha1Params) => netSha1(p),
   'auth:deviceBegin': (p: DeviceBeginParams) => msDeviceBegin(p),

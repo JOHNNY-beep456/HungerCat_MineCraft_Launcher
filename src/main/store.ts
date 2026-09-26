@@ -80,7 +80,9 @@ export function getDefaultSettings(): LauncherSettings {
     agreementAcceptedAt: 0,
     onboardingDone: false,
     debugMode: false,
-    metadataOnlyMods: false
+    metadataOnlyMods: false,
+    homepageId: '',
+    selectedVersionId: ''
   }
 }
 

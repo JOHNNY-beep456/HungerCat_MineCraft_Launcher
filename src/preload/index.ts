@@ -124,6 +124,23 @@ const api: LauncherApi = {
   system: {
     memory: () => ipcRenderer.invoke('system:memory')
   },
+  homepage: {
+    list: () => ipcRenderer.invoke('homepage:list'),
+    read: (id: string) => ipcRenderer.invoke('homepage:read', id),
+    importFile: () => ipcRenderer.invoke('homepage:importFile'),
+    download: (url: string, filename: string) => ipcRenderer.invoke('homepage:download', url, filename),
+    remove: (id: string) => ipcRenderer.invoke('homepage:remove', id),
+    verify: (id: string) => ipcRenderer.invoke('homepage:verify', id),
+    confirm: (id: string, network: boolean) => ipcRenderer.invoke('homepage:confirm', id, network),
+    setActive: (id: string) => ipcRenderer.invoke('homepage:setActive', id),
+    openDir: () => ipcRenderer.invoke('homepage:openDir'),
+    market: () => ipcRenderer.invoke('homepage:market'),
+    submit: (payload) => ipcRenderer.invoke('homepage:submit', payload),
+    installNumbered: (input) => ipcRenderer.invoke('homepage:installNumbered', input),
+    log: (level, message) => {
+      void ipcRenderer.invoke('homepage:log', level, message)
+    }
+  },
   modpack: {
     probe: (filePath: string) => ipcRenderer.invoke('modpack:probe', filePath),
     download: (url: string, filename: string) => ipcRenderer.invoke('modpack:download', url, filename),
