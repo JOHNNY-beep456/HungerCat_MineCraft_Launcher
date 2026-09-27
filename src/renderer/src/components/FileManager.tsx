@@ -5,11 +5,19 @@
 // 搬进启动器桌面，那类窗口的标题栏画在客户区，搬动 / 遮蔽后必须抖动尺寸才能恢复
 // 渲染表面，是移动窗口崩溃的主要来源之一。现在改成在启动器自己的窗口里列出目录。
 //
-// 能力：只读浏览 + 打开（进目录、用系统默认程序打开文件、在系统资源管理器中定位）。
-// 不做删除 / 重命名 / 移动，避免误操作。
+// 能力：浏览 / 进目录 / 打开文件 / 在系统资源管理器中定位，以及右键菜单里的
+// 重命名、修改文件、删除、新建文件。破坏性操作一律先弹确认框。
 // ---------------------------------------------------------------------------
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type MouseEvent as ReactMouseEvent
+} from 'react'
+import { AnimatePresence, motion } from 'motion/react'
 import type { FileEntry, FilePlace } from '@shared/types'
 import { Button, Icon, Spinner } from './ui'
 
@@ -61,6 +69,54 @@ function formatTime(ms: number): string {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
 }
 
+/** 右键菜单的位置（相对组件根）与目标项；entry 为 null 表示点在了空白处。 */
+type MenuState = { x: number; y: number; entry: FileEntry | null }
+
+/** 弹窗：改名 / 新建文件 / 删除确认 / 编辑文本。 */
+type DialogState =
+  | { kind: 'rename'; entry: FileEntry }
+  | { kind: 'create' }
+  | { kind: 'delete'; entry: FileEntry }
+  | { kind: 'edit'; entry: FileEntry }
+
+/** 右键菜单的估算尺寸：用于把菜单夹取在组件内，避免贴边被切掉 */
+const MENU_W = 184
+const MENU_H = 4 * 34 + 14
+
+/** 右键菜单的一项（观感对齐 Select 的下拉项） */
+function MenuItem({
+  label,
+  onClick,
+  disabled = false,
+  danger = false,
+  title
+}: {
+  label: string
+  onClick: () => void
+  disabled?: boolean
+  danger?: boolean
+  title?: string
+}): JSX.Element {
+  return (
+    <button
+      type="button"
+      disabled={disabled}
+      title={title}
+      onClick={onClick}
+      className="flex w-full items-center rounded-xl px-3 py-2 text-left text-[13px] font-medium no-drag transition-colors disabled:opacity-40"
+      style={{ color: danger ? 'var(--fill-danger)' : undefined }}
+      onMouseEnter={(e) => {
+        if (!disabled) e.currentTarget.style.background = 'var(--fill-secondary)'
+      }}
+      onMouseLeave={(e) => {
+        e.currentTarget.style.background = 'transparent'
+      }}
+    >
+      <span className="truncate">{label}</span>
+    </button>
+  )
+}
+
 export function FileManager({
   initialPath,
   onClose,
@@ -80,6 +136,22 @@ export function FileManager({
   const [address, setAddress] = useState(initialPath)
   /** 已访问过的目录（后退用的历史栈，不含当前） */
   const history = useRef<string[]>([])
+  /** 组件根：右键菜单与弹窗都以它为定位 / 覆盖基准 */
+  const rootRef = useRef<HTMLDivElement>(null)
+  const menuRef = useRef<HTMLDivElement>(null)
+  const [menu, setMenu] = useState<MenuState | null>(null)
+  const [dialog, setDialog] = useState<DialogState | null>(null)
+  /** 改名 / 新建时的名字输入 */
+  const [nameInput, setNameInput] = useState('')
+  /** 内置编辑器的文本 */
+  const [editText, setEditText] = useState('')
+  const [editLoading, setEditLoading] = useState(false)
+  /** 编辑器读取失败：此时禁止保存，否则会把文件写坏 */
+  const [editFailed, setEditFailed] = useState(false)
+  /** 有写操作在执行：禁用弹窗按钮，避免重复提交 */
+  const [busy, setBusy] = useState(false)
+  /** 弹窗内的错误提示（放在弹窗里，免得被弹窗盖住状态栏） */
+  const [dialogError, setDialogError] = useState<string | null>(null)
 
   const crumbs = useMemo(() => crumbsOf(path), [path])
 
@@ -142,10 +214,135 @@ export function FileManager({
     })
   }
 
+  /* --- 右键菜单 --- */
+
+  /** 打开右键菜单：视口坐标换算成组件内坐标，并夹取到组件范围内 */
+  const openMenu = (ev: ReactMouseEvent, entry: FileEntry | null): void => {
+    ev.preventDefault()
+    // 挡住冒泡：否则空白处的处理会紧接着把菜单换成「无目标项」
+    ev.stopPropagation()
+    setSelected(entry ? entry.path : null)
+    const r = rootRef.current?.getBoundingClientRect()
+    const maxX = Math.max(8, (r?.width ?? 0) - MENU_W - 8)
+    const maxY = Math.max(8, (r?.height ?? 0) - MENU_H - 8)
+    setMenu({
+      x: Math.min(Math.max(8, ev.clientX - (r?.left ?? 0)), maxX),
+      y: Math.min(Math.max(8, ev.clientY - (r?.top ?? 0)), maxY),
+      entry
+    })
+  }
+
+  // 点菜单外面 / 按 Esc 关掉菜单（菜单挂在组件根上，不是列表的子节点，得单独判断）
+  useEffect(() => {
+    if (!menu) return
+    const onDown = (e: MouseEvent): void => {
+      if (!menuRef.current?.contains(e.target as Node)) setMenu(null)
+    }
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key === 'Escape') setMenu(null)
+    }
+    document.addEventListener('mousedown', onDown)
+    document.addEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('mousedown', onDown)
+      document.removeEventListener('keydown', onKey)
+    }
+  }, [menu])
+
+  // Esc 关闭弹窗
+  useEffect(() => {
+    if (!dialog) return
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key === 'Escape') setDialog(null)
+    }
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
+  }, [dialog])
+
+  /* --- 右键菜单的四个动作 --- */
+
+  const openRename = (entry: FileEntry): void => {
+    setMenu(null)
+    setNameInput(entry.name)
+    setDialogError(null)
+    setDialog({ kind: 'rename', entry })
+  }
+
+  const openCreate = (): void => {
+    setMenu(null)
+    setNameInput('新建文件.txt')
+    setDialogError(null)
+    setDialog({ kind: 'create' })
+  }
+
+  const openDelete = (entry: FileEntry): void => {
+    setMenu(null)
+    setDialogError(null)
+    setDialog({ kind: 'delete', entry })
+  }
+
+  /** 打开内置编辑器：先读文本；二进制 / 过大文件会被主进程拒绝，此时不允许保存 */
+  const openEdit = (entry: FileEntry): void => {
+    setMenu(null)
+    setEditText('')
+    setDialogError(null)
+    setEditFailed(false)
+    setEditLoading(true)
+    setDialog({ kind: 'edit', entry })
+    void window.api.files
+      .readText(entry.path)
+      .then((r) => setEditText(r.content))
+      .catch((err: unknown) => {
+        setEditFailed(true)
+        setDialogError(err instanceof Error ? err.message : String(err))
+      })
+      .finally(() => setEditLoading(false))
+  }
+
+  /** 执行写操作：成功后关弹窗并重新列目录；失败把中文原因留在弹窗里 */
+  const apply = (op: () => Promise<unknown>): void => {
+    setBusy(true)
+    setDialogError(null)
+    void op()
+      .then(() => {
+        setDialog(null)
+        return load(path)
+      })
+      .catch((err: unknown) => setDialogError(err instanceof Error ? err.message : String(err)))
+      .finally(() => setBusy(false))
+  }
+
+  const applyRename = (): void => {
+    if (dialog?.kind !== 'rename') return
+    const name = nameInput.trim()
+    if (!name) return
+    if (name === dialog.entry.name) {
+      setDialog(null)
+      return
+    }
+    apply(() => window.api.files.rename(dialog.entry.path, name))
+  }
+
+  const applyCreate = (): void => {
+    const name = nameInput.trim()
+    if (!name) return
+    apply(() => window.api.files.createFile(path, name))
+  }
+
+  const applyDelete = (): void => {
+    if (dialog?.kind !== 'delete') return
+    apply(() => window.api.files.remove(dialog.entry.path))
+  }
+
+  const applySave = (): void => {
+    if (dialog?.kind !== 'edit') return
+    apply(() => window.api.files.writeText(dialog.entry.path, editText))
+  }
+
   const selectedEntry = entries.find((e) => e.path === selected) ?? null
 
   return (
-    <div className={`flex h-full min-h-0 flex-col ${className}`}>
+    <div ref={rootRef} className={`relative flex h-full min-h-0 flex-col ${className}`}>
       {/* 工具栏：后退 / 上级 / 刷新 + 地址栏 */}
       <div className="flex shrink-0 items-center gap-2 px-3 pt-3">
         <Button size="sm" icon="chevronLeft" onClick={back} disabled={history.current.length === 0} title="后退">
@@ -206,7 +403,7 @@ export function FileManager({
 
         {/* 右栏：列表 */}
         <div className="flex min-w-0 flex-1 flex-col">
-          <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-2">
+          <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-2" onContextMenu={(ev) => openMenu(ev, null)}>
             {loading ? (
               <div className="flex h-full items-center justify-center gap-2">
                 <Spinner size={20} />
@@ -225,6 +422,7 @@ export function FileManager({
                     style={{ background: selected === e.path ? 'var(--fill-secondary)' : 'transparent' }}
                     onClick={() => setSelected(e.path)}
                     onDoubleClick={() => activate(e)}
+                    onContextMenu={(ev) => openMenu(ev, e)}
                     title={e.path}
                   >
                     <Icon
@@ -277,6 +475,207 @@ export function FileManager({
           </div>
         </div>
       </div>
+
+      {/* 右键菜单：重命名 / 修改文件 / 删除 / 新建文件 */}
+      <AnimatePresence>
+        {menu && (
+          <motion.div
+            ref={menuRef}
+            initial={{ opacity: 0, scale: 0.97 }}
+            animate={{ opacity: 1, scale: 1 }}
+            exit={{ opacity: 0, scale: 0.97 }}
+            transition={{ type: 'spring', bounce: 0.15, duration: 0.28 }}
+            className="glass-strong absolute z-50 overflow-hidden rounded-2xl p-1.5"
+            style={{ left: menu.x, top: menu.y, width: MENU_W }}
+            onContextMenu={(ev) => ev.preventDefault()}
+          >
+            <MenuItem label="新建文件" onClick={openCreate} />
+            <MenuItem label="重命名" disabled={!menu.entry} onClick={() => menu.entry && openRename(menu.entry)} />
+            <MenuItem
+              label="修改文件"
+              disabled={!menu.entry || menu.entry.isDir}
+              title={menu.entry?.isDir ? '目录不能当文件编辑' : undefined}
+              onClick={() => {
+                if (menu.entry && !menu.entry.isDir) openEdit(menu.entry)
+              }}
+            />
+            <MenuItem
+              label="删除"
+              danger
+              disabled={!menu.entry}
+              onClick={() => menu.entry && openDelete(menu.entry)}
+            />
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* 弹窗：改名 / 新建文件 / 编辑文本 / 删除确认 */}
+      <AnimatePresence>
+        {dialog && (
+          <motion.div
+            className="absolute inset-0 z-50 flex items-center justify-center p-6"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+          >
+            <div
+              className="absolute inset-0"
+              style={{ background: 'var(--scrim)' }}
+              onClick={() => {
+                if (!busy) setDialog(null)
+              }}
+            />
+            <motion.div
+              className="glass-strong relative z-10 w-full max-w-lg rounded-[28px] p-6"
+              initial={{ scale: 0.94, opacity: 0, y: 12 }}
+              animate={{ scale: 1, opacity: 1, y: 0 }}
+              exit={{ scale: 0.94, opacity: 0, y: 12 }}
+              transition={{ type: 'spring', bounce: 0.18, duration: 0.4 }}
+            >
+              {dialog.kind === 'rename' && (
+                <>
+                  <h2 className="title mb-1">重命名</h2>
+                  <p className="caption mb-4 truncate" title={dialog.entry.path}>
+                    把「{dialog.entry.name}」改成：
+                  </p>
+                  <input
+                    autoFocus
+                    value={nameInput}
+                    spellCheck={false}
+                    className="input no-drag mb-5 w-full"
+                    onChange={(e) => setNameInput(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') applyRename()
+                    }}
+                  />
+                  {dialogError && (
+                    <p className="mb-4 -mt-3 text-[12px]" style={{ color: 'var(--fill-danger)' }}>
+                      {dialogError}
+                    </p>
+                  )}
+                  <div className="flex gap-2">
+                    <Button className="flex-1" disabled={busy} onClick={() => setDialog(null)}>
+                      取消
+                    </Button>
+                    <Button
+                      variant="primary"
+                      className="flex-1"
+                      disabled={busy || !nameInput.trim()}
+                      onClick={applyRename}
+                    >
+                      {busy ? '处理中…' : '确定'}
+                    </Button>
+                  </div>
+                </>
+              )}
+
+              {dialog.kind === 'create' && (
+                <>
+                  <h2 className="title mb-1">新建文件</h2>
+                  <p className="caption mb-4 break-all">在当前目录新建一个空文件：{path}</p>
+                  <input
+                    autoFocus
+                    value={nameInput}
+                    spellCheck={false}
+                    placeholder="文件名（含扩展名，例如 config.txt）"
+                    className="input no-drag mb-5 w-full"
+                    onChange={(e) => setNameInput(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') applyCreate()
+                    }}
+                  />
+                  {dialogError && (
+                    <p className="mb-4 -mt-3 text-[12px]" style={{ color: 'var(--fill-danger)' }}>
+                      {dialogError}
+                    </p>
+                  )}
+                  <div className="flex gap-2">
+                    <Button className="flex-1" disabled={busy} onClick={() => setDialog(null)}>
+                      取消
+                    </Button>
+                    <Button
+                      variant="primary"
+                      className="flex-1"
+                      disabled={busy || !nameInput.trim()}
+                      onClick={applyCreate}
+                    >
+                      {busy ? '处理中…' : '创建'}
+                    </Button>
+                  </div>
+                </>
+              )}
+
+              {dialog.kind === 'edit' && (
+                <>
+                  <h2 className="title mb-1">修改文件</h2>
+                  <p className="caption mb-3 truncate" title={dialog.entry.path}>
+                    {dialog.entry.name}
+                  </p>
+                  {editLoading ? (
+                    <div className="flex items-center justify-center gap-2 py-12">
+                      <Spinner size={20} />
+                      <span className="caption">正在读取…</span>
+                    </div>
+                  ) : (
+                    <textarea
+                      autoFocus
+                      value={editText}
+                      spellCheck={false}
+                      className="input no-drag mb-4 min-h-[240px] w-full font-mono text-[13px]"
+                      onChange={(e) => setEditText(e.target.value)}
+                    />
+                  )}
+                  {dialogError && (
+                    <p className="mb-4 text-[12px]" style={{ color: 'var(--fill-danger)' }}>
+                      {dialogError}
+                    </p>
+                  )}
+                  <div className="flex gap-2">
+                    <Button className="flex-1" disabled={busy} onClick={() => setDialog(null)}>
+                      取消
+                    </Button>
+                    <Button
+                      variant="primary"
+                      className="flex-1"
+                      disabled={busy || editLoading || editFailed}
+                      onClick={applySave}
+                    >
+                      {busy ? '保存中…' : '保存'}
+                    </Button>
+                  </div>
+                </>
+              )}
+
+              {dialog.kind === 'delete' && (
+                <>
+                  <h2 className="title mb-1">删除确认</h2>
+                  <p className="caption mb-3">
+                    {dialog.entry.isDir
+                      ? `目录「${dialog.entry.name}」以及里面的全部内容都会被删除，且无法恢复。`
+                      : `文件「${dialog.entry.name}」会被删除，且无法恢复。`}
+                  </p>
+                  <p className="caption mb-5 break-all" style={{ opacity: 0.6 }}>
+                    {dialog.entry.path}
+                  </p>
+                  {dialogError && (
+                    <p className="mb-4 text-[12px]" style={{ color: 'var(--fill-danger)' }}>
+                      {dialogError}
+                    </p>
+                  )}
+                  <div className="flex gap-2">
+                    <Button className="flex-1" disabled={busy} onClick={() => setDialog(null)}>
+                      取消
+                    </Button>
+                    <Button variant="danger" className="flex-1" disabled={busy} onClick={applyDelete}>
+                      {busy ? '删除中…' : '删除'}
+                    </Button>
+                  </div>
+                </>
+              )}
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   )
 }

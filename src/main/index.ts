@@ -32,7 +32,17 @@ import { loaderVersions, installLoader } from './loaders'
 import { forgeVersions, installForge } from './forge'
 import { searchMods, getVersions as getModVersions, installMod, downloadTo, findFabricApi } from './modrinth'
 import { listResources, removeResource, openResourceDir } from './resources'
-import { listDir, listPlaces, openPath, revealPath } from './files'
+import {
+  createFile,
+  listDir,
+  listPlaces,
+  openPath,
+  readText,
+  removeEntry,
+  renameEntry,
+  revealPath,
+  writeText
+} from './files'
 import { clearWallpaper, pickWallpaper, wallpaperData } from './wallpaper'
 import { probeModpack, importModpack, importModpackFromUrl, exportModpack, collectExportInventory, downloadModpack } from './modpack'
 import { fetchAbout, fetchAgreement, fetchUpdateInfo, downloadUpdate, runUpdate, compareVersions } from './server'
@@ -66,6 +76,7 @@ import {
 } from './homepage'
 import {
   enrichMods,
+  enrichResources,
   listMods,
   toggleMod,
   deleteMod,
@@ -626,9 +637,18 @@ function registerIpc(): void {
   })
 
   // ---- Resource packs / shaders ----
-  ipcMain.handle('resources:list', (_e, versionId: string, kind: ResourceKind) => {
+  ipcMain.handle('resources:list', async (event, versionId: string, kind: ResourceKind) => {
     const s = settings.get()
-    return listResources(s.gameDir, versionId, isIsolated(versionId), kind)
+    const isolated = isIsolated(versionId)
+    const files = await listResources(s.gameDir, versionId, isolated, kind)
+    // 先返回本地列表，随后后台联网补齐 Modrinth 名称 / 图标并逐个推送。
+    // 与 manage:mods 保持一致：「仅获取元数据」与本地模式下完全不联网，只显示本地文件名。
+    if (s.mode !== 'local' && !s.metadataOnlyMods) {
+      void enrichResources(s.gameDir, versionId, isolated, kind, (file) => {
+        sendToSender(event.sender, 'resources:updated', { versionId, kind, file })
+      })
+    }
+    return files
   })
   ipcMain.handle('resources:remove', (_e, path: string) => removeResource(path))
   ipcMain.handle('resources:open', (_e, versionId: string, kind: ResourceKind) => {
@@ -985,7 +1005,7 @@ function registerIpc(): void {
   })
   ipcMain.handle('desktop:focus', (_e, id: string) => focusWindow(id))
 
-  // ---- 自实现的资源管理器（浏览 + 打开；替代系统资源管理器）----
+  // ---- 自实现的资源管理器（替代系统资源管理器）----
   ipcMain.handle('files:places', () => {
     const s = settings.get()
     return listPlaces([
@@ -996,6 +1016,12 @@ function registerIpc(): void {
   ipcMain.handle('files:list', (_e, path: string) => listDir(path))
   ipcMain.handle('files:open', (_e, path: string) => openPath(path))
   ipcMain.handle('files:reveal', (_e, path: string) => revealPath(path))
+  // 写操作（右键菜单）：改名 / 新建空文件 / 删除 / 读写文本
+  ipcMain.handle('files:rename', (_e, path: string, name: string) => renameEntry(path, name))
+  ipcMain.handle('files:createFile', (_e, dir: string, name: string) => createFile(dir, name))
+  ipcMain.handle('files:remove', (_e, path: string) => removeEntry(path))
+  ipcMain.handle('files:readText', (_e, path: string) => readText(path))
+  ipcMain.handle('files:writeText', (_e, path: string, content: string) => writeText(path, content))
 
   // ---- Shell ----
   ipcMain.handle('shell:openExternal', (_e, url: string) => shell.openExternal(url))

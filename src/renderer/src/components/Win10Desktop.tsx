@@ -168,10 +168,13 @@ function NativeView({
 /* ---------------- 桌面 ---------------- */
 
 export function Win10Desktop(): JSX.Element {
-  const { settings, selectedAccount, fileManagerPath, closeFileManager } = useApp()
+  const { settings, selectedAccount, fileManagerPath, fileManagerSeq, openFileManager, closeFileManager } =
+    useApp()
   const { downloads } = useRuntime()
   const [wins, setWins] = useState<WinState[]>([])
-  const [selected, setSelected] = useState<PageId | null>(null)
+  // 选中项：侧栏页面 id，或桌面「文件资源管理器」快捷方式（用 FILES_KEY 标识）。
+  // 所以是 string 而非 PageId —— 后者只覆盖侧栏页面。
+  const [selected, setSelected] = useState<string | null>(null)
   const [startOpen, setStartOpen] = useState(false)
   const [now, setNow] = useState(() => new Date())
   const zRef = useRef(10)
@@ -311,6 +314,8 @@ export function Win10Desktop(): JSX.Element {
     setWins((ws) => {
       const exist = ws.find((w) => w.key === FILES_KEY)
       if (exist) {
+        // 目录没变且窗口没被最小化：只置顶。
+        // 目录变了、或窗口正最小化（用户又点了一次入口）：换目录并还原。
         if (exist.filePath === fileManagerPath && !exist.minimized) {
           return ws.map((w) => (w.key === FILES_KEY ? { ...w, z: (zRef.current += 1) } : w))
         }
@@ -339,7 +344,7 @@ export function Win10Desktop(): JSX.Element {
         }
       ]
     })
-  }, [fileManagerPath])
+  }, [fileManagerPath, fileManagerSeq])
 
   /* --- 任务栏时钟 --- */
   useEffect(() => {
@@ -585,6 +590,29 @@ export function Win10Desktop(): JSX.Element {
             <span className="win10-icon-label">{item.label}</span>
           </button>
         ))}
+
+        {/* 文件资源管理器：不属于侧栏页面，只作为桌面快捷方式存在。
+            双击用启动器自实现的资源管理器打开；未设置游戏目录时 store 会回退到
+            常用位置的第一项，保证这个入口永远打得开。 */}
+        <button
+          type="button"
+          className={`win10-icon${selected === FILES_KEY ? ' is-selected' : ''}`}
+          aria-label="文件资源管理器"
+          onMouseDown={(e) => {
+            e.stopPropagation()
+            setSelected(FILES_KEY)
+          }}
+          onDoubleClick={() => openFileManager(settings.gameDir)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') openFileManager(settings.gameDir)
+          }}
+          title="文件资源管理器（双击打开）"
+        >
+          <span className="win10-icon-tile">
+            <Icon name="folder" size={24} />
+          </span>
+          <span className="win10-icon-label">文件资源管理器</span>
+        </button>
       </div>
 
       {/* 窗口 */}

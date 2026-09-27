@@ -1,8 +1,9 @@
 import { existsSync, promises as fsp } from 'fs'
 import { basename, join } from 'path'
-import type { ModEntry, SchematicEntry, VersionDirKind } from '@shared/types'
+import type { ModEntry, ResourceFile, ResourceKind, SchematicEntry, VersionDirKind } from '@shared/types'
 import { listArchive, readArchiveText } from './archive'
-import { findProject } from './modrinth'
+import { findProject, findProjectByName } from './modrinth'
+import { listResources, rememberResourceMeta } from './resources'
 import { withLocalTimeout } from './local-timeout'
 
 function runDir(gameDir: string, versionId: string, isolated: boolean): string {
@@ -165,6 +166,64 @@ export async function enrichMods(
                 description: project.description
               })
           })
+}
+
+/* ------------------------------------------------------------------ */
+/* 光影 / 资源包元数据识别（包里没有可读元数据，只能靠文件名搜 Modrinth）  */
+/* ------------------------------------------------------------------ */
+
+/** 把安装文件名收拾成搜索关键词。 */
+function packSearchName(fileName: string): string {
+  return (
+    fileName
+      // 扩展名
+      .replace(/\.(zip|jar|mcpack|mctemplate|fsb|shader|glsl)$/i, '')
+      // 括号备注，如 (Chocapic13 Shaders edit) / [1.20]，几乎都不是项目名的一部分
+      .replace(/[([{][^)\]}]*[)\]}]+/g, ' ')
+      // 驼峰拆词：ComplementaryUnbound → Complementary Unbound（Modrinth 搜 "Complementary Unbound"
+      // 才有官方项目，搜连写的 ComplementaryUnbound 只有一条同名小项目）
+      .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+      // 其余分隔符
+      .replace(/[_\-.]+/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim()
+      // 结尾的版本号，可能连着一串：Bliss v2 1 2 / Stay True 1 20 / Sildurs v1 29
+      .replace(/(?:\s+[a-z]?\d[\d.]*)+$/i, '')
+      .trim()
+  )
+}
+
+/**
+ * 后台联网补齐已安装光影 / 资源包的 Modrinth 名称、图标、简介（逐个推送）。
+ *
+ * 与模组不同，这些压缩包里没有可读的项目名，只能拿文件名去搜（见 findProjectByName：
+ * 它会把关键词逐级放宽，并按词覆盖率 + 下载量挑最像的项目）。搜不到就跳过，
+ * 界面继续显示文件名。命中结果会记进缓存，刷新时直接带上且不再重复联网。
+ */
+export async function enrichResources(
+  gameDir: string,
+  versionId: string,
+  isolated: boolean,
+  kind: ResourceKind,
+  onUpdate: (file: ResourceFile) => void
+): Promise<void> {
+  const files = await listResources(gameDir, versionId, isolated, kind)
+  // 已经有元数据的是命中过缓存的，不必再查
+  const pending = files.filter((f) => !f.displayName)
+  const type = kind === 'shaderpacks' ? 'shader' : 'resourcepack'
+  await mapLimit(pending, 4, async (file) => {
+    const project = await findProjectByName(packSearchName(file.name), type)
+    if (!project) return
+    const enriched: ResourceFile = {
+      ...file,
+      displayName: project.title,
+      iconUrl: project.icon_url,
+      slug: project.slug,
+      description: project.description
+    }
+    rememberResourceMeta(enriched)
+    onUpdate(enriched)
+  })
 }
 
 export async function toggleMod(path: string): Promise<void> {

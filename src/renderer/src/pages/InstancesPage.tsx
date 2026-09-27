@@ -241,6 +241,7 @@ function InstanceCard({
   onManage: () => void
   onLaunch: (versionId: string, opts?: { world?: string; server?: string }) => void
 }): JSX.Element {
+  const { openFileManager } = useApp()
   return (
     <div className="glass rounded-[24px] p-4">
       <div className="flex items-center gap-3">
@@ -265,7 +266,7 @@ function InstanceCard({
         <Button
           size="sm"
           icon="folder"
-          onClick={() => void window.api.manage.openDir(v.id, 'run')}
+          onClick={() => void window.api.manage.openDir(v.id, 'run').then(openFileManager)}
           title="打开实例目录"
         >
           目录

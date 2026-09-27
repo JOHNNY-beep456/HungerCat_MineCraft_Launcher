@@ -408,6 +408,15 @@ export interface FilePlace {
   kind: 'drive' | 'place'
 }
 
+/** 内置编辑器读到的文本文件内容。 */
+export interface FileTextContent {
+  content: string
+  /** 字节数 */
+  size: number
+  /** 修改时间（epoch ms） */
+  mtime: number
+}
+
 /** 整合包探测结果（导入前用于展示与重命名）。 */
 export interface ModpackProbe {
   format: ModpackFormat
@@ -441,6 +450,21 @@ export interface ResourceFile {
   name: string
   size: number
   path: string
+  /** Modrinth 项目标题（联网补齐后才有；「仅获取元数据」或本地模式下不联网，恒为空）。 */
+  displayName?: string
+  /** Modrinth 项目图标，命中时才有。 */
+  iconUrl?: string
+  /** Modrinth 项目 slug，命中时才有，用于打开详情页。 */
+  slug?: string
+  /** Modrinth 项目简介，命中时才有。 */
+  description?: string
+}
+
+/** 后台补齐已安装光影 / 资源包 Modrinth 元数据时的推送载荷。 */
+export interface ResourceUpdated {
+  versionId: string
+  kind: ResourceKind
+  file: ResourceFile
 }
 
 export interface ModrinthProject {
@@ -660,6 +684,8 @@ export interface LauncherApi {
     list: (versionId: string, kind: ResourceKind) => Promise<ResourceFile[]>
     remove: (path: string) => Promise<void>
     open: (versionId: string, kind: ResourceKind) => Promise<string>
+    /** 已安装光影 / 资源包的 Modrinth 元数据后台补齐推送（逐个送达所在实例） */
+    onUpdated: (cb: (p: ResourceUpdated) => void) => () => void
   }
   download: {
     install: (id: string) => Promise<{ versionId: string; assetIndex: string }>
@@ -825,6 +851,16 @@ export interface LauncherApi {
     open: (path: string) => Promise<string>
     /** 在**系统**资源管理器中定位该项（应急出口） */
     reveal: (path: string) => Promise<void>
+    /** 改名（只换同一目录下的名字，不移动）；同级重名会被拒绝。返回新路径 */
+    rename: (path: string, name: string) => Promise<string>
+    /** 在目录下新建空文件；已存在同名文件会被拒绝。返回新路径 */
+    createFile: (dir: string, name: string) => Promise<string>
+    /** 删除文件或目录（目录连同内容一起删） */
+    remove: (path: string) => Promise<void>
+    /** 读取文本文件给内置编辑器用；二进制 / 过大文件会拒绝 */
+    readText: (path: string) => Promise<FileTextContent>
+    /** 保存内置编辑器里的文本（覆盖原文件） */
+    writeText: (path: string, content: string) => Promise<void>
   }
   shell: {
     openExternal: (url: string) => Promise<void>
