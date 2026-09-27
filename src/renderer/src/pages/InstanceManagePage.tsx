@@ -6,7 +6,152 @@ import { useRuntimeActions } from '../runtime'
 import { Button, Icon, LoadingState, Segmented, Spinner } from '../components/ui'
 import { ExportPage } from './ExportPage'
 
-type Tab = 'mods' | 'saves' | 'shaders' | 'schematics' | 'version'
+type Tab = 'mods' | 'saves' | 'resourcepacks' | 'shaders' | 'schematics' | 'version'
+
+/**
+ * 在线安装面板：光影 / 资源包共用。
+ *
+ * 模组页保留它原有的内联实现（那套还带拖拽导入和详情弹窗），这里只做「搜索 → 选最新匹配版本 →
+ * 下载到当前实例」：目标目录由主进程按 type 决定（shaderpacks / resourcepacks），隔离设置也在主进程处理。
+ * 本地模式下调用方根本不渲染本面板，所以这里不再单独做联网判断。
+ */
+function OnlineInstaller({
+  type,
+  versionId,
+  mcVersion,
+  onMcVersionChange,
+  loaders = [],
+  loader = '',
+  onLoaderChange,
+  onDone
+}: {
+  type: 'shader' | 'resourcepack'
+  versionId: string
+  mcVersion: string
+  onMcVersionChange: (v: string) => void
+  /** 可选的运行时筛选：光影是 iris / optifine；资源包没有加载器，留空 */
+  loaders?: Array<{ value: string; label: string }>
+  loader?: string
+  onLoaderChange?: (v: string) => void
+  /** 收尾回调：ok 为真表示装好了，调用方应刷新列表 */
+  onDone: (message: string, ok: boolean) => void
+}): JSX.Element {
+  const [query, setQuery] = useState('')
+  const [results, setResults] = useState<ModrinthProject[]>([])
+  const [searching, setSearching] = useState(false)
+  const [busySlug, setBusySlug] = useState<string | null>(null)
+
+  const doSearch = async (): Promise<void> => {
+    const q = query.trim()
+    if (!q) return
+    setSearching(true)
+    try {
+      const r = await window.api.mods.search(
+        q,
+        type,
+        undefined,
+        mcVersion.trim() || undefined,
+        loaders.length > 0 ? loader : undefined
+      )
+      setResults(r.hits)
+    } catch (err) {
+      setResults([])
+      onDone(err instanceof Error ? err.message : String(err), false)
+    } finally {
+      setSearching(false)
+    }
+  }
+
+  const install = async (p: ModrinthProject): Promise<void> => {
+    setBusySlug(p.slug)
+    try {
+      const mc = mcVersion.trim()
+      const versions = await window.api.mods.versions(p.slug, loaders.length > 0 ? [loader] : [], mc ? [mc] : [])
+      const v = versions[0]
+      if (!v) {
+        onDone(`没有匹配 ${mc || '当前版本'}${loaders.length > 0 ? ` + ${loader}` : ''} 的版本`, false)
+        return
+      }
+      const file = v.files.find((f) => f.primary) ?? v.files[0]
+      if (!file) {
+        onDone('该项目没有可下载的文件', false)
+        return
+      }
+      await window.api.mods.install(file.url, file.filename, versionId, type)
+      setResults([])
+      setQuery('')
+      onDone(`已安装 ${p.title} ${v.version_number}`, true)
+    } catch (err) {
+      onDone(err instanceof Error ? err.message : String(err), false)
+    } finally {
+      setBusySlug(null)
+    }
+  }
+
+  return (
+    <div>
+      <div className="mb-2 flex items-center gap-2">
+        <span className="headline">在线安装</span>
+        <span className="caption">
+          匹配 {mcVersion || '当前版本'}
+          {loaders.length > 0 ? ` + ${loader}` : ''}
+        </span>
+      </div>
+      <div className="mb-2 flex gap-2">
+        <div className="relative flex-1">
+          <Icon name="search" size={15} className="absolute left-3 top-1/2 -translate-y-1/2 opacity-50" />
+          <input
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            onKeyDown={(e) => e.key === 'Enter' && void doSearch()}
+            placeholder={type === 'shader' ? '搜索光影，如 BSL、Complementary…' : '搜索资源包，如 Faithful、Stay True…'}
+            className="input w-full pl-9"
+          />
+        </div>
+        <Button variant="primary" icon="search" disabled={searching} onClick={() => void doSearch()}>
+          搜索
+        </Button>
+      </div>
+      <div className="mb-2 flex flex-wrap items-center gap-2">
+        <span className="caption">版本</span>
+        <input value={mcVersion} onChange={(e) => onMcVersionChange(e.target.value)} className="input w-28" />
+        {loaders.length > 0 && (
+          <>
+            <span className="caption ml-2">加载器</span>
+            <Segmented value={loader} onChange={(v) => onLoaderChange?.(v)} options={loaders} />
+          </>
+        )}
+      </div>
+      {searching ? (
+        <LoadingState text="正在搜索…" />
+      ) : (
+        results.length > 0 && (
+          <div className="space-y-1.5">
+            {results.map((p) => (
+              <button
+                key={p.slug}
+                onClick={() => void install(p)}
+                disabled={busySlug === p.slug}
+                className="glass-soft flex w-full items-center gap-3 rounded-xl px-3 py-2 text-left no-drag"
+              >
+                {p.icon_url ? (
+                  <img src={p.icon_url} width={28} height={28} alt="" className="rounded-lg" />
+                ) : (
+                  <Icon name="image" size={18} className="opacity-50" />
+                )}
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate text-[13px] font-medium">{p.title}</span>
+                  <span className="caption block truncate">{p.description}</span>
+                </span>
+                {busySlug === p.slug && <Spinner size={16} />}
+              </button>
+            ))}
+          </div>
+        )
+      )}
+    </div>
+  )
+}
 
 export function InstanceManagePage({
   versionId,
@@ -25,6 +170,7 @@ export function InstanceManagePage({
   const [mods, setMods] = useState<ModEntry[]>([])
   const [loadingMods, setLoadingMods] = useState(true)
   const [worlds, setWorlds] = useState<string[]>([])
+  const [resourcePacks, setResourcePacks] = useState<ResourceFile[]>([])
   const [shaders, setShaders] = useState<ResourceFile[]>([])
   const [schematics, setSchematics] = useState<SchematicEntry[]>([])
   const [busyId, setBusyId] = useState<string | null>(null)
@@ -44,19 +190,24 @@ export function InstanceManagePage({
 
   const [loaderSel, setLoaderSel] = useState<string>('fabric')
   const [mcSel, setMcSel] = useState<string>('')
+  /** 光影在线搜索用的运行时筛选（Iris / OptiFine），与模组页的 loaderSel 相互独立 */
+  const [shaderLoader, setShaderLoader] = useState<string>('iris')
 
   const isVanilla = loader === null
 
   const tabOptions = useMemo<Array<{ value: Tab; label: string }>>(() => {
+    // 资源包原版就能用，所以原版实例也保留这一页；光影 / 投影 / 模组只有装了加载器才有意义
     if (isVanilla) {
       return [
         { value: 'saves', label: '存档' },
+        { value: 'resourcepacks', label: '资源包' },
         { value: 'version', label: '版本' }
       ]
     }
     return [
       { value: 'mods', label: '模组' },
       { value: 'saves', label: '存档' },
+      { value: 'resourcepacks', label: '资源包' },
       { value: 'shaders', label: '光影' },
       { value: 'schematics', label: '投影' },
       { value: 'version', label: '版本' }
@@ -68,9 +219,10 @@ export function InstanceManagePage({
   const reload = useCallback(async () => {
     setLoadingMods(true)
     try {
-      const [modList, installed, shaderList, schematicList] = await Promise.all([
+      const [modList, installed, packList, shaderList, schematicList] = await Promise.all([
         window.api.manage.mods(versionId),
         window.api.installed.list(),
+        window.api.resources.list(versionId, 'resourcepacks'),
         window.api.resources.list(versionId, 'shaderpacks'),
         window.api.manage.schematics(versionId)
       ])
@@ -78,6 +230,7 @@ export function InstanceManagePage({
       const entry = installed.find((v) => v.id === versionId)
       const entryLoader = entry?.loader ?? null
       setWorlds(entry?.worlds ?? [])
+      setResourcePacks(packList)
       setShaders(shaderList)
       setSchematics(schematicList)
       setLoader(entryLoader)
@@ -93,6 +246,18 @@ export function InstanceManagePage({
     return window.api.manage.onModsUpdated(({ versionId: v, mod }) => {
       if (v !== versionId) return
       setMods((prev) => prev.map((m) => (m.path === mod.path ? mod : m)))
+    })
+  }, [versionId])
+
+  // 光影 / 资源包同理：主进程按文件名去 Modrinth 补齐名称 / 图标后逐个推送。
+  // 本地模式与「仅获取元数据」下主进程不联网，因此不会有推送，界面继续显示本地文件名。
+  useEffect(() => {
+    return window.api.resources.onUpdated(({ versionId: v, kind, file }) => {
+      if (v !== versionId) return
+      const patch = (prev: ResourceFile[]): ResourceFile[] =>
+        prev.map((p) => (p.path === file.path ? file : p))
+      if (kind === 'resourcepacks') setResourcePacks(patch)
+      else setShaders(patch)
     })
   }, [versionId])
 
@@ -248,6 +413,12 @@ export function InstanceManagePage({
     } finally {
       setBusyId(null)
     }
+  }
+
+  /** 光影 / 资源包在线安装面板的收尾：失败只提示，成功再刷新列表 */
+  const handleInstalled = (message: string, ok: boolean): void => {
+    setNotice(message)
+    if (ok) void reload()
   }
 
   return (
@@ -499,7 +670,7 @@ export function InstanceManagePage({
           <div className="space-y-3">
             <div className="flex items-center justify-between">
               <span className="headline">存档（{worlds.length}）</span>
-              <Button size="sm" icon="folder" onClick={() => void window.api.manage.openDir(versionId, 'saves')}>
+              <Button size="sm" icon="folder" onClick={() => void window.api.manage.openDir(versionId, 'saves').then(openFileManager)}>
                 打开目录
               </Button>
             </div>
@@ -528,11 +699,80 @@ export function InstanceManagePage({
           </div>
         )}
 
+        {tab === 'resourcepacks' && (
+          <div className="space-y-3">
+            <div className="flex items-center justify-between">
+              <span className="headline">资源包（{resourcePacks.length}）</span>
+              <Button
+                size="sm"
+                icon="folder"
+                onClick={() => void window.api.resources.open(versionId, 'resourcepacks').then(openFileManager)}
+              >
+                打开目录
+              </Button>
+            </div>
+            {resourcePacks.length === 0 ? (
+              <div className="caption py-4 text-center opacity-60">还没有安装资源包</div>
+            ) : (
+              resourcePacks.map((p) => (
+                <div key={p.path} className="glass-soft flex items-center gap-2 rounded-xl px-3 py-2">
+                  {p.iconUrl ? (
+                    <img
+                      src={p.iconUrl}
+                      width={28}
+                      height={28}
+                      alt=""
+                      draggable={false}
+                      className="shrink-0 rounded-lg object-cover"
+                    />
+                  ) : (
+                    <Icon name="image" size={15} className="shrink-0 opacity-60" />
+                  )}
+                  <div className="min-w-0 flex-1" title={p.description ?? p.name}>
+                    <div className="truncate text-[13px] font-medium leading-tight">{p.displayName ?? p.name}</div>
+                    {p.displayName && <div className="caption truncate leading-tight">{p.name}</div>}
+                  </div>
+                  <span className="caption">{formatBytes(p.size)}</span>
+                  {p.slug && (
+                    <button
+                      type="button"
+                      title="在 Modrinth 打开项目页"
+                      onClick={() => void window.api.shell.openExternal(`https://modrinth.com/resourcepack/${p.slug}`)}
+                      className="no-drag opacity-50 hover:opacity-100"
+                    >
+                      <Icon name="link" size={15} />
+                    </button>
+                  )}
+                  <button
+                    onClick={async () => {
+                      await window.api.resources.remove(p.path)
+                      void reload()
+                    }}
+                    className="no-drag opacity-50 hover:opacity-100"
+                  >
+                    <Icon name="trash" size={15} />
+                  </button>
+                </div>
+              ))
+            )}
+
+            {settings.mode !== 'local' && (
+              <OnlineInstaller
+                type="resourcepack"
+                versionId={versionId}
+                mcVersion={mcSel}
+                onMcVersionChange={setMcSel}
+                onDone={handleInstalled}
+              />
+            )}
+          </div>
+        )}
+
         {tab === 'shaders' && (
           <div className="space-y-3">
             <div className="flex items-center justify-between">
               <span className="headline">光影（{shaders.length}）</span>
-              <Button size="sm" icon="folder" onClick={() => void window.api.manage.openDir(versionId, 'shaderpacks')}>
+              <Button size="sm" icon="folder" onClick={() => void window.api.manage.openDir(versionId, 'shaderpacks').then(openFileManager)}>
                 打开目录
               </Button>
             </div>
@@ -541,9 +781,33 @@ export function InstanceManagePage({
             ) : (
               shaders.map((s) => (
                 <div key={s.path} className="glass-soft flex items-center gap-2 rounded-xl px-3 py-2">
-                  <Icon name="palette" size={15} className="opacity-60" />
-                  <span className="min-w-0 flex-1 truncate text-[13px]">{s.name}</span>
+                  {s.iconUrl ? (
+                    <img
+                      src={s.iconUrl}
+                      width={28}
+                      height={28}
+                      alt=""
+                      draggable={false}
+                      className="shrink-0 rounded-lg object-cover"
+                    />
+                  ) : (
+                    <Icon name="palette" size={15} className="shrink-0 opacity-60" />
+                  )}
+                  <div className="min-w-0 flex-1" title={s.description ?? s.name}>
+                    <div className="truncate text-[13px] font-medium leading-tight">{s.displayName ?? s.name}</div>
+                    {s.displayName && <div className="caption truncate leading-tight">{s.name}</div>}
+                  </div>
                   <span className="caption">{formatBytes(s.size)}</span>
+                  {s.slug && (
+                    <button
+                      type="button"
+                      title="在 Modrinth 打开项目页"
+                      onClick={() => void window.api.shell.openExternal(`https://modrinth.com/shader/${s.slug}`)}
+                      className="no-drag opacity-50 hover:opacity-100"
+                    >
+                      <Icon name="link" size={15} />
+                    </button>
+                  )}
                   <button
                     onClick={async () => {
                       await window.api.manage.deleteFile(s.path)
@@ -556,6 +820,22 @@ export function InstanceManagePage({
                 </div>
               ))
             )}
+
+            {settings.mode !== 'local' && (
+              <OnlineInstaller
+                type="shader"
+                versionId={versionId}
+                mcVersion={mcSel}
+                onMcVersionChange={setMcSel}
+                loaders={[
+                  { value: 'iris', label: 'Iris' },
+                  { value: 'optifine', label: 'OptiFine' }
+                ]}
+                loader={shaderLoader}
+                onLoaderChange={setShaderLoader}
+                onDone={handleInstalled}
+              />
+            )}
           </div>
         )}
 
@@ -563,7 +843,7 @@ export function InstanceManagePage({
           <div className="space-y-3">
             <div className="flex items-center justify-between">
               <span className="headline">投影原理图（{schematics.length}）</span>
-              <Button size="sm" icon="folder" onClick={() => void window.api.manage.openDir(versionId, 'schematics')}>
+              <Button size="sm" icon="folder" onClick={() => void window.api.manage.openDir(versionId, 'schematics').then(openFileManager)}>
                 打开目录
               </Button>
             </div>

@@ -28,12 +28,20 @@ export async function searchMods(
   )
 }
 
-/** 根据模组元数据（id / 名称）查找匹配的 Modrinth 项目，未找到或出错返回 null。 */
-export async function findProject(modId: string, name: string): Promise<ModrinthProject | null> {
+/**
+ * 根据项目元数据（id / 名称）查找匹配的 Modrinth 项目，未找到或出错返回 null。
+ * type 把搜索限制在某一类项目上：已安装的光影 / 资源包没有可读的内嵌元数据，
+ * 只能拿文件名当名称来搜（见 manage.ts 的 enrichResources），靠它避免搜到模组。
+ */
+export async function findProject(
+  modId: string,
+  name: string,
+  type: ModrinthType = 'mod'
+): Promise<ModrinthProject | null> {
   const query = (name && name.trim()) || (modId && modId.trim())
   if (!query) return null
   try {
-    const { hits } = await searchMods(query, 5, 'mod', undefined, undefined, undefined, 0, AbortSignal.timeout(8000))
+    const { hits } = await searchMods(query, 5, type, undefined, undefined, undefined, 0, AbortSignal.timeout(8000))
     if (hits.length === 0) return null
     const q = query.toLowerCase()
     const id = modId.trim().toLowerCase()
@@ -43,6 +51,73 @@ export async function findProject(modId: string, name: string): Promise<Modrinth
   } catch {
     return null
   }
+}
+
+/** 归一化：只留字母数字，用于判断「同名」。 */
+function squash(s: string): string {
+  return s.toLowerCase().replace(/[^a-z0-9]+/g, '')
+}
+
+/** 拆词：丢掉一切标点。 */
+function words(s: string): string[] {
+  return s.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean)
+}
+
+/**
+ * 查询词里有多少个能在项目标题 / slug 里找到。
+ *
+ * 一两个字母的碎片只认完全相等：拆词会把 "Rob's Vanilla Reshaded" 拆出 's'，
+ * 若允许前缀匹配，'stay'.startsWith('s') 就成立，于是搜 'stay' 会选中
+ * "Rob's Vanilla Reshaded"。三个字母以上才放开互为前缀，用来容忍
+ * Sildurs / Sildur's 这类写法差异。
+ */
+function coverage(project: ModrinthProject, queryTokens: string[]): number {
+  const target = [...words(project.title), ...words(project.slug)]
+  return queryTokens.filter((q) =>
+    target.some((t) => {
+      if (t === q) return true
+      if (q.length < 3 || t.length < 3) return false
+      return t.startsWith(q) || q.startsWith(t)
+    })
+  ).length
+}
+
+/**
+ * 按名称在指定类型里找最匹配的项目（用于识别已安装的光影 / 资源包）。
+ *
+ * Modrinth 的搜索很精确：文件名里多一个版本号或括号备注就会 0 命中（实测
+ * "Bliss" 有 1 条，而 "Bliss v2.1.2 (Chocapic13 Shaders edit)" 是 0 条），
+ * 所以这里从完整名称开始、逐次丢掉结尾一个词再试。
+ *
+ * 但搜索又是「全文本」的：只在简介里出现过关键词的项目也会命中（实测搜
+ * "fresh" 的第一条是 "Spring Shaders"，搜 "stay" 的第一条是 "Vanilla Plus
+ * Shader"），放宽到单词后直接取第一条就会给光影挂上毫不相干的名字。所以
+ * 只有标题 / slug 里真的含有查询词的才要，一个都没有就继续放宽。
+ *
+ * 命中多条时按下载量取最高的，避免选中衍生项目（搜 "Stay True" 的第一条是
+ * 下载量最高的衍生包 "Stay True x Better Ores 3D"，而官方项目若在结果里会
+ * 被上面的精确匹配提前挑走）。
+ */
+export async function findProjectByName(name: string, type: ModrinthType): Promise<ModrinthProject | null> {
+  const tokens = words(name)
+  if (tokens.length === 0) return null
+  for (let take = tokens.length; take >= 1; take--) {
+    const levelTokens = tokens.slice(0, take)
+    const query = levelTokens.join(' ')
+    let hits: ModrinthProject[]
+    try {
+      ;({ hits } = await searchMods(query, 10, type, undefined, undefined, undefined, 0, AbortSignal.timeout(8000)))
+    } catch {
+      return null
+    }
+    if (hits.length === 0) continue
+    const exact = hits.find((h) => squash(h.title) === squash(query) || squash(h.slug) === squash(query))
+    if (exact) return exact
+    const qualified = hits.filter((h) => coverage(h, levelTokens) === levelTokens.length)
+    if (qualified.length === 0) continue
+    return qualified.sort((a, b) => b.downloads - a.downloads)[0]
+  }
+  return null
 }
 
 export async function getVersions(

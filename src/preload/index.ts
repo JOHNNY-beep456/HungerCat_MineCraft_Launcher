@@ -13,6 +13,7 @@ import type {
   ModrinthType,
   ModpackExportOptions,
   ResourceKind,
+  ResourceUpdated,
   UpdateInfo,
   VersionDirKind,
   DebugLogEntry
@@ -74,7 +75,8 @@ const api: LauncherApi = {
   resources: {
     list: (versionId: string, kind: ResourceKind) => ipcRenderer.invoke('resources:list', versionId, kind),
     remove: (path: string) => ipcRenderer.invoke('resources:remove', path),
-    open: (versionId: string, kind: ResourceKind) => ipcRenderer.invoke('resources:open', versionId, kind)
+    open: (versionId: string, kind: ResourceKind) => ipcRenderer.invoke('resources:open', versionId, kind),
+    onUpdated: subscribe<ResourceUpdated>('resources:updated')
   },
   download: {
     install: (id: string) => ipcRenderer.invoke('download:install', id),
@@ -151,7 +153,12 @@ const api: LauncherApi = {
     places: () => ipcRenderer.invoke('files:places'),
     list: (path: string) => ipcRenderer.invoke('files:list', path),
     open: (path: string) => ipcRenderer.invoke('files:open', path),
-    reveal: (path: string) => ipcRenderer.invoke('files:reveal', path)
+    reveal: (path: string) => ipcRenderer.invoke('files:reveal', path),
+    rename: (path: string, name: string) => ipcRenderer.invoke('files:rename', path, name),
+    createFile: (dir: string, name: string) => ipcRenderer.invoke('files:createFile', dir, name),
+    remove: (path: string) => ipcRenderer.invoke('files:remove', path),
+    readText: (path: string) => ipcRenderer.invoke('files:readText', path),
+    writeText: (path: string, content: string) => ipcRenderer.invoke('files:writeText', path, content)
   },
   modpack: {
     probe: (filePath: string) => ipcRenderer.invoke('modpack:probe', filePath),

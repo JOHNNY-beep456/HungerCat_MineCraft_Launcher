@@ -11,7 +11,7 @@
 // ---------------------------------------------------------------------------
 
 import { motion } from 'motion/react'
-import type { SecurityAlert } from '../store'
+import { useApp, type SecurityAlert } from '../store'
 import { Button, Icon } from './ui'
 
 export function SecurityBlockedOverlay({
@@ -21,6 +21,7 @@ export function SecurityBlockedOverlay({
   alert: SecurityAlert
   onClose: () => void
 }): JSX.Element {
+  const { openFileManager } = useApp()
   return (
     <motion.div
       className="fixed inset-0 z-[200] flex items-center justify-center p-6"
@@ -88,11 +89,20 @@ export function SecurityBlockedOverlay({
         </div>
 
         <div className="mt-5 flex gap-2">
+          {/* 「打开脚本目录」也走启动器自实现的资源管理器。
+              本提示是层级最高的全屏遮罩，资源管理器会被它压在下面，所以这里顺带收起提示
+              —— 用户已经选择去看目录，而不是先点「我已了解」。 */}
           <Button
             variant="primary"
             className="flex-1"
             icon="folder"
-            onClick={() => void window.api.homepage.openDir()}
+            onClick={() => {
+              void window.api.homepage.openDir().then((dir) => {
+                if (!dir) return
+                onClose()
+                openFileManager(dir)
+              })
+            }}
           >
             打开脚本目录
           </Button>

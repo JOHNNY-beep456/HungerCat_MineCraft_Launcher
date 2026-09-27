@@ -36,6 +36,14 @@ interface AppState {
   clearSecurityAlert: () => void
   /** 自实现资源管理器当前打开的目录；null 表示窗口未打开。 */
   fileManagerPath: string | null
+  /**
+   * 每次「打开」都自增的序号。
+   *
+   * 只靠 fileManagerPath 不够：桌面模式下用户可能先把窗口最小化、再点同一个入口，
+   * 此时路径没变，React 会跳过重渲染，外层收不到「又要打开」这件事，表现就是
+   * 「点了没反应 / 打不开」。用序号保证每次调用都能真正驱动外层。
+   */
+  fileManagerSeq: number
   openFileManager: (path: string) => void
   closeFileManager: () => void
   reloadSettings: () => Promise<void>
@@ -75,6 +83,7 @@ export function AppProvider({ children }: { children: ReactNode }): JSX.Element 
   const [selectedAccount, setSelectedAccount] = useState<MinecraftAccount | null>(null)
   const [securityAlert, setSecurityAlert] = useState<SecurityAlert | null>(null)
   const [fileManagerPath, setFileManagerPath] = useState<string | null>(null)
+  const [fileManagerSeq, setFileManagerSeq] = useState(0)
 
   const sysTheme = useSystemTheme()
   const theme = useMemo<'light' | 'dark'>(() => {
@@ -175,9 +184,29 @@ export function AppProvider({ children }: { children: ReactNode }): JSX.Element 
     setSecurityAlert(null)
   }, [])
 
-  // 自实现资源管理器：只保存「当前要看的目录」，窗口本身由外层渲染
+  // 自实现资源管理器：只保存「当前要看的目录」，窗口本身由外层渲染。
+  //
+  // 传空目录（例如尚未设置游戏目录时的「打开游戏目录」）时退到「常用位置」的第一项
+  // ——主进程的 places 把游戏目录排在最前、未设置时是「下载」，所以这里一定拿得到一个
+  // 真实存在的目录，入口不会静默失效。同时自增序号，让「同一目录再次打开」也能触发
+  // 外层（还原被最小化的窗口）。
   const openFileManager = useCallback((path: string) => {
-    if (path) setFileManagerPath(path)
+    const show = (dir: string): void => {
+      setFileManagerPath(dir)
+      setFileManagerSeq((n) => n + 1)
+    }
+    const direct = (path ?? '').trim()
+    if (direct) {
+      show(direct)
+      return
+    }
+    void window.api.files
+      .places()
+      .then((ps) => {
+        const fallback = (ps[0]?.path ?? '').trim()
+        if (fallback) show(fallback)
+      })
+      .catch(() => undefined)
   }, [])
 
   const closeFileManager = useCallback(() => {
@@ -222,6 +251,7 @@ export function AppProvider({ children }: { children: ReactNode }): JSX.Element 
       raiseSecurityAlert,
       clearSecurityAlert,
       fileManagerPath,
+      fileManagerSeq,
       openFileManager,
       closeFileManager,
       reloadSettings,
@@ -230,7 +260,7 @@ export function AppProvider({ children }: { children: ReactNode }): JSX.Element 
       selectAccount,
       removeAccount
     }),
-    [settings, accounts, selectedAccount, theme, securityAlert, raiseSecurityAlert, clearSecurityAlert, fileManagerPath, openFileManager, closeFileManager, reloadSettings, updateSettings, reloadAccounts, selectAccount, removeAccount]
+    [settings, accounts, selectedAccount, theme, securityAlert, raiseSecurityAlert, clearSecurityAlert, fileManagerPath, fileManagerSeq, openFileManager, closeFileManager, reloadSettings, updateSettings, reloadAccounts, selectAccount, removeAccount]
   )
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>
