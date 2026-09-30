@@ -2,7 +2,7 @@
 // installMod/downloadTo 的下载核心经 streamDownload 走网络进程，此处仅做目标目录编排。
 import { promises as fsp } from 'fs'
 import { join } from 'path'
-import type { ModrinthProject, ModrinthSearchResult, ModrinthType, ModrinthVersion } from '@shared/types'
+import type { ModrinthProject, ModrinthProjectDetail, ModrinthSearchResult, ModrinthType, ModrinthVersion } from '@shared/types'
 import { netRequest } from './broker'
 import { streamDownload } from './stream-download'
 
@@ -26,6 +26,11 @@ export async function searchMods(
     { query, limit, type, category, gameVersion, loader, offset },
     { signal }
   )
+}
+
+/** 获取单个 Modrinth 项目的完整信息（含 body 完整介绍），用于「完整介绍」弹窗。 */
+export async function fetchProject(id: string, signal?: AbortSignal): Promise<ModrinthProjectDetail> {
+  return netRequest<ModrinthProjectDetail>('modrinth:project', { id }, { signal })
 }
 
 /**

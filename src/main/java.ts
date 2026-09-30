@@ -94,6 +94,16 @@ function findJavaExecutables(): string[] {
   const javaHome = process.env['JAVA_HOME']
   if (javaHome) add(join(javaHome, 'bin', JAVA_BIN))
 
+  // PATH：手动解压 / 便携版 / 包管理器安装的 JDK 往往只加进了 PATH，并不在标准安装目录下。
+  // 不扫 PATH 是「找不到 Java」最常见的原因之一。
+  const pathEnv = process.env['PATH'] ?? process.env['Path'] ?? ''
+  for (const dir of pathEnv.split(process.platform === 'win32' ? ';' : ':')) {
+    const p = dir.trim().replace(/^"|"$/g, '')
+    if (!p) continue
+    const bin = join(p, JAVA_BIN)
+    if (existsSync(bin)) add(bin)
+  }
+
   for (const dir of candidateDirs()) {
     if (!existsSync(dir)) continue
     let entries: string[]
@@ -162,11 +172,19 @@ function findBundledJavaExecutables(gameDir: string): string[] {
   return found
 }
 
-export async function detectJava(gameDir?: string): Promise<JavaRuntime[]> {
+/**
+ * 检测可用 Java。
+ * @param gameDirs 启动器自动安装 Java 的根目录（`<dir>/java/<major>/`）。
+ *   可传多个：启动器可能在不同「版本目录」下都装过 Java，若只扫当前选中的目录，
+ *   切换版本目录后此前装好的 Java 就会「凭空消失」。因此这里接受目录列表，
+ *   把所有版本目录下的 Java 一并纳入。
+ */
+export async function detectJava(gameDirs?: string | string[]): Promise<JavaRuntime[]> {
   const executables = findJavaExecutables()
   // 额外纳入启动器自动安装的 Java（位于 <gameDir>/java/ 下，系统扫描会遗漏）
-  if (gameDir) {
-    for (const bin of findBundledJavaExecutables(gameDir)) {
+  const dirs = Array.isArray(gameDirs) ? gameDirs : gameDirs ? [gameDirs] : []
+  for (const dir of dirs) {
+    for (const bin of findBundledJavaExecutables(dir)) {
       if (!executables.includes(bin)) executables.push(bin)
     }
   }
@@ -204,26 +222,28 @@ export function requiredJavaForMc(mcVersion: string): number {
  * itself downloaded.
  */
 export async function pickInstallerJava(
-  gameDir: string,
+  gameDirs: string | string[],
   configuredPath: string | undefined,
   requiredMajor = 17
 ): Promise<JavaRuntime | null> {
+  const dirs = Array.isArray(gameDirs) ? gameDirs : [gameDirs]
   // 1. Configured Java.
   if (configuredPath) {
     const jr = await probe(configuredPath)
     if (jr) return jr
   }
-  // 2. Launcher-bundled Java under <gameDir>/java/.
-  const bundledDir = join(gameDir, 'java')
-  if (existsSync(bundledDir)) {
+  // 2. Launcher-bundled Java under <gameDir>/java/。
+  //    遍历所有版本目录：Java 可能装在别的版本目录下，只看安装目标目录会漏掉。
+  for (const dir of dirs) {
+    const bundledDir = join(dir, 'java')
+    if (!existsSync(bundledDir)) continue
     const bin = findJavaBinRecursive(bundledDir)
-    if (bin) {
-      const jr = await probe(bin)
-      if (jr && jr.major >= requiredMajor) return jr
-    }
+    if (!bin) continue
+    const jr = await probe(bin)
+    if (jr && jr.major >= requiredMajor) return jr
   }
-  // 3. System Java.
-  const runtimes = await detectJava()
+  // 3. System Java（把所有版本目录下的 bundled Java 一并纳入，避免系统扫描遗漏）。
+  const runtimes = await detectJava(dirs)
   return pickJava(runtimes, requiredMajor) ?? runtimes[0] ?? null
 }
 
@@ -274,18 +294,24 @@ async function jreDownloadUrls(
   arch: string,
   signal?: AbortSignal
 ): Promise<{ filename: string; urls: string[] }> {
+  // 必须带查询参数：不带时 Adoptium 返回「所有平台 + jdk/jre」的完整列表，响应体可达数 MB，
+  // 叠加网络进程 10s 默认超时便常常取不到（表现为「无法获取 Java 下载地址」）。精确过滤后只有几 KB。
+  const query = new URLSearchParams({ os, architecture: arch, image_type: 'jre' })
   const data = await netRequest(
     'net:fetchJson',
     {
-      url: `https://api.adoptium.net/v3/assets/latest/${major}/hotspot`,
-      headers: { 'User-Agent': 'HungerCatLauncher/0.1' }
+      url: `https://api.adoptium.net/v3/assets/latest/${major}/hotspot?${query.toString()}`,
+      headers: { 'User-Agent': 'HungerCatLauncher/0.1' },
+      timeoutMs: 30_000
     },
     { signal }
   )
   const assets = data as JreAsset[]
-  const asset = assets.find(
-    (a) => a.binary.os === os && a.binary.architecture === arch && a.binary.image_type === 'jre'
-  )
+  // 仍做一次本地过滤兜底（接口可能忽略个别查询参数）。
+  const asset =
+    assets.find(
+      (a) => a.binary.os === os && a.binary.architecture === arch && a.binary.image_type === 'jre'
+    ) ?? assets[0]
   if (!asset) throw new Error(`Adoptium 未提供 Java ${major} 的 ${os}/${arch} JRE`)
   const filename = asset.binary.package.name
   // 清华镜像：/Adoptium/{major}/jre/{arch}/{os}/{filename}；GitHub 官方作为回退。

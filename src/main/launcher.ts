@@ -160,6 +160,9 @@ export function buildCommand(ctx: LaunchContext): { cmd: string; args: string[] 
     jvmArgs.unshift(`-javaagent:${injectorPath}=${server}`)
   }
 
+  // 全屏：vanilla 客户端接受无参的 --fullscreen（此时 width/height 被忽略）。
+  if (options.fullscreen) gameArgs.push('--fullscreen')
+
   const args = [...jvmArgs, json.mainClass, ...gameArgs, ...(options.extraGameArgs ?? [])]
   return { cmd: options.javaPath ?? ctx.javaPath, args }
 }

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { AnimatePresence, motion } from 'motion/react'
 import type { HomepageEntry } from '@shared/types'
+import { useApp } from '../store'
 import { Button, Icon, LoadingState } from './ui'
 
 /** 运行前的判定流程所处阶段。 */
@@ -10,6 +11,7 @@ type GateState =
   | 'externals'
   | 'reject'
   | 'mismatch'
+  | 'outdated'
   | 'notfound'
   | 'incompatible'
   | 'error'
@@ -39,7 +41,7 @@ export function HomepageGate({
   id,
   onApproved,
   onCancel,
-  cancelLabel = '取消'
+  cancelLabel
 }: {
   id: string
   /** 通过全部检查后回调；参数为最新条目。 */
@@ -47,6 +49,7 @@ export function HomepageGate({
   onCancel: () => void
   cancelLabel?: string
 }): JSX.Element {
+  const { t } = useApp()
   const [state, setState] = useState<GateState>('checking')
   const [entry, setEntry] = useState<HomepageEntry | null>(null)
   const [message, setMessage] = useState('')
@@ -67,12 +70,15 @@ export function HomepageGate({
       setMessage(res.message)
       if (e.risk.level === 'reject') return setState('reject')
       if (res.notFound) return setState('notfound')
+      // 哈希不一致但线上存在新版本：说明只是本地过期，优先引导更新，
+      // 与「疑似被篡改」严格区分（后者才是 mismatch）。
+      if (res.outdated) return setState('outdated')
       if (e.verify === 'mismatch') return setState('mismatch')
       // 脚本要求的最低启动器版本高于当前版本：直接拒绝，避免未知行为。
       if (e.meta.minLauncher) {
         const version = await window.api.getVersion()
         if (olderThan(version, e.meta.minLauncher)) {
-          setMessage(`该脚本要求启动器版本不低于 ${e.meta.minLauncher}，当前版本为 ${version}`)
+          setMessage(t('hp.gate.minLauncher', { min: e.meta.minLauncher, current: version }))
           return setState('incompatible')
         }
       }
@@ -85,7 +91,7 @@ export function HomepageGate({
       setMessage(err instanceof Error ? err.message : String(err))
       setState('error')
     }
-  }, [id])
+  }, [id, t])
 
   useEffect(() => {
     void run()
@@ -107,39 +113,51 @@ export function HomepageGate({
   const risk = entry?.risk
   const externals = risk?.externals ?? []
 
-  const rejected = state === 'reject' || state === 'mismatch' || state === 'notfound' || state === 'incompatible'
+  // 放行前必须拦下的状态；outdated 也在其中（需先更新再运行）。
+  const blocked =
+    state === 'reject' ||
+    state === 'mismatch' ||
+    state === 'notfound' ||
+    state === 'incompatible' ||
+    state === 'outdated'
+  // outdated 用户可自行解决（更新即可），用主题色 + 更新图标，不用「出错」的红色叉。
+  const danger = state === 'reject' || state === 'mismatch' || state === 'incompatible'
   const title =
     state === 'reject'
-      ? '已拒绝运行'
+      ? t('hp.gate.title.reject')
       : state === 'mismatch'
-        ? '脚本已被改动'
-        : state === 'notfound'
-          ? '编号不存在'
-          : state === 'incompatible'
-            ? '启动器版本过低'
-            : state === 'externals'
-              ? '该脚本会连接外部服务'
-              : state === 'confirm'
-                ? '首次运行确认'
-                : state === 'error'
-                  ? '无法完成安全检查'
-                  : '正在安全检查'
+        ? t('hp.gate.title.mismatch')
+        : state === 'outdated'
+          ? t('hp.gate.title.outdated')
+          : state === 'notfound'
+            ? t('hp.gate.title.notfound')
+            : state === 'incompatible'
+              ? t('hp.gate.title.incompatible')
+              : state === 'externals'
+                ? t('hp.gate.title.externals')
+                : state === 'confirm'
+                  ? t('hp.gate.title.confirm')
+                  : state === 'error'
+                    ? t('hp.gate.title.error')
+                    : t('hp.gate.title.checking')
   const subtitle =
     state === 'reject'
-      ? '检测到危险代码，无法运行'
+      ? t('hp.gate.subtitle.reject')
       : state === 'mismatch'
-        ? '编号与脚本哈希不一致'
-        : state === 'notfound'
-          ? '服务端查无此编号，无法核对脚本来源'
-          : state === 'incompatible'
-            ? '请升级启动器后再使用该脚本'
-            : state === 'externals'
-              ? '确认后才会允许联网'
-              : state === 'confirm'
-                ? '该脚本没有可用编号'
-                : state === 'error'
-                  ? '请重试或关闭'
-                  : '正在联网核对编号与 SHA256'
+        ? t('hp.gate.subtitle.mismatch')
+        : state === 'outdated'
+          ? t('hp.gate.subtitle.outdated')
+          : state === 'notfound'
+            ? t('hp.gate.subtitle.notfound')
+            : state === 'incompatible'
+              ? t('hp.gate.subtitle.incompatible')
+              : state === 'externals'
+                ? t('hp.gate.subtitle.externals')
+                : state === 'confirm'
+                  ? t('hp.gate.subtitle.confirm')
+                  : state === 'error'
+                    ? t('hp.gate.subtitle.error')
+                    : t('hp.gate.subtitle.checking')
 
   return (
     <AnimatePresence>
@@ -160,9 +178,12 @@ export function HomepageGate({
           <div className="mb-3 flex items-center gap-3">
             <div
               className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl text-white"
-              style={{ background: rejected ? 'var(--fill-danger)' : 'var(--fill-primary)' }}
+              style={{ background: danger ? 'var(--fill-danger)' : 'var(--fill-primary)' }}
             >
-              <Icon name={rejected ? 'xmark' : state === 'externals' ? 'link' : 'check'} size={22} />
+              <Icon
+                name={danger ? 'xmark' : state === 'outdated' ? 'download' : state === 'externals' ? 'link' : 'check'}
+                size={22}
+              />
             </div>
             <div className="min-w-0">
               <h2 className="title">{title}</h2>
@@ -171,7 +192,7 @@ export function HomepageGate({
           </div>
 
           {state === 'checking' ? (
-            <LoadingState text="正在安全检查…" />
+            <LoadingState text={t('hp.gate.loadingChecking')} />
           ) : (
             <div className="min-h-0 flex-1 space-y-3 overflow-y-auto">
               {entry && (
@@ -180,7 +201,7 @@ export function HomepageGate({
                     <div className="truncate text-[13px] font-semibold">{entry.meta.name || entry.id}</div>
                     <div className="caption truncate">
                       {entry.meta.author ? `${entry.meta.author} · ` : ''}
-                      {entry.meta.id ? `编号 ${entry.meta.id}` : '无编号'}
+                      {entry.meta.id ? t('hp.gate.number', { id: entry.meta.id }) : t('hp.noNumber')}
                     </div>
                   </div>
                   <span className="chip shrink-0">SHA256 {entry.sha256.slice(0, 8)}</span>
@@ -191,7 +212,7 @@ export function HomepageGate({
 
               {state === 'reject' && (
                 <div>
-                  <div className="mb-1.5 text-[13px] font-semibold">命中的危险规则</div>
+                  <div className="mb-1.5 text-[13px] font-semibold">{t('hp.gate.dangerRules')}</div>
                   <ul className="space-y-1.5">
                     {(risk?.blocks ?? []).map((b, i) => (
                       <li
@@ -205,14 +226,14 @@ export function HomepageGate({
                         <span className="selectable break-all">{b}</span>
                       </li>
                     ))}
-                    {(risk?.blocks ?? []).length === 0 && <li className="caption">检测到危险特征。</li>}
+                    {(risk?.blocks ?? []).length === 0 && <li className="caption">{t('hp.gate.dangerHint')}</li>}
                   </ul>
                 </div>
               )}
 
               {state === 'externals' && (
                 <div>
-                  <div className="mb-1.5 text-[13px] font-semibold">将访问以下外部地址（{externals.length}）</div>
+                  <div className="mb-1.5 text-[13px] font-semibold">{t('hp.gate.externalsTitle', { n: externals.length })}</div>
                   <ul className="space-y-1.5">
                     {externals.map((x, i) => (
                       <li key={i} className="rounded-xl px-3 py-2" style={{ background: 'var(--fill-secondary)' }}>
@@ -222,36 +243,35 @@ export function HomepageGate({
                     ))}
                   </ul>
                   <p className="caption mt-2">
-                    允许后仅放宽网络访问（connect-src / img-src），脚本仍运行在无同源、无本地文件权限的沙箱中。
+                    {t('hp.gate.externalsNote')}
                   </p>
                 </div>
               )}
 
               {state === 'confirm' && (
                 <p className="caption">
-                  该脚本没有服务端编号，无法联网核对哈希。本地静态检测已通过（未发现删除文件、格式化、下载可执行文件等危险行为），
-                  但无法确认作者与内容来源。首次运行需要你确认；脚本内容一旦被改动，确认会自动失效。
+                  {t('hp.gate.confirmNote')}
                 </p>
               )}
             </div>
           )}
 
           <div className="mt-5 flex gap-2">
-            {rejected || state === 'error' ? (
+            {blocked || state === 'error' ? (
               <>
                 <Button className="flex-1" onClick={onCancel}>
-                  关闭
+                  {t('hp.gate.close')}
                 </Button>
-                {state === 'error' && (
+                {(state === 'error' || state === 'outdated') && (
                   <Button variant="primary" className="flex-1" onClick={() => void run()}>
-                    重试
+                    {state === 'outdated' ? t('hp.gate.recheck') : t('hp.gate.retry')}
                   </Button>
                 )}
               </>
             ) : (
               <>
                 <Button className="flex-1" onClick={onCancel} disabled={busy}>
-                  {cancelLabel}
+                  {cancelLabel ?? t('hp.gate.cancel')}
                 </Button>
                 <Button
                   variant="primary"
@@ -259,7 +279,7 @@ export function HomepageGate({
                   disabled={busy || state === 'checking'}
                   onClick={() => void approve(state === 'externals')}
                 >
-                  {state === 'externals' ? '允许并运行' : '确认并运行'}
+                  {state === 'externals' ? t('hp.gate.allowRun') : t('hp.gate.confirmRun')}
                 </Button>
               </>
             )}

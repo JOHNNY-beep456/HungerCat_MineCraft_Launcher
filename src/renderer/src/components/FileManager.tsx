@@ -20,6 +20,7 @@ import {
 import { AnimatePresence, motion } from 'motion/react'
 import type { FileEntry, FilePlace } from '@shared/types'
 import { Button, Icon, Spinner } from './ui'
+import { useApp } from '../store'
 
 /** 拆出路径分隔符（Windows 用 \，其它平台用 /）。 */
 function separatorOf(p: string): string {
@@ -120,13 +121,17 @@ function MenuItem({
 export function FileManager({
   initialPath,
   onClose,
-  className = ''
+  className = '',
+  editOnDoubleClick = false
 }: {
   initialPath: string
   /** 有关闭按钮时传（普通模式下是覆盖层；桌面模式里由窗口标题栏负责关闭） */
   onClose?: () => void
   className?: string
+  /** 双击文件的行为：true=打开内置「修改文件」编辑器（桌面模式）；false=用系统默认程序打开 */
+  editOnDoubleClick?: boolean
 }): JSX.Element {
+  const { t } = useApp()
   const [places, setPlaces] = useState<FilePlace[]>([])
   const [path, setPath] = useState(initialPath)
   const [entries, setEntries] = useState<FileEntry[]>([])
@@ -209,6 +214,12 @@ export function FileManager({
       go(entry.path)
       return
     }
+    // 桌面模式：双击文件直接进入内置「修改文件」（文本编辑器），与右键菜单一致。
+    // 普通模式：沿用系统默认程序打开（保持原有行为）。
+    if (editOnDoubleClick) {
+      openEdit(entry)
+      return
+    }
     void window.api.files.open(entry.path).then((msg) => {
       if (msg) setError(msg)
     })
@@ -270,7 +281,7 @@ export function FileManager({
 
   const openCreate = (): void => {
     setMenu(null)
-    setNameInput('新建文件.txt')
+    setNameInput(t('cmp.fm.newFileNameDefault'))
     setDialogError(null)
     setDialog({ kind: 'create' })
   }
@@ -345,11 +356,11 @@ export function FileManager({
     <div ref={rootRef} className={`relative flex h-full min-h-0 flex-col ${className}`}>
       {/* 工具栏：后退 / 上级 / 刷新 + 地址栏 */}
       <div className="flex shrink-0 items-center gap-2 px-3 pt-3">
-        <Button size="sm" icon="chevronLeft" onClick={back} disabled={history.current.length === 0} title="后退">
-          后退
+        <Button size="sm" icon="chevronLeft" onClick={back} disabled={history.current.length === 0} title={t('cmp.fm.back')}>
+          {t('cmp.fm.back')}
         </Button>
-        <Button size="sm" icon="chevronRight" onClick={up} disabled={!parentOf(path)} title="上一级" />
-        <Button size="sm" icon="refresh" onClick={refresh} title="刷新" />
+        <Button size="sm" icon="chevronRight" onClick={up} disabled={!parentOf(path)} title={t('cmp.fm.up')} />
+        <Button size="sm" icon="refresh" onClick={refresh} title={t('cmp.fm.refresh')} />
         <input
           className="input min-w-0 flex-1 no-drag"
           value={address}
@@ -359,9 +370,9 @@ export function FileManager({
             if (e.key === 'Enter' && address.trim()) go(address.trim())
             if (e.key === 'Escape') setAddress(path)
           }}
-          title="输入路径后回车跳转"
+          title={t('cmp.fm.addressTitle')}
         />
-        {onClose && <Button size="sm" icon="xmark" onClick={onClose} title="关闭" />}
+        {onClose && <Button size="sm" icon="xmark" onClick={onClose} title={t('cmp.fm.close')} />}
       </div>
 
       {/* 面包屑 */}
@@ -407,11 +418,11 @@ export function FileManager({
             {loading ? (
               <div className="flex h-full items-center justify-center gap-2">
                 <Spinner size={20} />
-                <span className="caption">正在读取…</span>
+                <span className="caption">{t('cmp.fm.reading')}</span>
               </div>
             ) : entries.length === 0 ? (
               <div className="flex h-full items-center justify-center">
-                <span className="caption">这个文件夹是空的</span>
+                <span className="caption">{t('cmp.fm.empty')}</span>
               </div>
             ) : (
               <div className="selectable">
@@ -437,7 +448,7 @@ export function FileManager({
                     <button
                       type="button"
                       className="shrink-0 rounded-md p-1 no-drag opacity-0 transition-opacity group-hover:opacity-60 hover:!opacity-100"
-                      title="在系统资源管理器中定位"
+                      title={t('cmp.fm.reveal')}
                       onClick={(ev) => {
                         ev.stopPropagation()
                         void window.api.files.reveal(e.path)
@@ -461,16 +472,16 @@ export function FileManager({
               <span className="min-w-0 flex-1 truncate opacity-60">
                 {selectedEntry
                   ? `${selectedEntry.name}　${formatBytes(selectedEntry.size)}　${formatTime(selectedEntry.mtime)}`
-                  : `${entries.length} 项`}
+                  : t('cmp.fm.itemCount', { n: entries.length })}
               </span>
             )}
             <button
               type="button"
               className="shrink-0 no-drag opacity-60 hover:opacity-100"
-              title="在系统资源管理器中打开当前目录"
+              title={t('cmp.fm.openCurrentTitle')}
               onClick={() => void window.api.files.reveal(path)}
             >
-              在系统资源管理器中打开
+              {t('cmp.fm.openCurrent')}
             </button>
           </div>
         </div>
@@ -489,18 +500,18 @@ export function FileManager({
             style={{ left: menu.x, top: menu.y, width: MENU_W }}
             onContextMenu={(ev) => ev.preventDefault()}
           >
-            <MenuItem label="新建文件" onClick={openCreate} />
-            <MenuItem label="重命名" disabled={!menu.entry} onClick={() => menu.entry && openRename(menu.entry)} />
+            <MenuItem label={t('cmp.fm.newFile')} onClick={openCreate} />
+            <MenuItem label={t('cmp.fm.rename')} disabled={!menu.entry} onClick={() => menu.entry && openRename(menu.entry)} />
             <MenuItem
-              label="修改文件"
+              label={t('cmp.fm.editFile')}
               disabled={!menu.entry || menu.entry.isDir}
-              title={menu.entry?.isDir ? '目录不能当文件编辑' : undefined}
+              title={menu.entry?.isDir ? t('cmp.fm.dirCannotEdit') : undefined}
               onClick={() => {
                 if (menu.entry && !menu.entry.isDir) openEdit(menu.entry)
               }}
             />
             <MenuItem
-              label="删除"
+              label={t('cmp.fm.delete')}
               danger
               disabled={!menu.entry}
               onClick={() => menu.entry && openDelete(menu.entry)}
@@ -534,9 +545,9 @@ export function FileManager({
             >
               {dialog.kind === 'rename' && (
                 <>
-                  <h2 className="title mb-1">重命名</h2>
+                  <h2 className="title mb-1">{t('cmp.fm.rename')}</h2>
                   <p className="caption mb-4 truncate" title={dialog.entry.path}>
-                    把「{dialog.entry.name}」改成：
+                    {t('cmp.fm.renameTo', { n: dialog.entry.name })}
                   </p>
                   <input
                     autoFocus
@@ -555,7 +566,7 @@ export function FileManager({
                   )}
                   <div className="flex gap-2">
                     <Button className="flex-1" disabled={busy} onClick={() => setDialog(null)}>
-                      取消
+                      {t('cmp.fm.cancel')}
                     </Button>
                     <Button
                       variant="primary"
@@ -563,7 +574,7 @@ export function FileManager({
                       disabled={busy || !nameInput.trim()}
                       onClick={applyRename}
                     >
-                      {busy ? '处理中…' : '确定'}
+                      {busy ? t('cmp.fm.processing') : t('cmp.fm.confirm')}
                     </Button>
                   </div>
                 </>
@@ -571,13 +582,13 @@ export function FileManager({
 
               {dialog.kind === 'create' && (
                 <>
-                  <h2 className="title mb-1">新建文件</h2>
-                  <p className="caption mb-4 break-all">在当前目录新建一个空文件：{path}</p>
+                  <h2 className="title mb-1">{t('cmp.fm.newFile')}</h2>
+                  <p className="caption mb-4 break-all">{t('cmp.fm.createHint', { path })}</p>
                   <input
                     autoFocus
                     value={nameInput}
                     spellCheck={false}
-                    placeholder="文件名（含扩展名，例如 config.txt）"
+                    placeholder={t('cmp.fm.namePlaceholder')}
                     className="input no-drag mb-5 w-full"
                     onChange={(e) => setNameInput(e.target.value)}
                     onKeyDown={(e) => {
@@ -591,7 +602,7 @@ export function FileManager({
                   )}
                   <div className="flex gap-2">
                     <Button className="flex-1" disabled={busy} onClick={() => setDialog(null)}>
-                      取消
+                      {t('cmp.fm.cancel')}
                     </Button>
                     <Button
                       variant="primary"
@@ -599,7 +610,7 @@ export function FileManager({
                       disabled={busy || !nameInput.trim()}
                       onClick={applyCreate}
                     >
-                      {busy ? '处理中…' : '创建'}
+                      {busy ? t('cmp.fm.processing') : t('cmp.fm.create')}
                     </Button>
                   </div>
                 </>
@@ -607,14 +618,14 @@ export function FileManager({
 
               {dialog.kind === 'edit' && (
                 <>
-                  <h2 className="title mb-1">修改文件</h2>
+                  <h2 className="title mb-1">{t('cmp.fm.editFile')}</h2>
                   <p className="caption mb-3 truncate" title={dialog.entry.path}>
                     {dialog.entry.name}
                   </p>
                   {editLoading ? (
                     <div className="flex items-center justify-center gap-2 py-12">
                       <Spinner size={20} />
-                      <span className="caption">正在读取…</span>
+                      <span className="caption">{t('cmp.fm.readingFile')}</span>
                     </div>
                   ) : (
                     <textarea
@@ -632,7 +643,7 @@ export function FileManager({
                   )}
                   <div className="flex gap-2">
                     <Button className="flex-1" disabled={busy} onClick={() => setDialog(null)}>
-                      取消
+                      {t('cmp.fm.cancel')}
                     </Button>
                     <Button
                       variant="primary"
@@ -640,7 +651,7 @@ export function FileManager({
                       disabled={busy || editLoading || editFailed}
                       onClick={applySave}
                     >
-                      {busy ? '保存中…' : '保存'}
+                      {busy ? t('cmp.fm.saving') : t('cmp.fm.save')}
                     </Button>
                   </div>
                 </>
@@ -648,11 +659,11 @@ export function FileManager({
 
               {dialog.kind === 'delete' && (
                 <>
-                  <h2 className="title mb-1">删除确认</h2>
+                  <h2 className="title mb-1">{t('cmp.fm.deleteTitle')}</h2>
                   <p className="caption mb-3">
                     {dialog.entry.isDir
-                      ? `目录「${dialog.entry.name}」以及里面的全部内容都会被删除，且无法恢复。`
-                      : `文件「${dialog.entry.name}」会被删除，且无法恢复。`}
+                      ? t('cmp.fm.deleteDirConfirm', { n: dialog.entry.name })
+                      : t('cmp.fm.deleteFileConfirm', { n: dialog.entry.name })}
                   </p>
                   <p className="caption mb-5 break-all" style={{ opacity: 0.6 }}>
                     {dialog.entry.path}
@@ -664,10 +675,10 @@ export function FileManager({
                   )}
                   <div className="flex gap-2">
                     <Button className="flex-1" disabled={busy} onClick={() => setDialog(null)}>
-                      取消
+                      {t('cmp.fm.cancel')}
                     </Button>
                     <Button variant="danger" className="flex-1" disabled={busy} onClick={applyDelete}>
-                      {busy ? '删除中…' : '删除'}
+                      {busy ? t('cmp.fm.deleting') : t('cmp.fm.delete')}
                     </Button>
                   </div>
                 </>

@@ -12,9 +12,11 @@
 
 import { mirrorConfig, type MirrorKind } from '../mirror'
 import { streamDownload } from './stream-download'
+import { translateTexts, testUapisKey } from './translate'
 import type {
   LoaderKind,
   ModrinthProject,
+  ModrinthProjectDetail,
   ModrinthSearchResult,
   ModrinthType,
   ModrinthVersion,
@@ -210,6 +212,24 @@ function searchModrinth(
   })
 }
 
+/** 获取单个 Modrinth 项目的完整信息（含 body 完整介绍）。id 可为 slug 或项目 ID。 */
+function fetchModrinthProject(id: string): Promise<ModrinthProjectDetail> {
+  const url = `${MODRINTH_BASE}/project/${encodeURIComponent(id)}`
+  return fetchJson(url, AbortSignal.timeout(10_000)).then((raw) => {
+    const d = raw as Record<string, unknown>
+    return {
+      slug: String(d.slug ?? ''),
+      title: String(d.title ?? ''),
+      description: String(d.description ?? ''),
+      body: typeof d.body === 'string' ? d.body : '',
+      icon_url: typeof d.icon_url === 'string' ? d.icon_url : undefined,
+      downloads: Number(d.downloads ?? 0),
+      categories: Array.isArray(d.categories) ? (d.categories as string[]) : [],
+      project_type: String(d.project_type ?? '')
+    }
+  })
+}
+
 function fetchModrinthVersions(slug: string, loaders: string[], gameVersions: string[]): Promise<ModrinthVersion[]> {
   const params = new URLSearchParams()
   if (loaders.length > 0) params.set('loaders', JSON.stringify(loaders))
@@ -278,7 +298,8 @@ interface YggProfile {
 }
 interface YggAuthResponse {
   accessToken: string
-  clientToken: string
+  /** 部分第三方服务端不返回 clientToken，故为可选。 */
+  clientToken?: string
   selectedProfile?: YggProfile
   availableProfiles?: YggProfile[]
 }
@@ -454,6 +475,13 @@ async function netSha1(p: Sha1Params): Promise<string | undefined> {
     return undefined
   }
 }
+
+/* ------------------------------------------------------------------ */
+/* 在线翻译（实验性：资源名 / 简介自动翻译）                              */
+/*                                                                     */
+/* 具体实现在 ./translate.ts：使用免费在线翻译接口（多接口自动回退）。     */
+/* 下面仅把它接进本进程的方法分发表。                                     */
+/* ------------------------------------------------------------------ */
 
 /* ------------------------------------------------------------------ */
 /* auth：微软 device-code 流（每次 HTTP 的幂等原子调用，主进程保状态机）   */
@@ -724,6 +752,7 @@ const handlers: Record<string, NetHandler> = {
   'modrinth:search': (p: ModrinthSearchParams) =>
     searchModrinth(p.query, p.limit, p.type, p.category, p.gameVersion, p.loader, p.offset),
   'modrinth:versions': (p: ModrinthVersionsParams) => fetchModrinthVersions(p.slug, p.loaders, p.gameVersions),
+  'modrinth:project': (p: { id: string }) => fetchModrinthProject(p.id),
   'server:api': (p: ServerApiParams) => serverApi(p.path),
   'server:post': (p: ServerPostParams) => serverApiPost(p.path, p.body),
   'yggdrasil:authenticate': (p: YggAuthParams) => yggdrasilAuthenticate(p.server, p.email ?? '', p.password ?? '', p.clientToken),
@@ -733,6 +762,8 @@ const handlers: Record<string, NetHandler> = {
   'net:fetchText': (p: FetchTextParams, ctx: NetHandlerCtx) => netFetchText(p, ctx),
   'net:detectFilename': (p: DetectFilenameParams) => netDetectFilename(p),
   'download:sha1': (p: Sha1Params) => netSha1(p),
+  'translate:texts': (p: { texts: string[]; target: string; apiKey?: string }) => translateTexts(p),
+  'translate:testKey': (p: { apiKey: string }) => testUapisKey(p.apiKey),
   'auth:deviceBegin': (p: DeviceBeginParams) => msDeviceBegin(p),
   'auth:devicePoll': (p: DevicePollParams) => msDevicePoll(p),
   'auth:chain': (p: { msAccessToken: string }) => msChain(p.msAccessToken),

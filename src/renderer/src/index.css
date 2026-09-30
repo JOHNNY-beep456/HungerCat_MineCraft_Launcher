@@ -314,6 +314,33 @@ body {
   }
 }
 
+/* --- 标题栏翻译状态呼吸灯 --- */
+.translate-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 9999px;
+  background: var(--dot-color);
+  box-shadow: 0 0 5px var(--dot-color);
+  flex: none;
+}
+/* 仅在「翻译中 / 已翻译」时应用：橙色、绿色呼吸闪烁；灰、红两种状态保持静止。 */
+.translate-dot--pulse {
+  animation: translate-dot-pulse 1.5s ease-in-out infinite;
+}
+@keyframes translate-dot-pulse {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+    box-shadow: 0 0 5px var(--dot-color);
+  }
+  50% {
+    opacity: 0.3;
+    transform: scale(0.78);
+    box-shadow: 0 0 2px var(--dot-color);
+  }
+}
+
 /* 组件样式必须置于 @layer components：未分层样式的层叠优先级高于 Tailwind 的
    utilities 层，会让 .glass-strong{position:relative} 压过工具类 absolute、
    让 .btn{border-radius} 压过 rounded-* 等，导致浮层掉进文档流、圆角失效。 */
@@ -596,6 +623,9 @@ textarea.input {
   .catfish-wag {
     animation: none !important;
   }
+  .translate-dot--pulse {
+    animation: none !important;
+  }
   .btn {
     transition: opacity 160ms ease;
   }
@@ -630,11 +660,29 @@ textarea.input {
 [data-reduced-motion='true'] .catfish-wag {
   animation: none !important;
 }
+[data-reduced-motion='true'] .translate-dot--pulse {
+  animation: none !important;
+}
 [data-reduced-motion='true'] .btn {
   transition: opacity 160ms ease;
 }
 [data-reduced-motion='true'] .btn:active {
   transform: none;
+}
+
+/* ------------------------------------------------------------------ */
+/*  超低占用模式：只削减「持续开销」，可见时的动画与界面观感与常规完全一致   */
+/* ------------------------------------------------------------------ */
+/* 窗口最小化 / 被完全遮挡时暂停装饰动画，重新可见立即恢复：                */
+/* 观感不变（那一刻本就看不见），却能省掉后台持续重绘。                    */
+[data-low-usage='true'][data-window-hidden='true'] .app-background .blob,
+[data-low-usage='true'][data-window-hidden='true'] .catfish-bob,
+[data-low-usage='true'][data-window-hidden='true'] .catfish-wag {
+  animation-play-state: paused !important;
+}
+/* 关闭跟随鼠标的持续重绘光晕（老机器上典型的无谓开销）。 */
+[data-low-usage='true'] .cursor-glow {
+  display: none;
 }
 
 /* --- Utility for safe-area / selectable text --- */
@@ -741,6 +789,14 @@ textarea.input {
   position: absolute;
   inset: 0;
   background: radial-gradient(125% 125% at 16% 6%, #2f8fe0 0%, #0b63b8 42%, #063a75 100%);
+}
+/* 桌面模式兼容自定义背景：设了自定义壁纸时用图片替换蓝色预设，
+   并隐藏斜向光带装饰，避免糊在照片上。 */
+:root[data-theme][data-skin][data-wallpaper='on'] .win10-wallpaper {
+  background: var(--wallpaper-image, none) center / cover no-repeat #04060f;
+}
+:root[data-theme][data-skin][data-wallpaper='on'] .win10-wallpaper::before {
+  display: none;
 }
 .win10-wallpaper::before {
   content: '';
@@ -915,6 +971,14 @@ textarea.input {
   background: var(--win10-surface);
   border: 1px solid var(--glass-border);
   box-shadow: 0 14px 44px rgba(0, 0, 0, 0.42);
+}
+/* MC 的窗口卡片不画自己的外框：里面就是真窗口本身（宿主窗口在此挖洞透出），
+   加边框/底色/圆角/阴影会在真窗口边缘露出一圈启动器的皮。 */
+.win10-window.is-native {
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
 }
 .win10-titlebar {
   flex: 0 0 auto;

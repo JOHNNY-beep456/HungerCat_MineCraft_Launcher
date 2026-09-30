@@ -50,6 +50,22 @@ interface YggdrasilAuthResponse {
   availableProfiles?: YggdrasilProfile[]
 }
 
+/** 供「多角色选择」弹窗展示的角色项（id 已去连字符）。 */
+export interface YggdrasilProfileOption {
+  id: string
+  name: string
+  skinUrl?: string
+  skinModel?: 'classic' | 'slim'
+}
+
+/** 登录结果：单角色直接给出账号；多角色需要用户先选择。 */
+export type YggdrasilLoginOutcome =
+  | { kind: 'ok'; account: MinecraftAccount }
+  | { kind: 'select'; profiles: YggdrasilProfileOption[] }
+
+/** 多角色登录的暂存上下文：等用户在弹窗里选完，再据此批量建号。 */
+let pendingYgg: { base: string; data: YggdrasilAuthResponse; clientToken: string } | null = null
+
 /** 从 textures 属性（base64 JSON）解析皮肤 / 披风 / 模型。 */
 function extractSkin(profile?: YggdrasilProfile): {
   skinUrl?: string
@@ -79,7 +95,9 @@ function extractSkin(profile?: YggdrasilProfile): {
 function toAccount(
   profile: YggdrasilProfile | undefined,
   data: YggdrasilAuthResponse,
-  base: string
+  base: string,
+  /** 本次请求实际使用的 clientToken：服务端未回传时用它兜底。 */
+  fallbackClientToken: string
 ): MinecraftAccount {
   const skin = extractSkin(profile)
   return {
@@ -94,7 +112,7 @@ function toAccount(
     addedAt: Date.now(),
     authType: 'yggdrasil',
     yggdrasilServer: base,
-    clientToken: data.clientToken
+    clientToken: data.clientToken || fallbackClientToken
   }
 }
 
@@ -102,7 +120,7 @@ export async function loginYggdrasil(
   server: string,
   email: string,
   password: string
-): Promise<MinecraftAccount> {
+): Promise<YggdrasilLoginOutcome> {
   const base = normalizeServer(server)
   // 只记认证服务器与邮箱，绝不打印密码。
   console.info(`[登录] 开始第三方登录：${base} / ${email}`)
@@ -115,14 +133,44 @@ export async function loginYggdrasil(
       password,
       clientToken
     })
-    const profile = data.selectedProfile ?? data.availableProfiles?.[0]
-    if (!profile) throw new Error('该账号没有可用的角色档案')
-    console.info(`[登录] 第三方登录成功：${base} / ${email}`)
-    return toAccount(profile, data, base)
+    // 优先以服务端返回的 availableProfiles 为准；缺失时退化为 selectedProfile。
+    const available = data.availableProfiles ?? []
+    const profiles = available.length > 0 ? available : data.selectedProfile ? [data.selectedProfile] : []
+    if (profiles.length === 0) throw new Error('该账号没有可用的角色档案')
+    console.info(`[登录] 第三方登录成功：${base} / ${email}（可用角色 ${profiles.length} 个）`)
+    if (profiles.length > 1) {
+      // 多角色：暂存令牌上下文，交给界面弹窗选择（可多选）后再建号。
+      pendingYgg = { base, data, clientToken }
+      return {
+        kind: 'select',
+        profiles: profiles.map((p) => {
+          const skin = extractSkin(p)
+          return { id: withoutDashes(p.id), name: p.name, skinUrl: skin.skinUrl, skinModel: skin.skinModel }
+        })
+      }
+    }
+    const profile = data.selectedProfile ?? profiles[0]
+    pendingYgg = null
+    return { kind: 'ok', account: toAccount(profile, data, base, clientToken) }
   } catch (err) {
     console.error(`[登录] 第三方登录失败：${base} / ${email} ${err instanceof Error ? err.message : String(err)}`)
     throw err
   }
+}
+
+/**
+ * 依据「多角色选择」弹窗的多选结果批量建号。
+ * 同一账号下的各角色共用同一份 accessToken / clientToken，仅角色档案不同。
+ */
+export function commitYggdrasilProfiles(ids: string[]): MinecraftAccount[] {
+  const ctx = pendingYgg
+  pendingYgg = null
+  if (!ctx) throw new Error('登录会话已失效，请重新登录')
+  const wanted = new Set(ids.map((x) => withoutDashes(x)))
+  const available = ctx.data.availableProfiles ?? []
+  const picked = available.filter((p) => wanted.has(withoutDashes(p.id)))
+  if (picked.length === 0) throw new Error('请至少选择一个角色')
+  return picked.map((p) => toAccount(p, ctx.data, ctx.base, ctx.clientToken))
 }
 
 export async function refreshYggdrasil(account: MinecraftAccount): Promise<MinecraftAccount> {
@@ -130,23 +178,36 @@ export async function refreshYggdrasil(account: MinecraftAccount): Promise<Minec
   try {
     // 账号里存的是完整认证基址；这里同样走规范化，兼容只存域名的旧数据。
     const base = normalizeServer(account.yggdrasilServer ?? '')
-    const clientToken = account.clientToken ?? account.id
+    // clientToken 必须与登录时使用的一致（服务端会校验）。旧实现仅用 `?? account.id` 兜底，
+    // 而账号 id 是角色 UUID、与 clientToken 语义无关；一旦登录时服务端未回传 clientToken
+    // 就会存成空值，刷新时便拿角色 UUID 去顶替，从而被服务端判为令牌无效、刷新必然失败。
+    const clientToken = account.clientToken?.trim() || account.id
     const data = await netRequest<YggdrasilAuthResponse>('yggdrasil:refresh', {
       server: base,
       accessToken: account.accessToken,
       clientToken
     })
-    const profile = data.selectedProfile ?? data.availableProfiles?.[0] ?? {
-      id: account.id,
-      name: account.name
-    }
+    // 同一账号可能包含多个角色（多角色可多选添加），且各角色共用同一份令牌；
+    // refresh 请求未指定 selectedProfile，服务端会回默认角色。因此必须按账号自身的
+    // 角色 id 在返回列表里精确匹配，匹配不到时再沿用本地角色信息，
+    // 否则刷新会把账号「换」成服务端的默认角色。
+    const matched = [data.selectedProfile, ...(data.availableProfiles ?? [])].find(
+      (p) => p && withoutDashes(p.id) === account.id
+    )
+    const profile = matched ?? { id: account.id, name: account.name }
     console.info(`[登录] 刷新第三方账号令牌成功：${account.name}`)
     return {
-      ...toAccount(profile, { ...data, clientToken: data.clientToken ?? clientToken }, base),
+      ...toAccount(profile, data, base, clientToken),
       addedAt: account.addedAt
     }
   } catch (err) {
-    console.error(`[登录] 刷新第三方账号令牌失败：${account.name} ${err instanceof Error ? err.message : String(err)}`)
+    const msg = err instanceof Error ? err.message : String(err)
+    console.error(`[登录] 刷新第三方账号令牌失败：${account.name} ${msg}`)
+    // 服务端判为「令牌无效」时，accessToken 或 clientToken 已不再被认可，
+    // 本地无法凭空补齐，只能重新登录——给一句可操作的提示，而不是把服务端原文抛给用户。
+    if (/invalid token|forbiddenoperationexception|无效/i.test(msg)) {
+      throw new Error(`第三方账号登录凭据已失效，请在「账号」页重新登录该账号（${msg}）`)
+    }
     throw err
   }
 }

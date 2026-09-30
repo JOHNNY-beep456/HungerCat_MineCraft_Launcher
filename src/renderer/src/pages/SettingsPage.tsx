@@ -1,27 +1,178 @@
-import { useEffect, useState, type ReactNode } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { AnimatePresence, motion } from 'motion/react'
-import type { DownloadProgress, JavaRuntime, UpdateCheckResult, UpdateInfo } from '@shared/types'
+import type {
+  DevModeStatus,
+  DownloadProgress,
+  JavaRuntime,
+  UpdateCheckResult,
+  UpdateInfo
+} from '@shared/types'
 import { useApp } from '../store'
 import { Button, Icon, ProgressBar, Segmented, Switch } from '../components/ui'
+import { dataUrlToBlobUrl } from '../wallpaper'
+import { LOCALES, type TFunction } from '../i18n'
 
 const ACCENTS = ['#0a84ff', '#30d158', '#ff9f0a', '#ff375f', '#bf5af2', '#ff453a']
+
+/** 主显示器尺寸（逻辑像素）。workWidth/workHeight 为工作区（已排除任务栏）。 */
+interface PrimaryDisplay {
+  width: number
+  height: number
+  workWidth: number
+  workHeight: number
+  scaleFactor: number
+}
+
+/** 自定义游戏窗口尺寸的合法范围：与主进程保持一致。 */
+const MIN_WINDOW = 320
+const MAX_WINDOW = 16384
+
+/** 收敛自定义窗口尺寸：非法 / 越界时回退到给定默认值或边界值。 */
+function clampWindowSize(value: number, fallback: number): number {
+  if (!Number.isFinite(value) || value <= 0) return fallback
+  return Math.min(MAX_WINDOW, Math.max(MIN_WINDOW, Math.round(value)))
+}
+
+/**
+ * 「游戏窗口尺寸 → 自定义」的预览图：按比例画出屏幕外框与窗口区域。
+ *
+ * 尺寸超出屏幕时**禁用预览**（不画窗口区域）并给出警告——因为此时窗口在真实屏幕上
+ * 必然会被裁切，画出来只会误导。启动时也会再警告一次（见主进程 launch:start）。
+ */
+function WindowSizePreview({
+  display,
+  width,
+  height,
+  t
+}: {
+  display: PrimaryDisplay
+  width: number
+  height: number
+  t: TFunction
+}): JSX.Element {
+  const BOX_W = 232
+  const BOX_H = 140
+  const exceed = width > display.width || height > display.height
+  // 按屏幕尺寸等比缩放，保证各种分辨率下预览框大小一致。
+  const scale = Math.min(BOX_W / display.width, BOX_H / display.height)
+  const sw = Math.max(1, Math.round(display.width * scale))
+  const sh = Math.max(1, Math.round(display.height * scale))
+  return (
+    <div className="glass-soft flex flex-col items-center gap-2 rounded-2xl px-3 py-3">
+      <div className="flex flex-wrap items-center justify-center gap-x-2 gap-y-1 text-center">
+        <span className="caption font-medium">{t('settings.game.custom.preview')}</span>
+        <span className="caption">
+          {t('settings.game.custom.screen', {
+            sw: display.width,
+            sh: display.height,
+            ww: display.workWidth,
+            wh: display.workHeight
+          })}
+        </span>
+      </div>
+      {/* 屏幕外框（虚线示意） */}
+      <div
+        className="relative rounded-[10px] border border-dashed"
+        style={{ width: sw, height: sh, borderColor: 'var(--divider)', background: 'var(--fill-secondary)' }}
+      >
+        {exceed ? (
+          // 超出屏幕：禁用预览，只留警告。
+          <div className="absolute inset-0 grid place-items-center px-3 text-center">
+            <span className="caption" style={{ color: 'var(--fill-danger)' }}>
+              {t('settings.game.custom.locked')}
+            </span>
+          </div>
+        ) : (
+          /* 窗口区域：居中摆放，一眼看出占屏比例 */
+          <div
+            className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 rounded-[6px]"
+            style={{
+              width: Math.max(2, Math.round(width * scale)),
+              height: Math.max(2, Math.round(height * scale)),
+              background: 'var(--fill-primary)',
+              opacity: 0.5,
+              boxShadow: 'inset 0 0 0 1px rgba(255,255,255,.4)'
+            }}
+          />
+        )}
+      </div>
+      <span className="caption">
+        {width} × {height}
+      </span>
+    </div>
+  )
+}
 
 /** 背景预设色卡：colors 为深色模式渐变，lightColors 为浅色模式渐变（与 index.css 一一对应）。
  *  首个「午夜」即默认背景（index.css 的 .app-background 基色与之相同）。 */
 const BACKGROUNDS: Array<{ key: string; label: string; colors: string[]; lightColors: string[] }> = [
-  { key: 'midnight', label: '午夜', colors: ['#04060f', '#0b1330', '#10101c'], lightColors: ['#eef1fa', '#e8ecf8', '#f2f0fb'] },
-  { key: 'sunset', label: '日落', colors: ['#2a0a14', '#7a2a1e', '#d4762a'], lightColors: ['#fff4ec', '#ffe9d9', '#ffe2cf'] },
-  { key: 'forest', label: '森林', colors: ['#04120f', '#0a2e24', '#144d3a'], lightColors: ['#eefaf3', '#e4f6ec', '#eef9e8'] },
-  { key: 'rose', label: '玫瑰', colors: ['#2a0a1c', '#6b1740', '#c94d6e'], lightColors: ['#fff0f6', '#ffe6f0', '#fbeafc'] },
-  { key: 'mono', label: '黑白', colors: ['#0d0d10', '#1c1c22', '#2a2a30'], lightColors: ['#f4f4f6', '#ededf0', '#e6e6ea'] }
+  { key: 'midnight', label: 'settings.bg.midnight', colors: ['#04060f', '#0b1330', '#10101c'], lightColors: ['#eef1fa', '#e8ecf8', '#f2f0fb'] },
+  { key: 'sunset', label: 'settings.bg.sunset', colors: ['#2a0a14', '#7a2a1e', '#d4762a'], lightColors: ['#fff4ec', '#ffe9d9', '#ffe2cf'] },
+  { key: 'forest', label: 'settings.bg.forest', colors: ['#04120f', '#0a2e24', '#144d3a'], lightColors: ['#eefaf3', '#e4f6ec', '#eef9e8'] },
+  { key: 'rose', label: 'settings.bg.rose', colors: ['#2a0a1c', '#6b1740', '#c94d6e'], lightColors: ['#fff0f6', '#ffe6f0', '#fbeafc'] },
+  { key: 'mono', label: 'settings.bg.mono', colors: ['#0d0d10', '#1c1c22', '#2a2a30'], lightColors: ['#f4f4f6', '#ededf0', '#e6e6ea'] }
 ]
 
 export function SettingsPage(): JSX.Element {
-  const { settings, updateSettings, reloadSettings, theme } = useApp()
+  const { settings, updateSettings, reloadSettings, theme, locale, t } = useApp()
   const [javas, setJavas] = useState<JavaRuntime[]>([])
   const [detecting, setDetecting] = useState(false)
+  /** 手动指定 Java 时的识别失败提示。 */
+  const [javaPickError, setJavaPickError] = useState<string | null>(null)
+
+  // ── 游戏窗口尺寸（自定义 + 预览）────────────────────────────────────────
+  /** 主显示器尺寸，仅用于「自定义」尺寸的预览；取不到时不显示预览。 */
+  const [display, setDisplay] = useState<PrimaryDisplay | null>(null)
+  // 输入框用字符串暂存：避免输入过程中的中间态（空串、「1」）被当成数字写回设置。
+  const [winWText, setWinWText] = useState('')
+  const [winHText, setWinHText] = useState('')
+  // 用户是否正在编辑输入框：编辑期间不用 settings 回填，免得把正在输入的内容冲掉。
+  const winSizeDirty = useRef(false)
+  useEffect(() => {
+    void window.api.display
+      .primary()
+      .then(setDisplay)
+      .catch(() => setDisplay(null))
+  }, [])
+  useEffect(() => {
+    if (winSizeDirty.current) return
+    setWinWText(String(settings.gameWindowWidth))
+    setWinHText(String(settings.gameWindowHeight))
+  }, [settings.gameWindowWidth, settings.gameWindowHeight])
+
+  /** 提交自定义尺寸：解析 → 收敛到合法范围 → 落盘（失焦或回车时调用）。 */
+  const commitWindowSize = (): void => {
+    winSizeDirty.current = false
+    const w = clampWindowSize(parseInt(winWText, 10), settings.gameWindowWidth)
+    const h = clampWindowSize(parseInt(winHText, 10), settings.gameWindowHeight)
+    setWinWText(String(w))
+    setWinHText(String(h))
+    void updateSettings({ gameWindowWidth: w, gameWindowHeight: h })
+  }
+
+  // 预览用的实时尺寸：输入非法时回退到已保存的值，避免预览跳动到边界值。
+  const previewW = clampWindowSize(parseInt(winWText, 10), settings.gameWindowWidth)
+  const previewH = clampWindowSize(parseInt(winHText, 10), settings.gameWindowHeight)
+  const previewExceed =
+    !!display && (previewW > display.width || previewH > display.height)
+
+  /** 手动指定 Java 可执行文件：选中即由主进程读取版本信息（自动识别 major / 厂商 / 位数），
+   *  然后加入列表并立即设为当前使用的 Java。 */
+  const pickJava = async (): Promise<void> => {
+    setJavaPickError(null)
+    try {
+      const jr = await window.api.java.pick()
+      if (!jr) return
+      setJavas((prev) => (prev.some((j) => j.path === jr.path) ? prev : [...prev, jr]))
+      await updateSettings({ javaPath: jr.path, javaAutoDetect: false })
+    } catch (err) {
+      setJavaPickError(err instanceof Error ? err.message : String(err))
+    }
+  }
   const [wallpaperBusy, setWallpaperBusy] = useState(false)
   const [wallpaperPreview, setWallpaperPreview] = useState('')
+  /** 开启 Win10 桌面模式前的提示弹窗。 */
+  const [win10Notice, setWin10Notice] = useState(false)
 
   /** 选图 → 主进程弹框、复制进数据目录、写设置；随后刷新 store 触发壁纸 effect。
    *  取消选择时返回的仍是原设置，刷新一次不会有副作用。 */
@@ -46,18 +197,23 @@ export function SettingsPage(): JSX.Element {
     }
   }
 
-  /** 读取当前壁纸的 data URL 作为缩略图预览（没有则清空）。 */
+  /** 读取当前壁纸并转成 blob 预览地址（没有则清空）。data URL 过长会让 <img> 拒绝加载。 */
   useEffect(() => {
     if (!settings.backgroundImage) {
       setWallpaperPreview('')
       return
     }
     let alive = true
-    void window.api.settings.wallpaperData().then((url) => {
-      if (alive) setWallpaperPreview(url)
+    /** 本次创建的对象地址：预览更新 / 卸载时释放。 */
+    let objectUrl = ''
+    void window.api.settings.wallpaperData().then((dataUrl) => {
+      if (!alive) return
+      objectUrl = dataUrl ? dataUrlToBlobUrl(dataUrl) : ''
+      setWallpaperPreview(objectUrl)
     })
     return () => {
       alive = false
+      if (objectUrl) URL.revokeObjectURL(objectUrl)
     }
   }, [settings.backgroundImage])
 
@@ -69,6 +225,146 @@ export function SettingsPage(): JSX.Element {
   const [updatePath, setUpdatePath] = useState<string | null>(null)
   const [updateError, setUpdateError] = useState<string | null>(null)
   const [pendingUpdate, setPendingUpdate] = useState<UpdateInfo | null>(null)
+
+  // ── 自动翻译的 uapis.cn API KEY ─────────────────────────────────────────
+  // 输入框始终为空：已保存的 KEY 只存在主进程的系统加密存储里，不会回显到界面，
+  // 用户需要更换时直接输入新的 KEY 覆盖即可。
+  const [apiKeyInput, setApiKeyInput] = useState('')
+  const [apiKeyBusy, setApiKeyBusy] = useState(false)
+  const [apiKeyResult, setApiKeyResult] = useState<{ ok: boolean; message: string } | null>(null)
+
+  /** 保存 API KEY：测试与加密落盘都在主进程完成，这里只负责展示结论。 */
+  const saveApiKey = async (): Promise<void> => {
+    const key = apiKeyInput.trim()
+    if (!key) {
+      setApiKeyResult({ ok: false, message: t('settings.uapisKey.empty') })
+      return
+    }
+    setApiKeyBusy(true)
+    setApiKeyResult(null)
+    try {
+      const res = await window.api.translate.setKey(key)
+      setApiKeyResult(res)
+      // 成功才清空输入框，失败时保留内容方便用户核对。
+      if (res.ok) setApiKeyInput('')
+      await reloadSettings()
+    } catch (err) {
+      setApiKeyResult({ ok: false, message: err instanceof Error ? err.message : String(err) })
+    } finally {
+      setApiKeyBusy(false)
+    }
+  }
+
+  /** 主动删除已保存的 KEY（删除后回到访客额度）。 */
+  const clearApiKey = async (): Promise<void> => {
+    setApiKeyBusy(true)
+    setApiKeyResult(null)
+    try {
+      const res = await window.api.translate.clearKey()
+      setApiKeyResult(res)
+      setApiKeyInput('')
+      await reloadSettings()
+    } catch (err) {
+      setApiKeyResult({ ok: false, message: err instanceof Error ? err.message : String(err) })
+    } finally {
+      setApiKeyBusy(false)
+    }
+  }
+
+  // ── 开发模式 ────────────────────────────────────────────────────────────
+  const [dev, setDev] = useState<DevModeStatus | null>(null)
+  const [devEmail, setDevEmail] = useState('')
+  const [devCode, setDevCode] = useState('')
+  const [devSending, setDevSending] = useState(false)
+  const [devVerifying, setDevVerifying] = useState(false)
+  const [devError, setDevError] = useState('')
+  const [devNotice, setDevNotice] = useState('')
+  const [devCooldown, setDevCooldown] = useState(0)
+
+  // 订阅主进程广播的开发模式状态变化（开关 / 解除 / 到期自动关闭）。
+  useEffect(() => {
+    void window.api.devMode.status().then(setDev).catch(() => {})
+    return window.api.devMode.onChanged(setDev)
+  }, [])
+
+  // 发送验证码后的重发冷却倒计时。
+  useEffect(() => {
+    if (devCooldown <= 0) return
+    const t = setInterval(() => setDevCooldown((v) => (v <= 1 ? 0 : v - 1)), 1000)
+    return () => clearInterval(t)
+  }, [devCooldown])
+
+  /** 发送开发模式验证码到指定邮箱。 */
+  const sendDevCode = async (): Promise<void> => {
+    const email = devEmail.trim()
+    if (!email) {
+      setDevError(t('settings.dev.err.emailRequired'))
+      return
+    }
+    setDevSending(true)
+    setDevError('')
+    setDevNotice('')
+    try {
+      const r = await window.api.devMode.sendCode(email)
+      setDevCooldown(r.cooldown || 60)
+      setDevNotice(t('settings.dev.notice.sent', { n: Math.round((r.ttl || 600) / 60) }))
+    } catch (err) {
+      setDevError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setDevSending(false)
+    }
+  }
+
+  /** 校验验证码，成功后获得 1 天授权。 */
+  const verifyDevCode = async (): Promise<void> => {
+    const email = devEmail.trim()
+    const code = devCode.trim()
+    if (!email || !code) {
+      setDevError(t('settings.dev.err.inputRequired'))
+      return
+    }
+    setDevVerifying(true)
+    setDevError('')
+    setDevNotice('')
+    try {
+      await window.api.devMode.verify(email, code)
+      setDevCode('')
+      setDevNotice(t('settings.dev.notice.verified'))
+      setDev(await window.api.devMode.status())
+    } catch (err) {
+      setDevError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setDevVerifying(false)
+    }
+  }
+
+  /** 开关开发模式。 */
+  const toggleDev = async (v: boolean): Promise<void> => {
+    setDevError('')
+    try {
+      setDev(await window.api.devMode.setEnabled(v))
+    } catch (err) {
+      setDevError(err instanceof Error ? err.message : String(err))
+    }
+  }
+
+  /** 解除授权：服务端作废令牌并清空本地授权。 */
+  const revokeDev = async (): Promise<void> => {
+    if (!window.confirm(t('settings.dev.confirm.revoke'))) return
+    setDevError('')
+    setDevNotice('')
+    try {
+      setDev(await window.api.devMode.revoke())
+      setDevNotice(t('settings.dev.notice.revoked'))
+    } catch (err) {
+      setDevError(err instanceof Error ? err.message : String(err))
+    }
+  }
+
+  /** 切换主页安全防护档位。 */
+  const setDevSecurity = async (mode: 'full' | 'warn' | 'off'): Promise<void> => {
+    setDev(await window.api.devMode.setSecurityMode(mode))
+  }
 
   const detect = async (): Promise<void> => {
     setDetecting(true)
@@ -119,9 +415,9 @@ export function SettingsPage(): JSX.Element {
   }
 
   const ACTION_LABEL: Record<ReturnType<typeof updateAction>, string> = {
-    downloadAndRun: '确认下载并运行',
-    download: '确认下载',
-    openLink: '确认打开链接'
+    downloadAndRun: t('settings.update.action.downloadAndRun'),
+    download: t('settings.update.action.download'),
+    openLink: t('settings.update.action.openLink')
   }
 
   /** 关闭更新日志弹窗后，按链接类型执行下载 / 运行 / 打开。 */
@@ -167,45 +463,54 @@ export function SettingsPage(): JSX.Element {
   return (
     <div className="flex h-full flex-col gap-5">
       <div>
-        <h1 className="display">设置</h1>
-        <p className="caption mt-1">自定义启动器的外观与运行方式</p>
+        <h1 className="display">{t('settings.title')}</h1>
+        <p className="caption mt-1">{t('settings.subtitle')}</p>
       </div>
 
       <div className="min-h-0 flex-1 space-y-4 overflow-y-auto pr-1">
         {/* 模式 */}
-        <Section title="模式" icon="settings">
-          <Row label="运行模式">
+        <Section title={t('settings.section.mode')} icon="settings">
+          <Row label={t('settings.row.mode')}>
             <Segmented
               value={settings.mode}
               onChange={(v) => void updateSettings({ mode: v })}
               options={[
-                { value: 'normal', label: '普通模式' },
-                { value: 'local', label: '本地模式' },
-                { value: 'minimal', label: '极简模式' }
+                { value: 'normal', label: t('settings.mode.normal') },
+                { value: 'local', label: t('settings.mode.local') },
+                { value: 'minimal', label: t('settings.mode.minimal') }
               ]}
             />
           </Row>
           <p className="caption -mt-1">
-            {settings.mode === 'normal' && '完整功能与液态玻璃界面'}
-            {settings.mode === 'local' && '关闭所有联网功能（资源下载、更新、在线登录等），仅保留本地游玩'}
-            {settings.mode === 'minimal' && 'UI 二维化：去除模糊、阴影与动态背景，功能保持不变'}
+            {settings.mode === 'normal' && t('settings.mode.normal.desc')}
+            {settings.mode === 'local' && t('settings.mode.local.desc')}
+            {settings.mode === 'minimal' && t('settings.mode.minimal.desc')}
           </p>
         </Section>
 
         {/* 外观 */}
-        <Section title="外观" icon="palette">
-          <Row label="主题">
+        <Section title={t('settings.appearance')} icon="palette">
+          <Row label={t('settings.language')}>
+            <Segmented
+              value={settings.language}
+              onChange={(v) => void updateSettings({ language: v })}
+              options={LOCALES.map((l) => ({ value: l.value, label: l.label }))}
+            />
+          </Row>
+          <p className="caption -mt-1">{t('settings.language.desc')}</p>
+          <Row label={t('settings.row.theme')}>
             <Segmented
               value={settings.theme}
+              disabled={settings.autoThemeFromWallpaper}
               onChange={(v) => void updateSettings({ theme: v })}
               options={[
-                { value: 'light', label: '浅色' },
-                { value: 'dark', label: '深色' },
-                { value: 'system', label: '跟随系统' }
+                { value: 'light', label: t('settings.theme.light') },
+                { value: 'dark', label: t('settings.theme.dark') },
+                { value: 'system', label: t('settings.theme.system') }
               ]}
             />
           </Row>
-          <Row label="主题色">
+          <Row label={t('settings.row.accent')}>
             <div className="flex items-center gap-2">
               {ACCENTS.map((c) => (
                 <button
@@ -223,12 +528,12 @@ export function SettingsPage(): JSX.Element {
               />
             </div>
           </Row>
-          <Row label="背景">
+          <Row label={t('settings.row.background')}>
             <div className="flex items-center gap-2">
               {BACKGROUNDS.map((b) => (
                 <button
                   key={b.key}
-                  title={b.label}
+                  title={t(b.label)}
                   onClick={() => void updateSettings({ background: b.key })}
                   className="h-8 w-8 rounded-xl border-2 no-drag"
                   style={{
@@ -239,68 +544,261 @@ export function SettingsPage(): JSX.Element {
               ))}
             </div>
           </Row>
-          <Row label="自定义壁纸">
+          <Row label={t('settings.row.wallpaper')}>
             <div className="flex items-center gap-2">
               {wallpaperPreview && (
                 <img
                   src={wallpaperPreview}
-                  alt="壁纸预览"
+                  alt={t('settings.wallpaper.preview')}
                   className="h-8 w-12 rounded-lg object-cover"
                   style={{ border: '1px solid var(--divider)' }}
                 />
               )}
               <Button size="sm" icon="folder" disabled={wallpaperBusy} onClick={() => void chooseWallpaper()}>
-                {wallpaperBusy ? '处理中…' : settings.backgroundImage ? '更换' : '选择图片'}
+                {wallpaperBusy
+                  ? t('settings.wallpaper.processing')
+                  : settings.backgroundImage
+                    ? t('settings.wallpaper.change')
+                    : t('settings.wallpaper.choose')}
               </Button>
               {settings.backgroundImage && (
                 <Button size="sm" variant="ghost" icon="xmark" disabled={wallpaperBusy} onClick={() => void removeWallpaper()}>
-                  清除
+                  {t('settings.wallpaper.clear')}
                 </Button>
               )}
             </div>
           </Row>
-          <Row label="减少动态效果">
+          <Row label={t('settings.row.reducedMotion')}>
             <Switch
               checked={settings.reducedMotion}
               onChange={(v) => void updateSettings({ reducedMotion: v })}
             />
           </Row>
+          <Row label={t('settings.row.lowUsage')}>
+            <Switch
+              checked={settings.lowUsageMode}
+              onChange={(v) => void updateSettings({ lowUsageMode: v })}
+            />
+          </Row>
+          <p className="caption -mt-1">{t('settings.lowUsage.desc')}</p>
+
+          {/* 自动翻译（实验性，会联网） */}
+          <Row label={t('settings.row.autoTranslate')}>
+            <Switch
+              checked={settings.autoTranslateResources}
+              disabled={settings.mode === 'local' || locale === 'en'}
+              onChange={(v) => void updateSettings({ autoTranslateResources: v })}
+            />
+          </Row>
+          <p className="caption -mt-1">
+            {locale === 'en'
+              ? t('settings.exp.autoTranslate.disabledEn')
+              : t('settings.exp.autoTranslate.desc')}
+          </p>
+          {/* 子选项：仅在「自动翻译」开启后可用；关闭后只翻译简介与正文，保留资源名原文。 */}
+          {settings.autoTranslateResources && locale !== 'en' && (
+            <>
+              <Row label={t('settings.row.translateResourceNames')}>
+                <Switch
+                  checked={settings.translateResourceNames}
+                  onChange={(v) => void updateSettings({ translateResourceNames: v })}
+                />
+              </Row>
+              <Row label={t('settings.row.uapisKey')}>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="password"
+                    value={apiKeyInput}
+                    onChange={(e) => {
+                      setApiKeyInput(e.target.value)
+                      setApiKeyResult(null)
+                    }}
+                    placeholder={
+                      settings.uapisApiKeySet
+                        ? t('settings.uapisKey.placeholderSet')
+                        : t('settings.uapisKey.placeholder')
+                    }
+                    spellCheck={false}
+                    autoComplete="off"
+                    className="input w-56"
+                  />
+                  <Button
+                    size="sm"
+                    icon="check"
+                    disabled={apiKeyBusy}
+                    onClick={() => void saveApiKey()}
+                  >
+                    {apiKeyBusy ? t('settings.uapisKey.testing') : t('settings.uapisKey.save')}
+                  </Button>
+                  {settings.uapisApiKeySet && (
+                    <Button size="sm" variant="ghost" icon="xmark" disabled={apiKeyBusy} onClick={() => void clearApiKey()}>
+                      {t('settings.uapisKey.delete')}
+                    </Button>
+                  )}
+                </div>
+              </Row>
+              <p className="caption -mt-1">
+                {settings.uapisApiKeySet
+                  ? t('settings.uapisKey.statusSet')
+                  : t('settings.uapisKey.statusUnset')}
+              </p>
+              <p className="caption -mt-1">{t('settings.uapisKey.desc')}</p>
+              {apiKeyResult && (
+                <p
+                  className="caption -mt-1"
+                  style={{ color: apiKeyResult.ok ? 'var(--fill-success)' : 'var(--fill-danger)' }}
+                >
+                  {apiKeyResult.message}
+                </p>
+              )}
+            </>
+          )}
         </Section>
 
         {/* 实验性功能（多项互斥） */}
-        <Section title="实验性功能" icon="info">
-          <Row label="3D 云母（面板更厚实）">
+        <Section title={t('settings.section.experimental')} icon="info">
+          <Row label={t('settings.row.mica')}>
             <Switch
               checked={settings.experimental === 'mica'}
               onChange={(v) => void updateSettings({ experimental: v ? 'mica' : 'off' })}
             />
           </Row>
-          <Row label="仿 Mac 玻璃（苹方字体）">
+          <Row label={t('settings.row.mac')}>
             <Switch
               checked={settings.experimental === 'mac'}
               onChange={(v) => void updateSettings({ experimental: v ? 'mac' : 'off' })}
             />
           </Row>
-          <Row label="Win10 桌面（自动全屏）">
+          <Row label={t('settings.row.win10')}>
             <Switch
               checked={settings.experimental === 'win10'}
-              onChange={(v) => void updateSettings({ experimental: v ? 'win10' : 'off' })}
+              onChange={(v) => {
+                // 开启前先弹提示：该功能 Bug 较多，仅建议尝鲜 / 测试。
+                if (v) setWin10Notice(true)
+                else void updateSettings({ experimental: 'off' })
+              }}
             />
           </Row>
           <p className="caption -mt-1">
-            多项互斥：开启其一会自动关闭其它，全部关闭即回到默认界面（原毛玻璃）。
-            {settings.experimental === 'mica' &&
-              '当前：面板换成 3D 云母——近实心底色 + 受光渐变 + 倒角与三层投影，更有厚度，背景被压成一层均匀材质。'}
-            {settings.experimental === 'mac' &&
-              '当前：字体切换为苹方，玻璃更通透、文字色改为 macOS 风格，布局与功能不变。'}
-            {settings.experimental === 'win10' &&
-              '当前：进入后自动全屏并置顶，各功能以桌面图标呈现（双击打开），底部为任务栏；Minecraft 与文件资源管理器窗口会自动摆进桌面（真实窗口、可直接操作，✕ 仅收回不关闭），开始菜单里可退出启动器。'}
+            {t('settings.exp.mutex')}
+            {settings.experimental === 'mica' && t('settings.exp.mica.desc')}
+            {settings.experimental === 'mac' && t('settings.exp.mac.desc')}
+            {settings.experimental === 'win10' && t('settings.exp.win10.desc')}
           </p>
+          <Row label={t('settings.row.autoThemeWallpaper')}>
+            <Switch
+              checked={settings.autoThemeFromWallpaper}
+              onChange={(v) => void updateSettings({ autoThemeFromWallpaper: v })}
+            />
+          </Row>
+          <p className="caption -mt-1">{t('settings.exp.autoTheme.desc')}</p>
+        </Section>
+
+        {/* 开发模式 */}
+        <Section title={t('settings.section.devMode')} icon="info">
+          {!dev?.granted ? (
+            <>
+              <p className="caption">
+                {t('settings.dev.intro')}
+              </p>
+              <Row label={t('settings.dev.email')}>
+                <input
+                  type="email"
+                  value={devEmail}
+                  onChange={(e) => setDevEmail(e.target.value)}
+                  placeholder="you@example.com"
+                  className="input w-56"
+                />
+              </Row>
+              <Row label={t('settings.dev.code')}>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    maxLength={6}
+                    value={devCode}
+                    onChange={(e) => setDevCode(e.target.value.replace(/\D/g, ''))}
+                    placeholder={t('settings.dev.code.placeholder')}
+                    className="input w-28"
+                  />
+                  <Button
+                    size="sm"
+                    icon="mail"
+                    disabled={devSending || devCooldown > 0}
+                    onClick={() => void sendDevCode()}
+                  >
+                    {devSending ? t('settings.dev.sending') : devCooldown > 0 ? `${devCooldown}s` : t('settings.dev.sendCode')}
+                  </Button>
+                </div>
+              </Row>
+              <div className="flex items-center gap-2">
+                <Button variant="primary" icon="check" disabled={devVerifying} onClick={() => void verifyDevCode()}>
+                  {devVerifying ? t('settings.dev.verifying') : t('settings.dev.verify')}
+                </Button>
+              </div>
+            </>
+          ) : (
+            <>
+              <Row label={t('settings.dev.status')}>
+                <span className="chip">{t('settings.dev.status.granted')} · {dev.emailMasked || '—'}</span>
+              </Row>
+              <Row label={t('settings.dev.remaining')}>
+                <span className="chip">{formatDevRemaining(dev.expiresAt, t)}</span>
+              </Row>
+              <Row label={t('settings.dev.enabled')}>
+                <Switch checked={dev.enabled} onChange={(v) => void toggleDev(v)} />
+              </Row>
+              <Row label={t('settings.dev.security')}>
+                <Segmented
+                  value={dev.securityMode}
+                  onChange={(v) => void setDevSecurity(v)}
+                  options={[
+                    { value: 'full', label: t('settings.dev.security.full') },
+                    { value: 'warn', label: t('settings.dev.security.warn') },
+                    { value: 'off', label: t('settings.dev.security.off') }
+                  ]}
+                />
+              </Row>
+              <p className="caption -mt-1">
+                {dev.securityMode === 'full' && t('settings.dev.security.full.desc')}
+                {dev.securityMode === 'warn' && t('settings.dev.security.warn.desc')}
+                {dev.securityMode === 'off' && t('settings.dev.security.off.desc')}
+                {!dev.enabled && t('settings.dev.security.disabledNotice')}
+              </p>
+              <div className="flex flex-wrap items-center gap-2">
+                <Button size="sm" icon="info" onClick={() => void window.api.devMode.openTools()}>
+                  {t('settings.dev.openTools')}
+                </Button>
+                <Button
+                  size="sm"
+                  icon="terminal"
+                  onClick={async () => {
+                    const ok = await window.api.devMode.openDevTools()
+                    if (!ok) setDevError(t('settings.dev.openDevToolsError'))
+                    else setDevError('')
+                  }}
+                >
+                  {t('settings.dev.openDevTools')}
+                </Button>
+                <Button size="sm" variant="ghost" icon="xmark" onClick={() => void revokeDev()}>
+                  {t('settings.dev.revoke')}
+                </Button>
+              </div>
+            </>
+          )}
+          {devError && (
+            <div className="glass-soft rounded-xl p-3 text-[13px]" style={{ color: 'var(--fill-danger)' }}>
+              {devError}
+            </div>
+          )}
+          {devNotice && !devError && (
+            <div className="glass-soft rounded-xl p-3 text-[13px] opacity-80">{devNotice}</div>
+          )}
         </Section>
 
         {/* 游戏 */}
-        <Section title="游戏" icon="cube">
-          <Row label="游戏目录">
+        <Section title={t('settings.section.game')} icon="cube">
+          <Row label={t('settings.row.gameDir')}>
             <div className="flex items-center gap-2">
               <span className="caption max-w-[200px] selectable truncate">{settings.gameDir}</span>
               <Button
@@ -311,23 +809,95 @@ export function SettingsPage(): JSX.Element {
                   if (dir) void updateSettings({ gameDir: dir })
                 }}
               >
-                更改
+                {t('settings.game.change')}
               </Button>
             </div>
           </Row>
-          <Row label="版本隔离（每版本独立目录）">
+          <Row label={t('settings.row.versionIsolation')}>
             <Switch
               checked={settings.versionIsolation}
               onChange={(v) => void updateSettings({ versionIsolation: v })}
             />
           </Row>
-          <Row label="启动游戏后关闭启动器">
+          <Row label={t('settings.row.gameWindowSize')}>
+            <Segmented
+              value={settings.gameWindowSize}
+              onChange={(v) => void updateSettings({ gameWindowSize: v })}
+              options={[
+                { value: '720p', label: '720P' },
+                { value: '1080p', label: '1080P' },
+                { value: 'maximized', label: t('settings.game.size.maximized') },
+                { value: 'fullscreen', label: t('settings.game.size.fullscreen') },
+                { value: 'custom', label: t('settings.game.size.custom') }
+              ]}
+            />
+          </Row>
+          {settings.experimental === 'win10' && (
+            <p className="caption -mt-1">{t('settings.game.desktopFullscreenNotice')}</p>
+          )}
+          {/* 自定义尺寸：输入框 + 预览；超出屏幕时禁用预览并警告（启动时也会再警告一次）。 */}
+          {settings.gameWindowSize === 'custom' && (
+            <>
+              <Row label={`${t('settings.game.custom.width')} / ${t('settings.game.custom.height')}`}>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="number"
+                    min={MIN_WINDOW}
+                    max={MAX_WINDOW}
+                    value={winWText}
+                    onChange={(e) => {
+                      winSizeDirty.current = true
+                      setWinWText(e.target.value)
+                    }}
+                    onBlur={commitWindowSize}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') e.currentTarget.blur()
+                    }}
+                    className="input w-24"
+                  />
+                  <span className="caption">×</span>
+                  <input
+                    type="number"
+                    min={MIN_WINDOW}
+                    max={MAX_WINDOW}
+                    value={winHText}
+                    onChange={(e) => {
+                      winSizeDirty.current = true
+                      setWinHText(e.target.value)
+                    }}
+                    onBlur={commitWindowSize}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') e.currentTarget.blur()
+                    }}
+                    className="input w-24"
+                  />
+                  <span className="caption">px</span>
+                </div>
+              </Row>
+              {display && (
+                <>
+                  <WindowSizePreview display={display} width={previewW} height={previewH} t={t} />
+                  {previewExceed && (
+                    <p className="caption" style={{ color: 'var(--fill-danger)' }}>
+                      {t('settings.game.custom.exceed', {
+                        w: previewW,
+                        h: previewH,
+                        sw: display.width,
+                        sh: display.height
+                      })}
+                    </p>
+                  )}
+                </>
+              )}
+            </>
+          )}
+          <Row label={t('settings.row.closeOnLaunch')}>
             <Switch
               checked={settings.closeOnLaunch}
               onChange={(v) => void updateSettings({ closeOnLaunch: v })}
             />
           </Row>
-          <Row label="Debug 模式（显示启动日志）">
+          <Row label={t('settings.row.debugMode')}>
             <div className="flex items-center gap-2">
               <Switch
                 checked={settings.debugMode}
@@ -335,12 +905,12 @@ export function SettingsPage(): JSX.Element {
               />
               {settings.debugMode && (
                 <Button size="sm" icon="info" onClick={() => void window.api.debug.openWindow()}>
-                  打开日志窗口
+                  {t('settings.game.openLogWindow')}
                 </Button>
               )}
             </div>
           </Row>
-          <Row label="模组信息仅识别元数据（不联网查询 Modrinth）">
+          <Row label={t('settings.row.metadataOnly')}>
             <Switch
               checked={settings.mode === 'local' || settings.metadataOnlyMods}
               disabled={settings.mode === 'local'}
@@ -350,8 +920,8 @@ export function SettingsPage(): JSX.Element {
         </Section>
 
         {/* Java */}
-        <Section title="Java 运行时" icon="settings">
-          <Row label="自动检测">
+        <Section title={t('settings.section.java')} icon="settings">
+          <Row label={t('settings.row.javaAutoDetect')}>
             <Switch
               checked={settings.javaAutoDetect}
               onChange={(v) => void updateSettings({ javaAutoDetect: v })}
@@ -359,14 +929,24 @@ export function SettingsPage(): JSX.Element {
           </Row>
           <div className="mt-2">
             <div className="mb-2 flex items-center justify-between">
-              <span className="caption">已检测到的 Java</span>
-              <Button size="sm" icon="refresh" onClick={detect} disabled={detecting}>
-                {detecting ? '检测中' : '重新检测'}
-              </Button>
+              <span className="caption">{t('settings.java.detected')}</span>
+              <div className="flex items-center gap-2">
+                <Button size="sm" icon="folder" onClick={() => void pickJava()}>
+                  {t('settings.java.pick')}
+                </Button>
+                <Button size="sm" icon="refresh" onClick={detect} disabled={detecting}>
+                  {detecting ? t('settings.java.detecting') : t('settings.java.redetect')}
+                </Button>
+              </div>
             </div>
+            {javaPickError && (
+              <div className="mb-2 text-[12px]" style={{ color: 'var(--fill-danger, #e5484d)' }}>
+                {javaPickError}
+              </div>
+            )}
             <div className="space-y-1.5">
               {javas.length === 0 && !detecting && (
-                <div className="caption">未检测到 Java，请手动指定路径</div>
+                <div className="caption">{t('settings.java.none')}</div>
               )}
               {javas.map((j) => {
                 const active = settings.javaPath === j.path
@@ -385,7 +965,7 @@ export function SettingsPage(): JSX.Element {
                       </div>
                     </div>
                     <span className="chip">
-                      {j.vendor ?? '未知'} · {j.is64Bit ? '64位' : '32位'}
+                      {j.vendor ?? t('settings.java.unknown')} · {j.is64Bit ? t('settings.java.arch64') : t('settings.java.arch32')}
                     </span>
                   </button>
                 )
@@ -395,18 +975,18 @@ export function SettingsPage(): JSX.Element {
         </Section>
 
         {/* 下载 */}
-        <Section title="下载" icon="download">
-          <Row label="下载镜像">
+        <Section title={t('settings.section.download')} icon="download">
+          <Row label={t('settings.row.mirror')}>
             <Segmented
               value={settings.mirror}
               onChange={(v) => void updateSettings({ mirror: v })}
               options={[
-                { value: 'mojang', label: '官方源' },
+                { value: 'mojang', label: t('settings.download.mojang') },
                 { value: 'bmclapi', label: 'BMCLAPI' }
               ]}
             />
           </Row>
-          <Row label="并发连接数">
+          <Row label={t('settings.row.concurrency')}>
             <input
               type="number"
               min={1}
@@ -420,15 +1000,33 @@ export function SettingsPage(): JSX.Element {
 
         {/* 更新 */}
         {settings.mode !== 'local' && (
-          <Section title="更新" icon="refresh">
-          <Row label="当前版本">
+          <Section title={t('settings.section.update')} icon="refresh">
+          <Row label={t('settings.row.currentVersion')}>
             <span className="chip">{appVersion || '…'}</span>
           </Row>
+          <Row label={t('settings.row.autoCheckLauncher')}>
+            <Switch
+              checked={settings.autoCheckLauncherUpdate}
+              onChange={(v) => void updateSettings({ autoCheckLauncherUpdate: v })}
+            />
+          </Row>
+          <p className="caption -mt-1">
+            {t('settings.update.autoLauncher.desc')}
+          </p>
+          <Row label={t('settings.row.autoCheckHomepage')}>
+            <Switch
+              checked={settings.autoCheckHomepageUpdate}
+              onChange={(v) => void updateSettings({ autoCheckHomepageUpdate: v })}
+            />
+          </Row>
+          <p className="caption -mt-1">
+            {t('settings.update.autoHomepage.desc')}
+          </p>
           <div>
             <div className="mb-2 flex items-center justify-between">
-              <span className="text-[13px] opacity-80">检测更新</span>
+              <span className="text-[13px] opacity-80">{t('settings.update.check')}</span>
               <Button size="sm" icon="refresh" onClick={() => void checkUpdate()} disabled={updateChecking || updateStatus === 'downloading'}>
-                {updateChecking ? '检测中…' : updateStatus === 'downloading' ? '下载中…' : '检测更新'}
+                {updateChecking ? t('settings.update.checking') : updateStatus === 'downloading' ? t('settings.update.downloading') : t('settings.update.check')}
               </Button>
             </div>
 
@@ -440,7 +1038,7 @@ export function SettingsPage(): JSX.Element {
 
             {updateResult && updateStatus === 'idle' && !updateResult.hasUpdate && (
               <div className="glass-soft rounded-xl p-3 text-[13px] opacity-70">
-                已是最新版本（当前 {updateResult.currentVersion}）
+                {t('settings.update.upToDate', { v: updateResult.currentVersion })}
               </div>
             )}
 
@@ -448,7 +1046,9 @@ export function SettingsPage(): JSX.Element {
               <div className="glass-soft rounded-xl p-3">
                 <div className="mb-1 flex items-center justify-between text-[13px]">
                   <span className="font-medium">
-                    {updateStatus === 'done' ? '下载完成' : `正在下载 v${updateResult.latest.version}`}
+                    {updateStatus === 'done'
+                      ? t('settings.update.done')
+                      : t('settings.update.downloadingVersion', { v: updateResult.latest.version })}
                   </span>
                   {updateProgress && <span className="chip">{updateProgress.percent}%</span>}
                 </div>
@@ -462,11 +1062,11 @@ export function SettingsPage(): JSX.Element {
                   <>
                     <div className="mt-2 flex items-center gap-2">
                       <Button size="sm" variant="primary" icon="box" onClick={() => updatePath && void window.api.shell.openPath(updatePath)}>
-                        立即安装
+                        {t('settings.update.install')}
                       </Button>
                     </div>
                     {updatePath && (
-                      <div className="caption selectable mt-2 break-all opacity-70">已保存到：{updatePath}</div>
+                      <div className="caption selectable mt-2 break-all opacity-70">{t('settings.update.savedTo', { path: updatePath })}</div>
                     )}
                   </>
                 )}
@@ -481,7 +1081,7 @@ export function SettingsPage(): JSX.Element {
             {updateResult?.latest && updateStatus === 'opened' && (
               <div className="glass-soft rounded-xl p-3">
                 <div className="mb-1 text-[13px] font-medium">
-                  已在浏览器中打开下载链接（v{updateResult.latest.version}）
+                  {t('settings.update.opened', { v: updateResult.latest.version })}
                 </div>
                 <div className="caption selectable break-all opacity-70">{updateResult.latest.url}</div>
                 {updateResult.latest.notes && (
@@ -495,6 +1095,49 @@ export function SettingsPage(): JSX.Element {
         </Section>
         )}
       </div>
+
+      {/* 开启 Win10 桌面模式前的提示：功能稳定性较差，仅建议尝鲜 / 测试 */}
+      <AnimatePresence>
+        {win10Notice && (
+          <motion.div
+            className="fixed inset-0 z-[115] flex items-center justify-center p-6"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+          >
+            <div className="absolute inset-0" style={{ background: 'var(--scrim)' }} onClick={() => setWin10Notice(false)} />
+            <motion.div
+              className="glass-strong relative z-10 w-full max-w-md rounded-[32px] p-7"
+              initial={{ scale: 0.92, opacity: 0, y: 24 }}
+              animate={{ scale: 1, opacity: 1, y: 0 }}
+              exit={{ scale: 0.94, opacity: 0, y: 16 }}
+              transition={{ type: 'spring', bounce: 0.2, duration: 0.45 }}
+            >
+              <div className="mb-2 flex items-center gap-2">
+                <Icon name="info" size={20} style={{ color: 'var(--fill-danger)' }} />
+                <span className="title">{t('settings.win10.title')}</span>
+              </div>
+              <p className="caption mt-3">{t('settings.win10.desc')}</p>
+              <div className="mt-6 flex items-center gap-2">
+                <Button className="flex-1" onClick={() => setWin10Notice(false)}>
+                  {t('settings.common.cancel')}
+                </Button>
+                <Button
+                  variant="primary"
+                  className="flex-1"
+                  icon="check"
+                  onClick={() => {
+                    setWin10Notice(false)
+                    void updateSettings({ experimental: 'win10' })
+                  }}
+                >
+                  {t('settings.win10.confirm')}
+                </Button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {/* 更新日志确认弹窗：先展示更新内容，确认后再下载 / 运行 / 打开链接 */}
       <AnimatePresence>
@@ -515,17 +1158,17 @@ export function SettingsPage(): JSX.Element {
             >
               <div className="mb-2 flex items-center gap-2">
                 <Icon name="download" size={20} style={{ color: 'var(--fill-primary)' }} />
-                <span className="title">发现新版本 v{pendingUpdate.version}</span>
+                <span className="title">{t('settings.updLog.title', { v: pendingUpdate.version })}</span>
               </div>
               <div className="mb-5 mt-3">
-                <div className="caption mb-2">更新日志</div>
+                <div className="caption mb-2">{t('settings.updLog.notes')}</div>
                 <div className="glass-soft max-h-[38vh] selectable overflow-y-auto whitespace-pre-wrap break-words rounded-2xl p-4 text-[13px] leading-relaxed opacity-80">
-                  {pendingUpdate.notes?.trim() || '暂无更新日志。'}
+                  {pendingUpdate.notes?.trim() || t('settings.updLog.empty')}
                 </div>
               </div>
               <div className="flex items-center gap-2">
                 <Button className="flex-1" onClick={() => setPendingUpdate(null)}>
-                  取消
+                  {t('settings.common.cancel')}
                 </Button>
                 <Button variant="primary" className="flex-1" icon="check" onClick={() => void confirmPending()}>
                   {ACTION_LABEL[updateAction(pendingUpdate)]}
@@ -535,8 +1178,19 @@ export function SettingsPage(): JSX.Element {
           </motion.div>
         )}
       </AnimatePresence>
+
     </div>
   )
+}
+
+/** 把开发模式到期时间格式化为「剩余 x 小时 y 分钟」。 */
+function formatDevRemaining(expiresAt: number, t: TFunction): string {
+  const ms = expiresAt - Date.now()
+  if (ms <= 0) return t('settings.dev.expired')
+  const totalMin = Math.floor(ms / 60000)
+  const h = Math.floor(totalMin / 60)
+  const m = totalMin % 60
+  return h > 0 ? t('settings.dev.remainingHM', { h, m }) : t('settings.dev.remainingM', { m })
 }
 
 function formatBytes(n: number): string {

@@ -1,5 +1,5 @@
 appId: com.hungercat.launcher
-productName: Hunger Cat Launcher
+productName: HungerCat MineCraft Launcher
 directories:
   output: release
   buildResources: build
@@ -17,7 +17,8 @@ asarUnpack:
 extraResources:
   - from: build/icon.png
     to: icon.png
-compression: normal
+# 最高压缩：仅影响安装包内的资源打包率（功能 / UI / 动画均不变），可显著减小安装包体积。
+compression: maximum
 mac:
   category: public.app-category.games
   target:
@@ -36,7 +37,7 @@ nsis:
   oneClick: false
   allowToChangeInstallationDirectory: true
   createDesktopShortcut: true
-  shortcutName: Hunger Cat Launcher
+  shortcutName: HungerCat MineCraft Launcher
   installerIcon: build/icon.ico
   uninstallerIcon: build/icon.ico
   installerHeaderIcon: build/icon.ico

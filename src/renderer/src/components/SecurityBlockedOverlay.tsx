@@ -21,7 +21,7 @@ export function SecurityBlockedOverlay({
   alert: SecurityAlert
   onClose: () => void
 }): JSX.Element {
-  const { openFileManager } = useApp()
+  const { t, openFileManager } = useApp()
   return (
     <motion.div
       className="fixed inset-0 z-[200] flex items-center justify-center p-6"
@@ -30,7 +30,7 @@ export function SecurityBlockedOverlay({
       exit={{ opacity: 0 }}
       role="alertdialog"
       aria-modal="true"
-      aria-label="主页脚本已被安全策略停用"
+      aria-label={t('hp.sec.aria')}
     >
       <div className="absolute inset-0" style={{ background: 'var(--scrim)' }} />
       <motion.div
@@ -47,8 +47,8 @@ export function SecurityBlockedOverlay({
             <Icon name="xmark" size={24} />
           </div>
           <div className="min-w-0">
-            <h2 className="title">已立即停用该自定义主页</h2>
-            <p className="caption">脚本运行时被检测到危险代码，已封锁并退回内置界面</p>
+            <h2 className="title">{t('hp.sec.title')}</h2>
+            <p className="caption">{t('hp.sec.subtitle')}</p>
           </div>
         </div>
 
@@ -59,32 +59,29 @@ export function SecurityBlockedOverlay({
           >
             <div className="mb-1 flex items-center gap-1.5 font-semibold">
               <Icon name="xmark" size={14} />
-              <span>命中的危险行为</span>
+              <span>{t('hp.sec.reason')}</span>
             </div>
             <div className="selectable break-all">{alert.reason}</div>
           </div>
 
           {alert.detail && (
             <div className="glass-soft rounded-2xl px-3.5 py-2.5">
-              <div className="caption mb-1">拦截位置</div>
+              <div className="caption mb-1">{t('hp.sec.location')}</div>
               <div className="selectable break-all text-[12.5px]">{alert.detail}</div>
             </div>
           )}
 
           <div className="glass-soft flex items-center justify-between gap-3 rounded-2xl px-3.5 py-2.5">
-            <div className="caption">被封锁的脚本</div>
+            <div className="caption">{t('hp.sec.blockedScript')}</div>
             <span className="chip shrink-0">{alert.homepageId}</span>
           </div>
 
           <p className="caption leading-relaxed">
-            删除 / 修改文件、格式化磁盘、伪装（混淆）代码这类行为一旦在运行时出现，就会
-            立即停用该主页并永久封锁它。封锁不会因为脚本内容改动而解除：
-            请在「主页 → 脚本目录」里自行检查该脚本，确认无误后再删除并重新导入。
+            {t('hp.sec.note1')}
           </p>
 
           <p className="caption leading-relaxed">
-            为确保你能看到本提示，启动器已被切到系统全屏（连 Windows 任务栏一起盖住）；
-            点「我已了解」后会恢复成原来的窗口大小。
+            {t('hp.sec.note2')}
           </p>
         </div>
 
@@ -104,10 +101,10 @@ export function SecurityBlockedOverlay({
               })
             }}
           >
-            打开脚本目录
+            {t('hp.sec.openDir')}
           </Button>
           <Button className="flex-1" onClick={onClose}>
-            我已了解
+            {t('hp.sec.gotIt')}
           </Button>
         </div>
       </motion.div>

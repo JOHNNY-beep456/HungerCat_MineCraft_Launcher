@@ -18,7 +18,7 @@ import { renderPage, type ResourcePreset } from './pages/router'
 import { InstanceManagePage } from './pages/InstanceManagePage'
 
 function Shell(): JSX.Element {
-  const { settings, reloadAccounts, securityAlert, clearSecurityAlert, fileManagerPath, closeFileManager } = useApp()
+  const { settings, t, reloadAccounts, securityAlert, clearSecurityAlert, fileManagerPath, closeFileManager, lowUsageNotice, dismissLowUsageNotice, launcherUpdateNotice, dismissLauncherUpdateNotice } = useApp()
   const [page, setPage] = useState<PageId>('home')
   const [managingId, setManagingId] = useState<string | null>(null)
   const [tokenExpiredError, setTokenExpiredError] = useState<string | null>(null)
@@ -44,7 +44,7 @@ function Shell(): JSX.Element {
     setTimeout(() => setResourcePreset(null), 0)
   }
 
-  // 启动时检测选中账户令牌：仅微软账户，若已/即将过期则自动刷新，刷新失败弹窗提醒。
+  // 启动时检测选中账户令牌：微软 / 第三方账号若已/即将过期则自动刷新，刷新失败弹窗提醒。
   useEffect(() => {
     let alive = true
     void (async () => {
@@ -197,14 +197,14 @@ function Shell(): JSX.Element {
                     <Icon name="user" size={22} />
                   </div>
                   <div>
-                    <h2 className="title">账户令牌已过期</h2>
-                    <p className="caption">无法自动刷新，请重新登录微软账号</p>
+                    <h2 className="title">{t('shell.tokenExpired.title')}</h2>
+                    <p className="caption">{t('shell.tokenExpired.subtitle')}</p>
                   </div>
                 </div>
                 <p className="caption selectable mb-5">{tokenExpiredError}</p>
                 <div className="flex gap-2">
                   <Button className="flex-1" onClick={() => setTokenExpiredError(null)}>
-                    稍后处理
+                    {t('shell.tokenExpired.later')}
                   </Button>
                   <Button
                     variant="primary"
@@ -214,7 +214,113 @@ function Shell(): JSX.Element {
                       navigate('accounts')
                     }}
                   >
-                    前往登录
+                    {t('shell.tokenExpired.goLogin')}
+                  </Button>
+                </div>
+              </motion.div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        {/* 首次启动检测到低配电脑：已自动开启「超低占用模式」的一次性提醒。 */}
+        <AnimatePresence>
+          {lowUsageNotice && (
+            <motion.div
+              className="fixed inset-0 z-[110] flex items-center justify-center p-6"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+            >
+              <div className="absolute inset-0" style={{ background: 'var(--scrim)' }} onClick={dismissLowUsageNotice} />
+              <motion.div
+                className="glass-strong relative z-10 w-full max-w-md rounded-[28px] p-7"
+                initial={{ scale: 0.95, opacity: 0, y: 16 }}
+                animate={{ scale: 1, opacity: 1, y: 0 }}
+                exit={{ scale: 0.96, opacity: 0, y: 12 }}
+                transition={{ type: 'spring', bounce: 0.16, duration: 0.45 }}
+              >
+                <div className="mb-3 flex items-center gap-3">
+                  <div
+                    className="flex h-11 w-11 items-center justify-center rounded-2xl text-white"
+                    style={{ background: 'var(--fill-primary)' }}
+                  >
+                    <Icon name="info" size={22} />
+                  </div>
+                  <div>
+                    <h2 className="title">{t('shell.lowUsage.title')}</h2>
+                    <p className="caption">{t('shell.lowUsage.subtitle')}</p>
+                  </div>
+                </div>
+                <p className="caption selectable mb-5">
+                  {t('shell.lowUsage.detail')}
+                </p>
+                <div className="flex gap-2">
+                  <Button className="flex-1" onClick={dismissLowUsageNotice}>
+                    {t('shell.lowUsage.confirm')}
+                  </Button>
+                  <Button
+                    variant="primary"
+                    className="flex-1"
+                    onClick={() => {
+                      dismissLowUsageNotice()
+                      navigate('settings')
+                    }}
+                  >
+                    {t('shell.lowUsage.goSettings')}
+                  </Button>
+                </div>
+              </motion.div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        {/* 启动时自动检查到新版本：提示前往「设置 → 更新」查看更新日志并下载。 */}
+        <AnimatePresence>
+          {launcherUpdateNotice && (
+            <motion.div
+              className="fixed inset-0 z-[112] flex items-center justify-center p-6"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+            >
+              <div className="absolute inset-0" style={{ background: 'var(--scrim)' }} onClick={dismissLauncherUpdateNotice} />
+              <motion.div
+                className="glass-strong relative z-10 w-full max-w-md rounded-[28px] p-7"
+                initial={{ scale: 0.95, opacity: 0, y: 16 }}
+                animate={{ scale: 1, opacity: 1, y: 0 }}
+                exit={{ scale: 0.96, opacity: 0, y: 12 }}
+                transition={{ type: 'spring', bounce: 0.16, duration: 0.45 }}
+              >
+                <div className="mb-3 flex items-center gap-3">
+                  <div
+                    className="flex h-11 w-11 items-center justify-center rounded-2xl text-white"
+                    style={{ background: 'var(--fill-primary)' }}
+                  >
+                    <Icon name="download" size={22} />
+                  </div>
+                  <div>
+                    <h2 className="title">{t('shell.update.title', { n: launcherUpdateNotice.version })}</h2>
+                    <p className="caption">{t('shell.update.subtitle')}</p>
+                  </div>
+                </div>
+                {launcherUpdateNotice.notes?.trim() && (
+                  <div className="glass-soft mb-5 max-h-[30vh] selectable overflow-y-auto whitespace-pre-wrap break-words rounded-2xl p-4 text-[13px] leading-relaxed opacity-80">
+                    {launcherUpdateNotice.notes}
+                  </div>
+                )}
+                <div className="flex gap-2">
+                  <Button className="flex-1" onClick={dismissLauncherUpdateNotice}>
+                    {t('shell.update.later')}
+                  </Button>
+                  <Button
+                    variant="primary"
+                    className="flex-1"
+                    onClick={() => {
+                      dismissLauncherUpdateNotice()
+                      navigate('settings')
+                    }}
+                  >
+                    {t('shell.update.goUpdate')}
                   </Button>
                 </div>
               </motion.div>

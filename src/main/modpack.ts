@@ -22,7 +22,7 @@ import { installVersion } from './downloader'
 import { loaderVersions, installLoader } from './loaders'
 import { forgeVersions, installForge } from './forge'
 import { pickInstallerJava, requiredJavaForMc } from './java'
-import { settings } from './store'
+import { settings, allVersionDirs } from './store'
 import { extractArchive, listArchive, readArchiveText, zipDirectory } from './archive'
 
 /* ------------------------------------------------------------------ */
@@ -563,7 +563,7 @@ async function installInstance(
   if (loader === 'forge' || loader === 'neoforge') {
     await downloadInstance(mcVersion, gameDir, kind, onProgress, signal)
     const s = settings.get()
-    const java = await pickInstallerJava(gameDir, s.javaPath, requiredJavaForMc(mcVersion))
+    const java = await pickInstallerJava(allVersionDirs(s).map((d) => d.path), s.javaPath, requiredJavaForMc(mcVersion))
     if (!java) throw new Error('未找到 Java，无法安装 Forge/NeoForge 加载器')
     const id = await installForge(loader as ForgeKind, mcVersion, loaderVersion, gameDir, java.path, onLog, instanceName, onProgress, signal)
     await downloadInstance(id, gameDir, kind, onProgress, signal)

@@ -1,5 +1,5 @@
-import { app, BrowserWindow, ipcMain, shell, dialog, nativeTheme, type WebContents } from 'electron'
-import { join } from 'path'
+import { app, BrowserWindow, ipcMain, shell, dialog, nativeTheme, screen, type WebContents } from 'electron'
+import { join, basename } from 'path'
 import { totalmem, freemem } from 'os'
 import type { ChildProcessWithoutNullStreams } from 'child_process'
 import type {
@@ -15,23 +15,31 @@ import type {
   UpdateInfo,
   DebugLogEntry,
   HomepageSubmitPayload,
-  NativeWindowRect
+  HomepageUpdate,
+  NativeWindowRect,
+  DevModeStatus,
+  ConflictPolicy,
+  DownloadPhase,
+  ResourceUpdateInfo
 } from '@shared/types'
-import { accounts, settings, createOfflineAccount } from './store'
+import { accounts, settings, createOfflineAccount, activeGameDir, allVersionDirs, detectHardware } from './store'
+import { clearUapisKey, getUapisKey, setUapisKey } from './secret'
 import { initLogger, getLogBuffer, subscribeLogs } from './logger'
-import { startNetworkWorker, stopNetworkWorker } from './broker'
+import { startNetworkWorker, stopNetworkWorker, netRequest } from './broker'
 import { DedupCache } from './ipc-cache'
 import { DeviceCodeSession, refreshAccount } from './auth'
-import { loginYggdrasil, refreshYggdrasil, ensureAuthlibInjector } from './yggdrasil'
+import { loginYggdrasil, commitYggdrasilProfiles, refreshYggdrasil, ensureAuthlibInjector } from './yggdrasil'
 import { fetchVersionManifest, resolveVersionJson, createVanillaInstance } from './versions'
 import { listInstalled } from './installed'
+import { scanExternalVersions, importExternalVersion } from './import-version'
 import { installVersion } from './downloader'
 import { detectJava, installJava, javaVersionAt, pickJava, pickInstallerJava, requiredJavaForMc } from './java'
 import { spawnGame } from './launcher'
 import { loaderVersions, installLoader } from './loaders'
 import { forgeVersions, installForge } from './forge'
-import { searchMods, getVersions as getModVersions, installMod, downloadTo, findFabricApi } from './modrinth'
+import { searchMods, getVersions as getModVersions, installMod, downloadTo, findFabricApi, fetchProject } from './modrinth'
 import { listResources, removeResource, openResourceDir } from './resources'
+import { applyResourceUpdate, checkResourceUpdates } from './resource-updates'
 import {
   createFile,
   listDir,
@@ -45,7 +53,18 @@ import {
 } from './files'
 import { clearWallpaper, pickWallpaper, wallpaperData } from './wallpaper'
 import { probeModpack, importModpack, importModpackFromUrl, exportModpack, collectExportInventory, downloadModpack } from './modpack'
-import { fetchAbout, fetchAgreement, fetchUpdateInfo, downloadUpdate, runUpdate, compareVersions } from './server'
+import { fetchAbout, fetchAgreement, fetchUpdateInfo, downloadUpdate, runUpdate, compareVersions, isPrerelease } from './server'
+import {
+  devModeStatus,
+  enforceDevModeExpiry,
+  revokeDevMode,
+  sendDevModeCode,
+  setDevModeBroadcaster,
+  setDevModeEnabled,
+  setDevModeSecurityMode,
+  startDevModeExpiryWatch,
+  verifyDevMode
+} from './devmode'
 import {
   focusWindow,
   isNativeWindowSupported,
@@ -55,6 +74,7 @@ import {
   releaseAll,
   releaseWindow,
   resyncAll,
+  setDragging,
   setHoleVisible,
   setHost
 } from './win32-window'
@@ -70,6 +90,8 @@ import {
   blockHomepage,
   openHomepageDir,
   fetchMarket,
+  checkHomepageUpdates,
+  updateHomepage,
   submitHomepage,
   sendEmailCode,
   installNumbered
@@ -92,18 +114,26 @@ import {
 let mainWindow: BrowserWindow | null = null
 let debugWindow: BrowserWindow | null = null
 let debugLogListener: ((entry: DebugLogEntry) => void) | null = null
+/** 开发模式：独立「开发者工具（F12）」窗口。 */
+let devWindow: BrowserWindow | null = null
 let authSession: DeviceCodeSession | null = null
 let gameProcess: ChildProcessWithoutNullStreams | null = null
-let downloadAbort: AbortController | null = null
-const modAborts = new Set<AbortController>()
+/** 全部下载任务的取消控制器，按 taskId 区分（版本安装 / Java / 资源下载共用）。 */
+const downloadAborts = new Map<string, AbortController>()
+// ---- 实验性 Win10 桌面的「强置顶外壳」状态 ----
+// 桌面模式要连 Windows 的任务栏与开始菜单都盖住：主窗口全屏 + 最高层级置顶 +
+// 不进系统任务栏。只设一次不够 —— 别的程序抢到前台后系统会重排顶层窗口，置顶
+// 被顶掉任务栏就冒出来了，所以进入该模式期间用定时器把外壳重新钉回去。
+let desktopShellOn = false
+let desktopShellTimer: ReturnType<typeof setInterval> | null = null
 // 高频重复读取通道的去抖 + 结果缓存：多个页面挂载时会独立调用同一 channel，
 // 并发重复请求合并为一次底层执行；版本变更时显式失效保证即时刷新。
 const versionsCache = new DedupCache(5 * 60 * 1000) // 原版版本清单：TTL 5min（mirror 固定，清单很少变）
 const installedCache = new DedupCache(5 * 1000) // 已安装版本/世界/服务器列表：TTL 5s（本地扫描，变化快）
 
-/** 已装版本列表缓存 key：gameDir + 隔离策略决定扫描范围。 */
+/** 已装版本列表缓存 key：当前版本目录 + 隔离策略决定扫描范围。 */
 function installedCacheKey(s: ReturnType<typeof settings.get>): string {
-  return `${s.gameDir}|${s.versionIsolation}|${s.isolatedVersions.join(',')}`
+  return `${activeGameDir(s)}|${s.versionIsolation}|${s.isolatedVersions.join(',')}`
 }
 
 /* ------------------------------------------------------------------ */
@@ -165,6 +195,18 @@ function isExternalNavTarget(rawUrl: string): boolean {
   if (dev && url.startsWith(dev)) return false
   if (url.startsWith('//')) return true
   return /^https?:\/\//i.test(url)
+}
+
+/**
+ * 把主窗口重新钉成「强置顶外壳」。
+ * 光在进入桌面模式时设一次不够：别的程序（尤其全屏游戏 / 系统弹窗）抢到前台后，
+ * Windows 会重排顶层窗口，置顶失效，任务栏与开始菜单就会冒出来盖住桌面。
+ */
+function pinDesktopShell(): void {
+  const w = mainWindow
+  if (!desktopShellOn || !w || w.isDestroyed()) return
+  // 只维持「普通全屏」，不再强置顶：避免盖住系统任务栏与其它程序（与常见全屏应用一致）。
+  if (!w.isFullScreen()) w.setFullScreen(true)
 }
 
 function createWindow(): void {
@@ -285,6 +327,74 @@ function closeDebugWindow(): void {
   if (debugWindow && !debugWindow.isDestroyed()) debugWindow.close()
 }
 
+/**
+ * 开发模式：打开独立「开发者工具（F12）」窗口。
+ * 单独开窗而非在主界面内嵌面板，避免内容过多把主界面挤乱（用户明确要求）。
+ * 仅当开发模式处于开启状态时允许打开。
+ */
+function createDevWindow(): void {
+  if (enforceDevModeExpiry()) broadcastDevMode()
+  if (!devModeStatus().enabled) return
+  if (devWindow && !devWindow.isDestroyed()) {
+    if (devWindow.isMinimized()) devWindow.restore()
+    devWindow.focus()
+    return
+  }
+  const iconPath = app.isPackaged
+    ? join(process.resourcesPath, 'icon.png')
+    : join(app.getAppPath(), 'build', 'icon.png')
+  devWindow = new BrowserWindow({
+    width: 900,
+    height: 640,
+    minWidth: 560,
+    minHeight: 400,
+    title: '开发者工具 - 开发模式',
+    show: false,
+    backgroundColor: '#0b0d14',
+    icon: iconPath,
+    autoHideMenuBar: true,
+    webPreferences: {
+      preload: join(__dirname, '../preload/index.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: false
+    }
+  })
+
+  devWindow.once('ready-to-show', () => devWindow?.show())
+
+  const rendererUrl = process.env['ELECTRON_RENDERER_URL']
+  if (rendererUrl) {
+    devWindow.loadURL(`${rendererUrl}?window=devtools`)
+  } else {
+    devWindow.loadFile(join(__dirname, '../renderer/index.html'), { query: { window: 'devtools' } })
+  }
+
+  devWindow.on('closed', () => {
+    devWindow = null
+  })
+}
+
+/** 关闭独立开发者工具窗口（关闭开发模式 / 授权失效时调用）。 */
+function closeDevWindow(): void {
+  if (devWindow && !devWindow.isDestroyed()) devWindow.close()
+}
+
+/** 关闭主窗口的原生 Chromium DevTools（关闭开发模式 / 授权失效时调用）。 */
+function closeNativeDevTools(): void {
+  if (mainWindow && !mainWindow.isDestroyed() && mainWindow.webContents.isDevToolsOpened()) {
+    mainWindow.webContents.closeDevTools()
+  }
+}
+
+/** 把开发模式状态广播给全部窗口（主窗口设置页 + 开发者工具窗口）。 */
+function broadcastDevMode(): void {
+  const s = devModeStatus()
+  for (const w of BrowserWindow.getAllWindows()) {
+    if (!w.isDestroyed()) w.webContents.send('devmode:changed', s)
+  }
+}
+
 function sendToSender(sender: WebContents, channel: string, payload: unknown): void {
   if (!sender.isDestroyed()) sender.send(channel, payload)
 }
@@ -375,7 +485,10 @@ function registerIpc(): void {
     authSession = null
   })
   ipcMain.handle('auth:refresh', async (_e, account: MinecraftAccount) => {
-    const updated = await refreshAccount(account)
+    // 按认证类型分派，与启动前的刷新逻辑保持一致：第三方（Yggdrasil）账号没有 refreshToken，
+    // 必须走 refreshYggdrasil；否则会被微软链路当成「缺少刷新令牌」而刷新失败。
+    const updated =
+      account.authType === 'yggdrasil' ? await refreshYggdrasil(account) : await refreshAccount(account)
     accounts.upsert(updated)
     return updated
   })
@@ -392,10 +505,18 @@ function registerIpc(): void {
     return acc
   })
   ipcMain.handle('accounts:addYggdrasil', async (_e, server: string, email: string, password: string) => {
-    const acc = await loginYggdrasil(server, email, password)
-    accounts.upsert(acc)
-    accounts.select(acc.id)
-    return acc
+    const result = await loginYggdrasil(server, email, password)
+    // 多角色：先不建号，交给界面弹窗选择（可多选）后再提交。
+    if (result.kind === 'select') return { profiles: result.profiles }
+    accounts.upsert(result.account)
+    accounts.select(result.account.id)
+    return { account: result.account }
+  })
+  ipcMain.handle('accounts:addYggdrasilProfiles', (_e, ids: string[]) => {
+    const list = commitYggdrasilProfiles(ids)
+    for (const acc of list) accounts.upsert(acc)
+    if (list[0]) accounts.select(list[0].id)
+    return list
   })
 
   // ---- Versions ----
@@ -403,26 +524,92 @@ function registerIpc(): void {
     const mirror = settings.get().mirror
     return versionsCache.get(`manifest:${mirror}`, () => fetchVersionManifest(mirror))
   })
-  ipcMain.handle('versions:get', (_e, id: string) =>
-    resolveVersionJson(id, settings.get().mirror, settings.get().gameDir)
-  )
+  ipcMain.handle('versions:get', (_e, id: string) => {
+    const s = settings.get()
+    return resolveVersionJson(id, s.mirror, activeGameDir(s))
+  })
   ipcMain.handle('versions:createVanilla', async (_e, baseVersion: string, customName: string) => {
-    await createVanillaInstance(settings.get().gameDir, baseVersion, customName)
+    await createVanillaInstance(activeGameDir(settings.get()), baseVersion, customName)
     installedCache.invalidateAll()
   })
+  // 从其它 .minecraft 导入版本：先扫描列出（标注重名），再按策略导入。
+  ipcMain.handle('versions:scanExternal', (_e, mcDir: string) =>
+    scanExternalVersions(mcDir, activeGameDir(settings.get()))
+  )
+  ipcMain.handle(
+    'versions:importExternal',
+    async (_e, mcDir: string, versionId: string, onConflict: ConflictPolicy) => {
+      const r = await importExternalVersion(mcDir, versionId, activeGameDir(settings.get()), onConflict)
+      installedCache.invalidateAll()
+      return r
+    }
+  )
 
   // ---- Installed versions / worlds / servers ----
   ipcMain.handle('installed:list', () => {
     const s = settings.get()
     return installedCache.get(installedCacheKey(s), () =>
-      listInstalled(s.gameDir, s.versionIsolation, s.isolatedVersions)
+      listInstalled(activeGameDir(s), s.versionIsolation, s.isolatedVersions)
     )
+  })
+
+  // ---- 版本目录（多版本列表根目录） ----
+  ipcMain.handle('versionDirs:list', () => allVersionDirs(settings.get()))
+  ipcMain.handle('versionDirs:add', (_e, input: { path: string; alias?: string }) => {
+    const s = settings.get()
+    const path = (input?.path ?? '').trim()
+    if (!path) return allVersionDirs(s)
+    if (path === s.gameDir || s.versionDirs.some((d) => d.path === path)) return allVersionDirs(s)
+    const id = `dir-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
+    settings.set({
+      versionDirs: [...s.versionDirs, { id, alias: (input.alias ?? '').trim(), path }]
+    })
+    installedCache.invalidateAll()
+    return allVersionDirs(settings.get())
+  })
+  ipcMain.handle('versionDirs:update', (_e, id: string, patch: { alias?: string; path?: string }) => {
+    const s = settings.get()
+    if (id === 'default') {
+      // 默认目录只允许改别名（其路径即设置页的 gameDir），此处不改路径。
+      return allVersionDirs(s)
+    }
+    settings.set({
+      versionDirs: s.versionDirs.map((d) =>
+        d.id === id
+          ? {
+              ...d,
+              alias: patch.alias !== undefined ? patch.alias.trim() : d.alias,
+              path: patch.path && patch.path.trim() ? patch.path.trim() : d.path
+            }
+          : d
+      )
+    })
+    installedCache.invalidateAll()
+    return allVersionDirs(settings.get())
+  })
+  ipcMain.handle('versionDirs:remove', (_e, id: string) => {
+    if (id === 'default') return allVersionDirs(settings.get())
+    const s = settings.get()
+    settings.set({
+      versionDirs: s.versionDirs.filter((d) => d.id !== id),
+      selectedVersionDirId: s.selectedVersionDirId === id ? '' : s.selectedVersionDirId
+    })
+    installedCache.invalidateAll()
+    return allVersionDirs(settings.get())
+  })
+  ipcMain.handle('versionDirs:select', (_e, id: string) => {
+    const s = settings.get()
+    const valid = id === 'default' || s.versionDirs.some((d) => d.id === id)
+    const next = valid ? (id === 'default' ? '' : id) : ''
+    settings.set({ selectedVersionDirId: next })
+    installedCache.invalidateAll()
+    return next || 'default'
   })
 
   // ---- Mod loaders (Fabric / Quilt) ----
   ipcMain.handle('loaders:versions', (_e, kind: LoaderKind, mc: string) => loaderVersions(kind, mc))
   ipcMain.handle('loaders:install', async (_e, kind: LoaderKind, mc: string, loader: string, customId?: string) => {
-    const id = await installLoader(kind, mc, loader, settings.get().gameDir, customId)
+    const id = await installLoader(kind, mc, loader, activeGameDir(settings.get()), customId)
     installedCache.invalidateAll()
     return id
   })
@@ -431,36 +618,52 @@ function registerIpc(): void {
   ipcMain.handle('forge:versions', (_e, kind: ForgeKind, mc: string) => forgeVersions(kind, mc))
   ipcMain.handle('forge:install', async (event, kind: ForgeKind, mc: string, version: string, customId?: string) => {
     const s = settings.get()
-    const jr = await pickInstallerJava(s.gameDir, s.javaPath, requiredJavaForMc(mc))
+    const dir = activeGameDir(s)
+    const jr = await pickInstallerJava(allVersionDirs(s).map((d) => d.path), s.javaPath, requiredJavaForMc(mc))
     if (!jr) throw new Error('未找到可用的 Java，无法运行安装器（请在「设置」中指定 Java 路径）')
-    const id = await installForge(kind, mc, version, s.gameDir, jr.path, (line) => {
-      sendToSender(event.sender, 'forge:log', line)
-    }, customId, (p) => {
-      sendToSender(event.sender, 'download:progress', p)
-    })
-    installedCache.invalidateAll()
-    return id
+    // 安装器下载的 Java 包同样纳入并发下载管理：登记独立控制器，进度带 taskId，
+    // 这样多个下载并行时互不覆盖，也能被「进度」页单独取消。
+    const taskId = customId || `${kind}-${mc}-${version}`
+    const controller = new AbortController()
+    downloadAborts.set(taskId, controller)
+    try {
+      const id = await installForge(kind, mc, version, dir, jr.path, (line) => {
+        sendToSender(event.sender, 'forge:log', line)
+      }, customId, (p) => {
+        sendToSender(event.sender, 'download:progress', { ...p, taskId })
+      }, controller.signal)
+      installedCache.invalidateAll()
+      return id
+    } finally {
+      downloadAborts.delete(taskId)
+    }
   })
 
   // ---- Download / install ----
   ipcMain.handle('download:install', async (event, id: string) => {
     const s = settings.get()
-    const json = await resolveVersionJson(id, s.mirror, s.gameDir)
-    downloadAbort = new AbortController()
+    const dir = activeGameDir(s)
+    const json = await resolveVersionJson(id, s.mirror, dir)
+    const controller = new AbortController()
+    downloadAborts.set(id, controller)
     try {
-      await installVersion(json, s.gameDir, s.mirror, s.maxDownloadConcurrency, (p) => {
+      await installVersion(json, dir, s.mirror, s.maxDownloadConcurrency, (p) => {
         sendToSender(event.sender, 'download:progress', { ...p, taskId: id })
-      }, downloadAbort.signal)
+      }, controller.signal)
     } finally {
-      downloadAbort = null
+      downloadAborts.delete(id)
     }
     installedCache.invalidateAll()
     return { versionId: json.id, assetIndex: json.assetIndex.id }
   })
-  ipcMain.handle('download:cancel', () => {
-    downloadAbort?.abort()
-    for (const c of modAborts) c.abort()
-    modAborts.clear()
+  // 取消下载：传 taskId 只取消该任务；不传则全部取消。
+  ipcMain.handle('download:cancel', (_e, taskId?: string) => {
+    if (taskId) {
+      downloadAborts.get(taskId)?.abort()
+      return true
+    }
+    for (const c of downloadAborts.values()) c.abort()
+    downloadAborts.clear()
     return true
   })
 
@@ -471,12 +674,14 @@ function registerIpc(): void {
   ipcMain.handle('mods:versions', (_e, slug: string, loaders: string[], gameVersions: string[]) =>
     getModVersions(slug, loaders, gameVersions)
   )
+  // 「完整介绍」弹窗：拉取单个项目的完整信息（含 Markdown 正文 body）。
+  ipcMain.handle('mods:project', (_e, id: string) => fetchProject(id))
   ipcMain.handle(
     'mods:install',
     async (event, fileUrl: string, filename: string, versionId: string, type?: ModrinthType) => {
       const s = settings.get()
       const controller = new AbortController()
-      modAborts.add(controller)
+      downloadAborts.set(filename, controller)
       const emit = (received: number, total: number): void =>
         sendToSender(event.sender, 'download:progress', {
           taskId: filename,
@@ -489,7 +694,7 @@ function registerIpc(): void {
           percent: total > 0 ? Math.round((received / total) * 100) : 0
         })
       try {
-        const dest = await installMod(fileUrl, filename, s.gameDir, versionId, isIsolated(versionId), type, emit, controller.signal)
+        const dest = await installMod(fileUrl, filename, activeGameDir(s), versionId, isIsolated(versionId), type, emit, controller.signal)
         sendToSender(event.sender, 'download:progress', {
           taskId: filename,
           task: filename,
@@ -502,7 +707,7 @@ function registerIpc(): void {
         })
         return dest
       } finally {
-        modAborts.delete(controller)
+        downloadAborts.delete(filename)
       }
     }
   )
@@ -514,7 +719,7 @@ function registerIpc(): void {
 
     const s = settings.get()
     const controller = new AbortController()
-    modAborts.add(controller)
+    downloadAborts.set(file.filename, controller)
     const emit = (received: number, total: number): void =>
       sendToSender(event.sender, 'download:progress', {
         taskId: file.filename,
@@ -527,7 +732,7 @@ function registerIpc(): void {
         percent: total > 0 ? Math.round((received / total) * 100) : 0
       })
     try {
-      const dest = await installMod(file.url, file.filename, s.gameDir, versionId, isIsolated(versionId), 'mod', emit, controller.signal)
+      const dest = await installMod(file.url, file.filename, activeGameDir(s), versionId, isIsolated(versionId), 'mod', emit, controller.signal)
       sendToSender(event.sender, 'download:progress', {
         taskId: file.filename,
         task: file.filename,
@@ -540,13 +745,13 @@ function registerIpc(): void {
       })
       return dest
     } finally {
-      modAborts.delete(controller)
+      downloadAborts.delete(file.filename)
     }
   })
   ipcMain.handle('mods:downloadTo', async (event, fileUrl: string, destPath: string) => {
     const filename = destPath.split(/[\\/]/).pop() ?? destPath
     const controller = new AbortController()
-    modAborts.add(controller)
+    downloadAborts.set(filename, controller)
     const emit = (received: number, total: number): void =>
       sendToSender(event.sender, 'download:progress', {
         taskId: filename,
@@ -572,7 +777,7 @@ function registerIpc(): void {
       })
       return dest
     } finally {
-      modAborts.delete(controller)
+      downloadAborts.delete(filename)
     }
   })
 
@@ -580,22 +785,24 @@ function registerIpc(): void {
   ipcMain.handle('modpack:probe', (_e, filePath: string) => probeModpack(filePath))
   ipcMain.handle('modpack:download', async (event, url: string, filename: string) => {
     const controller = new AbortController()
-    modAborts.add(controller)
+    downloadAborts.set(filename, controller)
     try {
       return await downloadModpack(url, filename, (p) => {
         sendToSender(event.sender, 'modpack:progress', p)
         sendToSender(event.sender, 'download:progress', p)
       }, controller.signal)
     } finally {
-      modAborts.delete(controller)
+      downloadAborts.delete(filename)
     }
   })
   ipcMain.handle('modpack:import', async (event, filePath: string, customName?: string) => {
     const s = settings.get()
+    const dir = activeGameDir(s)
     const controller = new AbortController()
-    modAborts.add(controller)
+    const key = `modpack-import:${filePath}`
+    downloadAborts.set(key, controller)
     try {
-      const id = await importModpack(filePath, s.gameDir, customName ?? '', (p) => {
+      const id = await importModpack(filePath, dir, customName ?? '', (p) => {
         sendToSender(event.sender, 'modpack:progress', p)
         sendToSender(event.sender, 'download:progress', p)
       }, (line) => {
@@ -604,15 +811,16 @@ function registerIpc(): void {
       installedCache.invalidateAll()
       return { versionId: id, name: id }
     } finally {
-      modAborts.delete(controller)
+      downloadAborts.delete(key)
     }
   })
   ipcMain.handle('modpack:importFromUrl', async (event, url: string, filename: string, customName?: string) => {
     const s = settings.get()
+    const dir = activeGameDir(s)
     const controller = new AbortController()
-    modAborts.add(controller)
+    downloadAborts.set(filename, controller)
     try {
-      const id = await importModpackFromUrl(url, filename, s.gameDir, customName ?? '', (p) => {
+      const id = await importModpackFromUrl(url, filename, dir, customName ?? '', (p) => {
         sendToSender(event.sender, 'modpack:progress', p)
         sendToSender(event.sender, 'download:progress', p)
       }, (line) => {
@@ -621,16 +829,16 @@ function registerIpc(): void {
       installedCache.invalidateAll()
       return { versionId: id, name: id }
     } finally {
-      modAborts.delete(controller)
+      downloadAborts.delete(filename)
     }
   })
   ipcMain.handle('modpack:exportInventory', (_event, versionId: string) => {
     const s = settings.get()
-    return collectExportInventory(s.gameDir, versionId, isIsolated(versionId))
+    return collectExportInventory(activeGameDir(s), versionId, isIsolated(versionId))
   })
   ipcMain.handle('modpack:export', async (event, versionId: string, options: ModpackExportOptions) => {
     const s = settings.get()
-    return exportModpack(versionId, s.gameDir, options, (p) => {
+    return exportModpack(versionId, activeGameDir(s), options, (p) => {
       sendToSender(event.sender, 'modpack:progress', p)
       sendToSender(event.sender, 'download:progress', p)
     })
@@ -639,12 +847,13 @@ function registerIpc(): void {
   // ---- Resource packs / shaders ----
   ipcMain.handle('resources:list', async (event, versionId: string, kind: ResourceKind) => {
     const s = settings.get()
+    const dir = activeGameDir(s)
     const isolated = isIsolated(versionId)
-    const files = await listResources(s.gameDir, versionId, isolated, kind)
+    const files = await listResources(dir, versionId, isolated, kind)
     // 先返回本地列表，随后后台联网补齐 Modrinth 名称 / 图标并逐个推送。
     // 与 manage:mods 保持一致：「仅获取元数据」与本地模式下完全不联网，只显示本地文件名。
     if (s.mode !== 'local' && !s.metadataOnlyMods) {
-      void enrichResources(s.gameDir, versionId, isolated, kind, (file) => {
+      void enrichResources(dir, versionId, isolated, kind, (file) => {
         sendToSender(event.sender, 'resources:updated', { versionId, kind, file })
       })
     }
@@ -653,17 +862,48 @@ function registerIpc(): void {
   ipcMain.handle('resources:remove', (_e, path: string) => removeResource(path))
   ipcMain.handle('resources:open', (_e, versionId: string, kind: ResourceKind) => {
     const s = settings.get()
-    return openResourceDir(s.gameDir, versionId, isIsolated(versionId), kind)
+    return openResourceDir(activeGameDir(s), versionId, isIsolated(versionId), kind)
   })
+  // 资源更新检测：进入实例管理时调用。联网关闭（本地模式 / 仅识别元数据）时直接返回空。
+  // 返回「已确认可更新」的完整清单，其余项在后台判定完后经 resources:update-checked 逐个推送。
+  ipcMain.handle('resources:checkUpdates', async (event, versionId: string) => {
+    const s = settings.get()
+    if (s.mode === 'local' || s.metadataOnlyMods) return []
+    const gameDir = activeGameDir(s)
+    // 实例的 MC 版本 / 加载器决定「哪些版本算兼容」，取自已安装列表（带缓存的目录扫描）。
+    const installed = await installedCache.get(installedCacheKey(s), () =>
+      listInstalled(gameDir, s.versionIsolation, s.isolatedVersions)
+    )
+    const entry = installed.find((v) => v.id === versionId)
+    return checkResourceUpdates(
+      gameDir,
+      versionId,
+      isIsolated(versionId),
+      entry?.mcVersion ?? '',
+      entry?.loader ?? null,
+      {
+        onResult: (path, kind, update) =>
+          sendToSender(event.sender, 'resources:update-checked', { versionId, path, kind, update })
+      }
+    )
+  })
+  ipcMain.handle(
+    'resources:applyUpdate',
+    (_e, versionId: string, update: ResourceUpdateInfo, enabled: boolean) => {
+      const s = settings.get()
+      return applyResourceUpdate(activeGameDir(s), versionId, isIsolated(versionId), update, enabled)
+    }
+  )
 
   // ---- Version management (mods / worlds / schematics / delete) ----
   ipcMain.handle('manage:mods', async (event, versionId: string) => {
     const s = settings.get()
+    const dir = activeGameDir(s)
     const isolated = isIsolated(versionId)
-    const mods = await listMods(s.gameDir, versionId, isolated)
+    const mods = await listMods(dir, versionId, isolated)
     // 先返回元数据名列表，随后后台联网补齐 Modrinth 名称/图标并逐个推送
     if (s.mode !== 'local' && !s.metadataOnlyMods) {
-      void enrichMods(s.gameDir, versionId, isolated, (mod) => {
+      void enrichMods(dir, versionId, isolated, (mod) => {
         sendToSender(event.sender, 'manage:mods-updated', { versionId, mod })
       })
     }
@@ -673,26 +913,26 @@ function registerIpc(): void {
   ipcMain.handle('manage:deleteMod', (_e, path: string) => deleteMod(path))
   ipcMain.handle('manage:installLocalMod', (_e, versionId: string, sourcePath: string) => {
     const s = settings.get()
-    return installLocalMod(s.gameDir, versionId, isIsolated(versionId), sourcePath)
+    return installLocalMod(activeGameDir(s), versionId, isIsolated(versionId), sourcePath)
   })
   ipcMain.handle('manage:deleteWorld', (_e, versionId: string, worldName: string) => {
     const s = settings.get()
-    return deleteWorld(s.gameDir, versionId, isIsolated(versionId), worldName)
+    return deleteWorld(activeGameDir(s), versionId, isIsolated(versionId), worldName)
   })
   ipcMain.handle('manage:schematics', (_e, versionId: string) => {
     const s = settings.get()
-    return listSchematics(s.gameDir, versionId, isIsolated(versionId))
+    return listSchematics(activeGameDir(s), versionId, isIsolated(versionId))
   })
   ipcMain.handle('manage:deleteFile', (_e, path: string) => deleteFile(path))
   ipcMain.handle('manage:deleteVersion', async (_e, versionId: string) => {
     const s = settings.get()
-    await deleteVersion(s.gameDir, versionId)
+    await deleteVersion(activeGameDir(s), versionId)
     installedCache.invalidateAll()
     return true
   })
   ipcMain.handle('manage:renameVersion', async (_e, versionId: string, newName: string) => {
     const s = settings.get()
-    const newId = await renameVersion(s.gameDir, versionId, newName)
+    const newId = await renameVersion(activeGameDir(s), versionId, newName)
     installedCache.invalidateAll()
     // 同步更新设置中对旧实例 id 的引用（隔离 / 禁用标记）
     if (newId !== versionId) {
@@ -710,16 +950,19 @@ function registerIpc(): void {
   ipcMain.handle('manage:openDir', async (_e, versionId: string, kind: VersionDirKind) => {
     const s = settings.get()
     // 只返回目录路径：由渲染层用启动器自实现的资源管理器打开（不再唤起系统资源管理器）
-    return await openVersionDir(s.gameDir, versionId, isIsolated(versionId), kind)
+    return await openVersionDir(activeGameDir(s), versionId, isIsolated(versionId), kind)
   })
 
   // ---- Java ----
-  ipcMain.handle('java:detect', () => detectJava(settings.get().gameDir))
+  // 传入「全部版本目录」而非仅当前目录：Java 可能装在任一版本目录的 java/ 下，
+  // 只看当前目录会导致切换版本目录后已装好的 Java 检测不到。
+  ipcMain.handle('java:detect', () => detectJava(allVersionDirs(settings.get()).map((d) => d.path)))
   ipcMain.handle('java:check', async (_e, versionId: string) => {
     const s = settings.get()
-    const json = await resolveVersionJson(versionId, s.mirror, s.gameDir)
+    const dir = activeGameDir(s)
+    const json = await resolveVersionJson(versionId, s.mirror, dir)
     const required = json.javaVersion?.majorVersion ?? 8
-    const available = await detectJava(s.gameDir)
+    const available = await detectJava(allVersionDirs(s).map((d) => d.path))
     let compatible = false
     const currentPath = s.javaPath
     if (currentPath) {
@@ -733,28 +976,109 @@ function registerIpc(): void {
   })
   ipcMain.handle('java:install', async (event, major: number) => {
     const s = settings.get()
-    downloadAbort = new AbortController()
+    const taskId = `java-${major}`
+    const controller = new AbortController()
+    downloadAborts.set(taskId, controller)
+    const emit = (
+      percent: number,
+      task: string,
+      currentBytes: number,
+      totalBytes: number,
+      phase: DownloadPhase
+    ): void => {
+      sendToSender(event.sender, 'download:progress', {
+        taskId,
+        task,
+        current: percent,
+        total: 100,
+        currentBytes,
+        totalBytes,
+        phase,
+        percent
+      })
+    }
     try {
-      const path = await installJava(major, s.gameDir, (percent, task, currentBytes, totalBytes, phase) => {
-        sendToSender(event.sender, 'download:progress', {
-          taskId: `java-${major}`,
-          task,
-          current: percent,
-          total: 100,
-          currentBytes,
-          totalBytes,
-          phase,
-          percent
-        })
-      }, downloadAbort.signal)
+      const path = await installJava(major, activeGameDir(s), emit, controller.signal)
       settings.set({ javaPath: path, javaAutoDetect: false })
       return path
+    } catch (err) {
+      // 取消 / 失败都必须补发一条 done：渲染层只在收到 done 时才移除任务条目，
+      // 否则「获取下载地址」阶段被取消后浮球上的任务会一直挂着，看起来像取消无效。
+      emit(0, '', 0, 0, 'done')
+      throw err
     } finally {
-      downloadAbort = null
+      downloadAborts.delete(taskId)
     }
+  })
+  // 手动指定 Java：选到文件即读取版本信息（自动识别 major / 厂商 / 位数）。
+  ipcMain.handle('java:pick', async (event) => {
+    const w = BrowserWindow.fromWebContents(event.sender)
+    const opts: Electron.OpenDialogOptions = {
+      title: '选择 Java 可执行文件',
+      properties: ['openFile'],
+      filters:
+        process.platform === 'win32'
+          ? [{ name: 'Java 可执行文件', extensions: ['exe'] }]
+          : [{ name: '所有文件', extensions: ['*'] }]
+    }
+    const res = w ? await dialog.showOpenDialog(w, opts) : await dialog.showOpenDialog(opts)
+    if (res.canceled || !res.filePaths[0]) return null
+    const picked = res.filePaths[0]
+    const jr = await javaVersionAt(picked)
+    if (!jr) {
+      throw new Error('无法识别该文件，请选择 java.exe（Windows）或 bin/java（macOS / Linux）')
+    }
+    return jr
   })
 
   // ---- Launch ----
+
+  /** 自定义游戏窗口尺寸的合法范围（逻辑像素）：过小无意义，过大则几乎必然是误输入。 */
+  const MIN_WINDOW = 320
+  const MAX_WINDOW = 16384
+
+  /**
+   * 「最大化」时应使用的游戏窗口**内容区**尺寸。
+   *
+   * 两个关键点：
+   *
+   * 1) Minecraft 的 --width/--height 是**内容区**（不含标题栏与边框），而它创建的
+   *    是普通带框窗口，不会被系统「最大化」。所以不能直接把工作区尺寸塞进去：
+   *    实测（1920×1080 屏、任务栏 48px、窗口装饰 8×57）工作区 1920×1032 作为内容区时，
+   *    窗口外框变成 1928×1089 —— 比整屏还高 9px，游戏画面底部约 49px 被任务栏盖住。
+   * 2) 因此正确做法是「工作区 − 窗口装饰」：这样窗口外框恰好等于工作区，无论被放在
+   *    哪个位置都不会超出、也都不会被任务栏遮挡。
+   *
+   * 任务栏是否隐藏由系统体现在工作区里（任务栏自动隐藏时工作区 = 整屏），
+   * 所以这里不需要自己判断任务栏状态，跨平台也一致。
+   *
+   * 每次启动都重新测量（不缓存）：用户可能在运行期间改了「自动隐藏任务栏」。
+   */
+  function getMaximizedContentSize(): { width: number; height: number } {
+    const d = screen.getPrimaryDisplay()
+    let chromeW = 0
+    let chromeH = 0
+    let probe: BrowserWindow | null = null
+    try {
+      // 用同规格的隐藏窗口量出标题栏 + 边框占用的像素（同系统主题下与游戏窗口一致）。
+      // 必须带 useContentSize：这样 width/height 才是内容区，getBounds 与 getContentBounds
+      // 的差值才等于真实装饰量（实测 8×57）；否则隐藏窗口尚未套用完整装饰，会量成 8×31。
+      probe = new BrowserWindow({ show: false, useContentSize: true, width: 400, height: 300 })
+      const outer = probe.getBounds()
+      const inner = probe.getContentBounds()
+      chromeW = Math.max(0, outer.width - inner.width)
+      chromeH = Math.max(0, outer.height - inner.height)
+    } catch {
+      // 无窗口系统 / 测量失败：不退让，仍按工作区尺寸（最多是回到修复前的表现）。
+    } finally {
+      probe?.destroy()
+    }
+    return {
+      width: Math.max(MIN_WINDOW, d.workAreaSize.width - chromeW),
+      height: Math.max(MIN_WINDOW, d.workAreaSize.height - chromeH)
+    }
+  }
+
   ipcMain.handle('launch:start', async (event, options: LaunchOptions) => {
     const s = settings.get()
     if (s.disabledVersions.includes(options.versionId)) {
@@ -776,22 +1100,26 @@ function registerIpc(): void {
     const emit = (e: unknown): void => sendToSender(event.sender, 'launch:event', e)
 
     emit({ state: 'downloading' })
-    const json = await resolveVersionJson(options.versionId, s.mirror, s.gameDir)
-    const installDir = options.gameDir || s.gameDir
+    const installDir = activeGameDir(s)
+    const json = await resolveVersionJson(options.versionId, s.mirror, installDir)
     const runDir = isIsolated(options.versionId)
       ? join(installDir, 'versions', options.versionId)
       : installDir
-    downloadAbort = new AbortController()
+    // 以版本 id 作为任务键：与「进度」页手动安装同一版本共用一条任务，
+    // 且不再与其它下载互相覆盖控制器（原先单个变量会让并发任务彼此踩踏）。
+    const downloadKey = options.versionId
+    const controller = new AbortController()
+    downloadAborts.set(downloadKey, controller)
     const result = await installVersion(json, installDir, s.mirror, s.maxDownloadConcurrency, (p) => {
       sendToSender(event.sender, 'download:progress', { ...p, taskId: options.versionId })
-    }, downloadAbort.signal).finally(() => {
-      downloadAbort = null
+    }, controller.signal).finally(() => {
+      downloadAborts.delete(downloadKey)
     })
 
     let javaPath = options.javaPath || s.javaPath
     if (!javaPath) {
       const major = json.javaVersion?.majorVersion ?? 8
-      const runtimes = await detectJava(s.gameDir)
+      const runtimes = await detectJava(allVersionDirs(s).map((d) => d.path))
       const jr = pickJava(runtimes, major)
       if (!jr) {
         throw new Error(`未找到 Java ${major} 运行时，请在「设置」中手动指定 Java 路径`)
@@ -804,6 +1132,43 @@ function registerIpc(): void {
     }
 
     emit({ state: 'launching' })
+    // 游戏窗口尺寸：桌面模式强制全屏；否则按设置解析成具体分辨率 / 全屏。
+    const winMode = s.experimental === 'win10' ? 'fullscreen' : s.gameWindowSize
+    const primary = screen.getPrimaryDisplay()
+    let fullscreen = false
+    let resolution: { width: number; height: number }
+    if (winMode === 'fullscreen') {
+      fullscreen = true
+      resolution = { width: primary.size.width, height: primary.size.height }
+    } else if (winMode === 'maximized') {
+      // 内容区必须扣掉窗口装饰，否则外框会超出工作区（见 getMaximizedContentSize 注释）。
+      resolution = getMaximizedContentSize()
+    } else if (winMode === 'custom') {
+      const width = Math.min(MAX_WINDOW, Math.max(MIN_WINDOW, Math.round(s.gameWindowWidth) || MIN_WINDOW))
+      const height = Math.min(MAX_WINDOW, Math.max(MIN_WINDOW, Math.round(s.gameWindowHeight) || MIN_WINDOW))
+      resolution = { width, height }
+      // 超出屏幕时同样给出警告（与设置页的预览警告一致），但不阻止启动。
+      if (width > primary.size.width || height > primary.size.height) {
+        const opts: Electron.MessageBoxOptions = {
+          type: 'warning',
+          title: '游戏窗口尺寸超出屏幕',
+          message: `自定义的窗口尺寸 ${width}×${height} 超出了当前屏幕（${primary.size.width}×${primary.size.height}）。`,
+          detail: '游戏窗口可能显示不全。可在「设置 → 游戏 → 游戏窗口尺寸」中改用较小的尺寸或选择「最大化」。',
+          buttons: ['仍然启动'],
+          defaultId: 0,
+          noLink: true
+        }
+        if (mainWindow && !mainWindow.isDestroyed()) await dialog.showMessageBox(mainWindow, opts)
+        else await dialog.showMessageBox(opts)
+      }
+    } else {
+      resolution = winMode === '1080p' ? { width: 1920, height: 1080 } : { width: 1280, height: 720 }
+    }
+    const launchOptions: LaunchOptions = {
+      ...options,
+      ...(fullscreen ? { fullscreen: true } : {}),
+      resolution
+    }
     gameProcess = spawnGame(
       {
         json,
@@ -813,7 +1178,7 @@ function registerIpc(): void {
         nativesDir: result.nativesDir,
         assetIndexId: result.assetIndexId,
         account,
-        options
+        options: launchOptions
       },
       emit
     )
@@ -839,6 +1204,17 @@ function registerIpc(): void {
     return next
   })
   ipcMain.handle('app:version', () => app.getVersion())
+  // 主显示器尺寸（逻辑像素）：供「游戏窗口尺寸」的自定义与预览使用。
+  ipcMain.handle('display:primary', () => {
+    const d = screen.getPrimaryDisplay()
+    return {
+      width: d.size.width,
+      height: d.size.height,
+      workWidth: d.workAreaSize.width,
+      workHeight: d.workAreaSize.height,
+      scaleFactor: d.scaleFactor
+    }
+  })
   // 自定义壁纸：选图（复制进数据目录）/ 清除 / 取 data URL
   ipcMain.handle('settings:pickWallpaper', () => pickWallpaper())
   ipcMain.handle('settings:clearWallpaper', () => clearWallpaper())
@@ -848,6 +1224,8 @@ function registerIpc(): void {
     const free = Math.round(freemem() / 1024 / 1024)
     return { total, used: total - free, free }
   })
+  // 硬件探测：返回 CPU 核心数 / 内存总量，并判定是否低配（超低占用模式自动开启用）。
+  ipcMain.handle('system:hardware', () => detectHardware())
 
   // ---- 自定义主页（脚本仓管 / 联网校验 / 市场 / 投稿）----
   ipcMain.handle('homepage:list', () => listHomepages())
@@ -862,6 +1240,8 @@ function registerIpc(): void {
   ipcMain.handle('homepage:block', (_e, id: string, reason: string) => blockHomepage(id, reason))
   ipcMain.handle('homepage:openDir', () => openHomepageDir())
   ipcMain.handle('homepage:market', () => fetchMarket())
+  ipcMain.handle('homepage:checkUpdates', () => checkHomepageUpdates())
+  ipcMain.handle('homepage:update', (_e, update: HomepageUpdate) => updateHomepage(update))
   ipcMain.handle('homepage:send-email-code', (_e, email: string) => sendEmailCode(email))
   ipcMain.handle('homepage:submit', (_e, payload: HomepageSubmitPayload) => submitHomepage(payload))
   ipcMain.handle(
@@ -884,6 +1264,32 @@ function registerIpc(): void {
 
   // ---- About / agreement / update (remote server) ----
   ipcMain.handle('about:list', () => fetchAbout())
+  // 实验性：资源名 / 简介自动翻译（在线接口，实现见 network/translate.ts）
+  ipcMain.handle('translate:texts', (_e, texts: string[], target: string) =>
+    netRequest<Array<[string, string]>>('translate:texts', { texts, target, apiKey: getUapisKey() }, {
+      // 逐条请求外部接口，条数较多时耗时较长，给足超时。
+      timeoutMs: 120_000
+    })
+  )
+  // 保存 API KEY：先真实请求一次做连通性测试，通过才加密落盘（在主进程完成，
+  // 渲染层既拿不到已保存的 KEY，也无法绕过测试直接写入）。
+  ipcMain.handle('translate:setKey', async (_e, apiKey: string) => {
+    const key = String(apiKey ?? '').trim()
+    if (!key) return { ok: false, message: '未填写 API KEY' }
+    const test = await netRequest<{ ok: boolean; message: string }>(
+      'translate:testKey',
+      { apiKey: key },
+      { timeoutMs: 20_000 }
+    )
+    if (!test.ok) return test
+    const err = setUapisKey(key)
+    if (err) return { ok: false, message: err }
+    return { ok: true, message: `${test.message}（已加密保存到本机）` }
+  })
+  ipcMain.handle('translate:clearKey', () => {
+    clearUapisKey()
+    return { ok: true, message: '已删除本机保存的 API KEY，已回到访客额度' }
+  })
   ipcMain.handle('about:agreement', () => fetchAgreement())
   ipcMain.handle('update:check', async () => {
     const currentVersion = app.getVersion()
@@ -896,7 +1302,9 @@ function registerIpc(): void {
     return {
       currentVersion,
       latest,
-      hasUpdate: latest ? compareVersions(latest.version, currentVersion) > 0 : false
+      hasUpdate: latest ? compareVersions(latest.version, currentVersion) > 0 : false,
+      // 测试版（带 - 后缀）：启动自动检查据此静默，避免打扰普通用户。
+      latestIsPrerelease: latest ? isPrerelease(latest.version) : false
     }
   })
   ipcMain.handle('update:download', async (event, info: UpdateInfo) => {
@@ -924,6 +1332,64 @@ function registerIpc(): void {
   })
   ipcMain.handle('debug:isEnabled', () => settings.get().debugMode)
 
+  // ---- 开发模式（Development Mode）----
+  // 授权由服务端签发：邮箱须在后台白名单内，验证码通过后获得 1 天授权；
+  // 授权期内可自由开关、调整主页安全防护档位、随时解除；到期自动关闭。
+  ipcMain.handle('devmode:status', () => {
+    if (enforceDevModeExpiry()) broadcastDevMode()
+    return devModeStatus()
+  })
+  ipcMain.handle('devmode:sendCode', (_e, email: string) => sendDevModeCode(email))
+  ipcMain.handle('devmode:verify', async (_e, email: string, code: string) => {
+    const res = await verifyDevMode(email, code)
+    broadcastDevMode()
+    return res
+  })
+  ipcMain.handle('devmode:setEnabled', async (_e, enabled: boolean) => {
+    const s = await setDevModeEnabled(enabled)
+    // 关闭开发模式即回收独立开发者工具窗口。
+    if (!s.enabled) closeDevWindow()
+    if (!s.enabled) closeNativeDevTools()
+    broadcastDevMode()
+    return s
+  })
+  ipcMain.handle('devmode:revoke', async () => {
+    const s = await revokeDevMode()
+    closeDevWindow()
+    closeNativeDevTools()
+    broadcastDevMode()
+    return s
+  })
+  ipcMain.handle('devmode:setSecurityMode', async (_e, mode: 'full' | 'warn' | 'off') => {
+    const s = await setDevModeSecurityMode(mode)
+    broadcastDevMode()
+    return s
+  })
+  ipcMain.handle('devmode:openTools', () => {
+    createDevWindow()
+  })
+  ipcMain.handle('devmode:closeTools', () => {
+    closeDevWindow()
+  })
+  // 原生 Chromium DevTools（元素 / 控制台 / 网络 / 源代码），以独立窗口（detach）打开，
+  // 与主界面分离避免拥挤。仅开发模式开启时可用。
+  ipcMain.handle('devmode:openDevTools', () => {
+    if (enforceDevModeExpiry()) broadcastDevMode()
+    if (!devModeStatus().enabled) return false
+    if (!mainWindow || mainWindow.isDestroyed()) return false
+    if (mainWindow.webContents.isDevToolsOpened()) {
+      mainWindow.webContents.devToolsWebContents?.focus()
+      return true
+    }
+    mainWindow.webContents.openDevTools({ mode: 'detach' })
+    return true
+  })
+  ipcMain.handle('devmode:closeDevTools', () => {
+    if (mainWindow && !mainWindow.isDestroyed() && mainWindow.webContents.isDevToolsOpened()) {
+      mainWindow.webContents.closeDevTools()
+    }
+  })
+
   // ---- Window controls ----
   ipcMain.handle('window:minimize', (e) => BrowserWindow.fromWebContents(e.sender)?.minimize())
   ipcMain.handle('window:maximize', (e) => {
@@ -950,6 +1416,37 @@ function registerIpc(): void {
     // screen-saver 级别：桌面模式下连系统任务栏也压得住
     w.setAlwaysOnTop(!!on, 'screen-saver')
     return w.isAlwaysOnTop()
+  })
+  /**
+   * 桌面模式外壳：普通全屏（不置顶、不隐藏系统任务栏）。
+   * on=true：进入普通全屏（保留系统任务栏图标，便于从任务栏 / Alt+Tab 切回），并定时维持全屏；
+   * on=false：全部还原（退出全屏并恢复常规窗口状态）。
+   */
+  ipcMain.handle('window:setDesktopMode', (e, on: boolean) => {
+    const w = BrowserWindow.fromWebContents(e.sender)
+    if (!w || w.isDestroyed()) return false
+    desktopShellOn = on === true
+    if (desktopShellOn) {
+      // 不能用 setSkipTaskbar(true)：那会让窗口从系统任务栏消失，
+      // 全屏时用户就再没有任何入口切回启动器。这里显式置 false，顺带清掉历史状态。
+      w.setSkipTaskbar(false)
+      w.setFullScreen(true)
+      w.show()
+      if (!desktopShellTimer) {
+        desktopShellTimer = setInterval(pinDesktopShell, 1000)
+        desktopShellTimer.unref()
+      }
+    } else {
+      if (desktopShellTimer) {
+        clearInterval(desktopShellTimer)
+        desktopShellTimer = null
+      }
+      w.setAlwaysOnTop(false)
+      w.setSkipTaskbar(false)
+      w.setFullScreen(false)
+      w.unmaximize()
+    }
+    return desktopShellOn
   })
   /**
    * 安全拦截期间的强制系统全屏：命中危险代码时要连 Windows 任务栏一起盖住，
@@ -994,6 +1491,14 @@ function registerIpc(): void {
     return placeWindow(id, rect, raise === true)
   })
   ipcMain.handle('desktop:setVisible', (_e, id: string, visible: boolean) => setHoleVisible(id, visible))
+  // 渲染层开始/结束拖这个桌面窗口：拖动期间主进程绝不移动它（含延迟重试），
+  // 避免和「拖动」这一方同时对同一个外部窗口做移动把 MC 的 GL 窗口搞崩。
+  ipcMain.handle('desktop:drag', (e, id: string, on: boolean) => {
+    const w = BrowserWindow.fromWebContents(e.sender)
+    if (w) setHost(mainWindowHandleId(w))
+    setDragging(id, on === true)
+    return true
+  })
   ipcMain.handle('desktop:release', (_e, id: string) => releaseWindow(id))
   ipcMain.handle('desktop:releaseAll', () => releaseAll())
   ipcMain.handle('desktop:resync', (e) => {
@@ -1008,10 +1513,14 @@ function registerIpc(): void {
   // ---- 自实现的资源管理器（替代系统资源管理器）----
   ipcMain.handle('files:places', () => {
     const s = settings.get()
-    return listPlaces([
-      // 游戏目录排在最前：这是用户最常来的地方
-      { name: '游戏目录', path: s.gameDir, kind: 'place' }
-    ])
+    // 版本目录排在最前：这是用户最常来的地方（默认目录 + 各别名目录）
+    return listPlaces(
+      allVersionDirs(s).map((d) => ({
+        name: d.isDefault ? '默认版本列表目录' : d.alias || basename(d.path) || d.path,
+        path: d.path,
+        kind: 'place' as const
+      }))
+    )
   })
   ipcMain.handle('files:list', (_e, path: string) => listDir(path))
   ipcMain.handle('files:open', (_e, path: string) => openPath(path))
@@ -1075,6 +1584,16 @@ app.whenReady().then(() => {
   nativeTheme.on('updated', applyWindowBackground)
   // Debug 模式开启时，启动即创建独立日志窗口；默认关闭则不创建，零成本。
   if (settings.get().debugMode) createDebugWindow()
+  // 开发模式：注册状态广播 + 到期兜底检查（到期自动关闭并回收开发者工具窗口）。
+  setDevModeBroadcaster((s) => {
+    for (const w of BrowserWindow.getAllWindows()) {
+      if (!w.isDestroyed()) w.webContents.send('devmode:changed', s)
+    }
+    if (!s.enabled) closeDevWindow()
+    if (!s.enabled) closeNativeDevTools()
+  })
+  startDevModeExpiryWatch()
+  if (enforceDevModeExpiry()) broadcastDevMode()
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
   })

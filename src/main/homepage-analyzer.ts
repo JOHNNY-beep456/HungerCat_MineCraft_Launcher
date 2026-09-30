@@ -14,8 +14,9 @@
 // 这里只是「第一道闸」，真正的隔离由渲染层的 sandbox iframe + CSP 承担。
 // ---------------------------------------------------------------------------
 
+import { createHash } from 'crypto'
 import type { HomepageExternal, HomepageMeta, HomepageRisk } from '@shared/types'
-import { mergeAdjacentLiterals, scanHomepageCode } from '@shared/homepage-runtime'
+import { mergeAdjacentLiterals, scanHomepageCodeAsync } from '@shared/homepage-runtime'
 
 /**
  * 「危险代码」规则表见 @shared/homepage-runtime：主进程的静态检测与渲染层的运行时
@@ -124,16 +125,67 @@ function normalizeUrl(url: string): string {
 }
 
 /**
- * 对脚本正文做静态安全检测。
+ * 静态检测结果的记忆化缓存。
+ *
+ * 同一份内容（同一检测模式）的结论是确定的，但调用点很多：主页管理页列一次、每次
+ * 读取 / 校验 / 确认 / 设为默认都要扫一遍，同一脚本在一次会话里会被反复扫。
+ * 缓存把「重复扫同一份内容」降为一次哈希查找；键用 SHA256，碰撞不可行，
+ * 因此缓存本身不会成为漏放危险脚本的通道。
+ */
+const RISK_CACHE_MAX = 64
+const riskCache = new Map<string, HomepageRisk>()
+
+function riskCacheKey(source: string, scope: 'code' | 'library'): string {
+  return `${scope}:${createHash('sha256').update(source).digest('hex')}`
+}
+
+/** 把结论写进缓存（LRU：命中或写入都移到队尾，超出上限淘汰最久未用的）。 */
+function rememberRisk(key: string, risk: HomepageRisk): void {
+  riskCache.delete(key)
+  riskCache.set(key, risk)
+  while (riskCache.size > RISK_CACHE_MAX) {
+    const oldest = riskCache.keys().next().value
+    if (oldest === undefined) break
+    riskCache.delete(oldest)
+  }
+}
+
+/**
+ * 对脚本正文做静态安全检测（异步：扫描期间分片让出事件循环，不长时间占用主线程）。
+ *
  * @param source 脚本原始 HTML 源码
  * @param options.library 分析对象是取回的第三方脚本库正文（非主页 HTML 本身）：
  *   跳过 UMD 包装相关的 Node 能力规则，且不把代码里的普通地址当成「链接的外部服务」。
+ *
+ * 规则匹配（含内联 base64 折叠 / 相邻字面量合并）统一由 @shared/homepage-runtime 的
+ * scanHomepageCodeAsync 完成，与渲染层的运行时检测共用同一份规则表。静态检测不截断——
+ * 脚本落地时已有体积上限，截断只会给「把载荷放到上限之后」留下绕过空间（F-01）。
  */
-export function analyzeScript(source: string, options?: { library?: boolean }): HomepageRisk {
-  // 规则匹配（含内联 base64 折叠 / 相邻字面量合并）统一由 @shared/homepage-runtime 完成：
-  // 渲染层的运行时检测用的是同一份规则表。静态检测不截断——脚本落地时已有体积上限，
-  // 截断只会给「把载荷放到上限之后」留下绕过空间（F-01）。
-  const blocks = scanHomepageCode(source, options?.library ? 'library' : 'code', { maxLength: 0 })
+export async function analyzeScript(
+  source: string,
+  options?: { library?: boolean }
+): Promise<HomepageRisk> {
+  const scope = options?.library ? 'library' : 'code'
+  const key = riskCacheKey(source, scope)
+  const cached = riskCache.get(key)
+  if (cached) {
+    // 命中也视为一次使用，移到队尾，避免热点条目被淘汰。
+    riskCache.delete(key)
+    riskCache.set(key, cached)
+    return cached
+  }
+  const risk = await analyzeScriptUncached(source, scope, options)
+  rememberRisk(key, risk)
+  return risk
+}
+
+/** 未命中缓存时的真实检测流程。 */
+async function analyzeScriptUncached(
+  source: string,
+  scope: 'code' | 'library',
+  options?: { library?: boolean }
+): Promise<HomepageRisk> {
+  const blocks = await scanHomepageCodeAsync(source, scope, { maxLength: 0 })
 
   // 拼接 / 模板字面量构造出的地址在原文里看不出来，再看一份「合并相邻字面量」的文本（F-08）。
   const merged = mergeAdjacentLiterals(source)

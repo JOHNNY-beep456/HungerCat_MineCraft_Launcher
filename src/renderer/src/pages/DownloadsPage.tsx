@@ -1,30 +1,37 @@
 import { AnimatePresence, motion } from 'motion/react'
-import { useApp } from '../store'
+import { activeGameDir, activeVersionDir, useApp } from '../store'
 import { useRuntime } from '../runtime'
 import { Button, Icon, ProgressBar, formatSpeed } from '../components/ui'
 
 export function DownloadsPage(): JSX.Element {
-  const { settings, openFileManager } = useApp()
-  const { downloads, cancelDownload } = useRuntime()
+  const { settings, openFileManager, t } = useApp()
+  const { downloads, cancelDownload, cancelTask } = useRuntime()
+  const active = downloads.filter((d) => d.phase !== 'done')
 
   return (
     <div className="flex h-full flex-col gap-5">
       <div>
-        <h1 className="display">进度</h1>
-        <p className="caption mt-1">查看下载与安装进度，管理游戏目录</p>
+        <h1 className="display">{t('downloads.title')}</h1>
+        <p className="caption mt-1">{t('downloads.subtitle')}</p>
       </div>
 
       <div className="glass flex flex-col gap-5 rounded-[28px] p-6">
-        {downloads.length === 0 ? (
+        {active.length === 0 ? (
           <div className="flex items-center gap-3 rounded-2xl p-4" style={{ background: 'var(--fill-secondary)' }}>
             <Icon name="download" size={20} className="opacity-60" />
-            <span className="text-[14px] opacity-70">当前没有正在进行的下载任务</span>
+            <span className="text-[14px] opacity-70">{t('downloads.empty')}</span>
           </div>
         ) : (
           <div className="space-y-3">
-            {/* 任务行增删用 layout 平滑过渡，进出场做淡入 + 轻微 y */}
+            {/* 并行下载时每个任务渲染为独立板块，可单独取消；顶部汇总数量并提供「取消全部」。 */}
+            <div className="flex items-center justify-between gap-3">
+              <span className="caption">{t('downloads.activeCount', { n: active.length })}</span>
+              <Button size="sm" variant="danger" icon="xmark" onClick={cancelDownload}>
+                {t('downloads.cancelAll')}
+              </Button>
+            </div>
             <AnimatePresence initial={false}>
-              {downloads.map((d) => (
+              {active.map((d) => (
                 <motion.div
                   key={d.taskId ?? 'main'}
                   layout
@@ -34,9 +41,23 @@ export function DownloadsPage(): JSX.Element {
                   transition={{ type: 'spring', bounce: 0, duration: 0.3 }}
                   className="glass-soft rounded-2xl p-4"
                 >
-                  <div className="mb-2 flex items-center justify-between">
+                  <div className="mb-2 flex items-center justify-between gap-2">
                     <span className="headline truncate">{d.task}</span>
-                    <span className="chip">{d.percent}%</span>
+                    <div className="flex shrink-0 items-center gap-2">
+                      <span className="chip">{d.percent}%</span>
+                      {d.taskId && (
+                        <button
+                          type="button"
+                          onClick={() => cancelTask(d.taskId as string)}
+                          aria-label={t('downloads.cancel')}
+                          title={t('downloads.cancel')}
+                          className="flex h-7 w-7 items-center justify-center rounded-full opacity-60 transition-opacity hover:opacity-100"
+                          style={{ background: 'var(--fill-secondary)' }}
+                        >
+                          <Icon name="xmark" size={14} />
+                        </button>
+                      )}
+                    </div>
                   </div>
                   <ProgressBar percent={d.percent} />
                   <div className="mt-2 flex items-center justify-between text-[12px] opacity-70">
@@ -46,25 +67,28 @@ export function DownloadsPage(): JSX.Element {
                 </motion.div>
               ))}
             </AnimatePresence>
-            <Button size="sm" variant="danger" icon="xmark" onClick={cancelDownload}>
-              取消全部
-            </Button>
           </div>
         )}
 
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-          <InfoRow label="游戏目录" value={settings.gameDir} />
-          <InfoRow label="下载镜像" value={settings.mirror === 'mojang' ? 'Mojang 官方' : 'BMCLAPI（国内镜像）'} />
-          <InfoRow label="并发连接" value={`${settings.maxDownloadConcurrency} 个`} />
+          <InfoRow label={t('downloads.versionDir')} value={activeVersionDir(settings).path} />
+          <InfoRow
+            label={t('downloads.mirror')}
+            value={settings.mirror === 'mojang' ? t('downloads.mirrorMojang') : t('downloads.mirrorBmclapi')}
+          />
+          <InfoRow
+            label={t('downloads.concurrency')}
+            value={t('downloads.concurrencyUnit', { n: settings.maxDownloadConcurrency })}
+          />
         </div>
 
         <div className="flex gap-2">
-          <Button icon="folder" onClick={() => openFileManager(settings.gameDir)}>
-            打开游戏目录
+          <Button icon="folder" onClick={() => openFileManager(activeGameDir(settings))}>
+            {t('downloads.openGameDir')}
           </Button>
           {settings.mode !== 'local' && (
             <Button icon="settings" onClick={() => window.api.shell.openExternal('https://mcversions.net')}>
-              浏览版本
+              {t('downloads.browseVersions')}
             </Button>
           )}
         </div>

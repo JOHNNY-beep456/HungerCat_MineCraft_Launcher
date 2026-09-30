@@ -10,6 +10,7 @@
 //
 // 宿主能力（与需求一一对应）：总内存 / 已用内存 / 分配给游戏的内存（可改）/
 // 玩家头像 / 玩家名 / 版本列表 / 选中版本（可改）/ 选中版本的加载器与版本号 /
+// 版本目录列表 / 当前版本目录（可改，版本列表随之收敛）/
 // 启动器版本号 / 运行日志（仅 Debug 模式）/ 启动游戏（带 Java 检测回退）/
 // 结束游戏 / 运行状态 / 明暗模式 / 当前主题。
 // ---------------------------------------------------------------------------
@@ -21,11 +22,13 @@ import type {
   InstalledVersion,
   LaunchOptions,
   MinecraftAccount,
-  SystemMemoryInfo
+  SystemMemoryInfo,
+  VersionDir
 } from '@shared/types'
-import { scanHomepageCode } from '@shared/homepage-runtime'
+import { scanHomepageCodeAsync } from '@shared/homepage-runtime'
 import { buildSrcDoc } from '@shared/srcdoc'
-import { useApp } from '../store'
+import { activeGameDir, useAdaptivePolling, useApp, versionDirLabel } from '../store'
+import { emitCursor } from '../cursor'
 import { useRuntime } from '../runtime'
 import { HomepageGate } from '../components/HomepageGate'
 import { LoadingState, yggdrasilOrigin } from '../components/ui'
@@ -168,6 +171,11 @@ const SDK = [
   '      info: function () { return send("versions.info") },',
   '      loader: function () { return send("versions.loader") },',
   '      number: function () { return send("versions.number") }',
+  '    },',
+  '    versionDirs: {',
+  '      list: function () { return send("versiondirs.list") },',
+  '      selected: function () { return send("versiondirs.selected") },',
+  '      select: function (id) { return send("versiondirs.select", { id: id }) }',
   '    },',
   '    launcher: { version: function () { return send("launcher.version") } },',
   '    game: {',
@@ -539,6 +547,26 @@ const SDK = [
   '',
   '  guard()',
   '  watch()',
+  '  // 光标光晕跟随：鼠标在 iframe 内时宿主收不到 mousemove，光晕会定格在进入前的位置。',
+  '  // 这里把 iframe 内的坐标回传，宿主换算成窗口坐标后驱动光晕。仅坐标，不含脚本内容。',
+  '  // 每帧最多回传一次，避免高频 mousemove 产生大量 postMessage。',
+  '  try {',
+  '    var cursorPending = false',
+  '    var cursorX = 0',
+  '    var cursorY = 0',
+  '    var flushCursor = function () {',
+  '      cursorPending = false',
+  '      parent.postMessage({ hc: 1, kind: "cursor", x: cursorX, y: cursorY }, "*")',
+  '    }',
+  '    document.addEventListener("mousemove", function (e) {',
+  '      cursorX = e.clientX',
+  '      cursorY = e.clientY',
+  '      if (cursorPending) return',
+  '      cursorPending = true',
+  '      if (typeof nativeRaf === "function") nativeRaf(flushCursor)',
+  '      else nativeSetTimeout(flushCursor, 16)',
+  '    }, { passive: true })',
+  '  } catch (e) {}',
   '  parent.postMessage({ hc: 1, kind: "hello" }, "*")',
   '  emit("ready", snapshot)',
   '})()'
@@ -600,17 +628,36 @@ interface SelectedVersionInfo {
   loaderName: string
 }
 
+/** 暴露给脚本的版本目录信息：在原始字段上补一个展示名 label，方便直接渲染。 */
+interface VersionDirInfo {
+  /** 目录唯一 id；默认目录固定为 'default'。 */
+  id: string
+  /** 目录绝对路径。 */
+  path: string
+  /** 用户设置的别名（可为空串）。 */
+  alias: string
+  /** 展示名：优先别名，默认目录无别名时用「默认版本列表目录」。 */
+  label: string
+  /** 是否为默认目录（不可删除）。 */
+  isDefault: boolean
+}
+
 /** 宿主 → 脚本的初始/增量载荷。 */
 interface HostSnapshot {
   memory: SystemMemoryInfo | null
   /** 分配给游戏的内存（MB），脚本可通过 hc.settings.memory.set 修改。 */
   allocatedMemory: number
   account: { name: string; id: string; avatarUrl: string; authType: string } | null
+  /** 当前版本目录下的已安装版本；切换版本目录后随之变化。 */
   versions: InstalledVersion[]
   selectedVersionId: string
   /** 选中版本的加载器与版本号；无已安装版本时为 null。 */
   selectedVersion: SelectedVersionInfo | null
-  /** 启动器版本号（如 0.4.11）。 */
+  /** 版本目录列表（默认目录在最前）。 */
+  versionDirs: VersionDirInfo[]
+  /** 当前生效的版本目录 id；'' 或缺省视为默认目录。 */
+  selectedVersionDirId: string
+  /** 启动器版本号（如 0.5.0-dev2）。 */
   launcherVersion: string
   launch: {
     state: string | null
@@ -644,6 +691,14 @@ interface FrameProbe {
   batch?: Array<{ where?: string; text?: string }>
 }
 
+/** 沙箱内鼠标移动上报：iframe 内的坐标，宿主换算成窗口坐标后驱动光标光晕。 */
+interface FrameCursor {
+  hc: 1
+  kind: 'cursor'
+  x: number
+  y: number
+}
+
 /** 探针队列溢出（脚本在极短时间内插入海量元素）：按规避检查处理。 */
 const FLOOD_WHERE = 'element-flood'
 
@@ -651,6 +706,17 @@ const FLOOD_WHERE = 'element-flood'
 function loaderLabel(loader: string | null): string {
   if (!loader) return '原版'
   return loader.charAt(0).toUpperCase() + loader.slice(1)
+}
+
+/** 版本目录 → 暴露给脚本的结构（补上展示名 label）。 */
+function toVersionDirInfo(d: VersionDir): VersionDirInfo {
+  return {
+    id: d.id,
+    path: d.path,
+    alias: d.alias ?? '',
+    label: versionDirLabel(d),
+    isDefault: !!d.isDefault
+  }
 }
 
 /** 推导玩家头像地址（与启动器内头像组件的优先级保持一致）。 */
@@ -727,7 +793,7 @@ export function HomeRoute(): JSX.Element {
 }
 
 export function CustomHomePage({ id }: { id: string }): JSX.Element {
-  const { settings, selectedAccount, theme, updateSettings, reloadSettings, raiseSecurityAlert } = useApp()
+  const { settings, selectedAccount, theme, updateSettings, reloadSettings, raiseSecurityAlert, t } = useApp()
   const { launchState, launchLog, launchPid, busy, launch, stopLaunch } = useRuntime()
 
   const [entry, setEntry] = useState<HomepageSource | null>(null)
@@ -736,8 +802,13 @@ export function CustomHomePage({ id }: { id: string }): JSX.Element {
   const [passed, setPassed] = useState(false)
   const [memInfo, setMemInfo] = useState<SystemMemoryInfo | null>(null)
   const [installed, setInstalled] = useState<InstalledVersion[]>([])
+  /** 版本目录列表（默认目录在最前）。 */
+  const [dirs, setDirs] = useState<VersionDir[]>([])
   /** 启动器版本号（暴露给脚本，用于自检 / 提示最低版本）。 */
   const [launcherVersion, setLauncherVersion] = useState('')
+
+  /** 当前生效的版本目录 id；'' 视为默认目录。 */
+  const activeDirId = settings.selectedVersionDirId || 'default'
 
   const frameRef = useRef<HTMLIFrameElement>(null)
   const dispatchRef = useRef<(method: string, params: Record<string, unknown>) => Promise<unknown>>(
@@ -746,6 +817,27 @@ export function CustomHomePage({ id }: { id: string }): JSX.Element {
   const sentLogRef = useRef(0)
   /** 沙箱内 SDK 是否已握手（收到 hello）。用于判定 CSP/SDK 注入是否真的生效。 */
   const helloRef = useRef(false)
+
+  /**
+   * 运行时探针批次的串行链：探针扫描已异步化（分片让出事件循环），用一条 Promise 链
+   * 保证批次按到达顺序处理——既不会乱序，也不会因为让出事件循环而漏掉任何一批。
+   */
+  const probeChainRef = useRef<Promise<void>>(Promise.resolve())
+
+  /** 内存轮询的存活标记：组件卸载后不再 setState。 */
+  const memAliveRef = useRef(true)
+  useEffect(
+    () => () => {
+      memAliveRef.current = false
+    },
+    []
+  )
+  const refreshMemory = useCallback((): void => {
+    void window.api.system.memory().then(
+      (m) => memAliveRef.current && setMemInfo(m),
+      () => memAliveRef.current && setMemInfo(null)
+    )
+  }, [])
 
   /* ---------------- 数据装载 ---------------- */
 
@@ -761,33 +853,41 @@ export function CustomHomePage({ id }: { id: string }): JSX.Element {
     })()
     void (async () => {
       try {
-        const list = await window.api.installed.list()
-        if (alive) setInstalled(list)
-      } catch {
-        /* 已安装列表偶发失败不阻塞主页 */
-      }
-    })()
-    void (async () => {
-      try {
         const v = await window.api.getVersion()
         if (alive) setLauncherVersion(v)
       } catch {
         /* 取不到版本号不影响主页运行 */
       }
     })()
-    const refreshMemory = (): void => {
-      void window.api.system.memory().then(
-        (m) => alive && setMemInfo(m),
-        () => alive && setMemInfo(null)
-      )
-    }
     refreshMemory()
-    const timer = setInterval(refreshMemory, 30000)
     return () => {
       alive = false
-      clearInterval(timer)
     }
   }, [id])
+
+  // 已用内存轮询：常规 30s；超低占用模式下放宽周期并在窗口不可见时暂停。
+  useAdaptivePolling(refreshMemory, 30000, settings.lowUsageMode)
+
+  // 已安装版本随「当前版本目录」收敛：切换目录后重新拉取，内置选择器与脚本接口随之更新。
+  useEffect(() => {
+    let alive = true
+    void (async () => {
+      try {
+        const list = await window.api.installed.list()
+        if (alive) setInstalled(list)
+      } catch {
+        /* 已安装列表偶发失败不阻塞主页 */
+      }
+    })()
+    return () => {
+      alive = false
+    }
+  }, [activeDirId])
+
+  // 版本目录列表：供内置选择器与 hc.versionDirs.* 使用。
+  useEffect(() => {
+    void window.api.versionDirs.list().then(setDirs).catch(() => undefined)
+  }, [])
 
   /* ---------------- 选中版本 ---------------- */
 
@@ -816,6 +916,22 @@ export function CustomHomePage({ id }: { id: string }): JSX.Element {
       loaderName: loaderLabel(v.loader)
     }
   }, [installed, selectedVersionId])
+
+  // 版本目录列表（含展示名），供内置选择器与 hc.versionDirs.* 共用。
+  const versionDirInfos = useMemo<VersionDirInfo[]>(() => dirs.map(toVersionDirInfo), [dirs])
+
+  // 切换版本目录：主进程持久化选中项并失效缓存，installed 副作用随之重新拉取。
+  const selectVersionDir = useCallback(
+    async (next: string): Promise<string> => {
+      if (!dirs.some((d) => d.id === next)) throw new Error(`版本目录不可用：${next || '(空)'}`)
+      if (next !== activeDirId) {
+        await window.api.versionDirs.select(next)
+        await reloadSettings()
+      }
+      return next
+    },
+    [dirs, activeDirId, reloadSettings]
+  )
 
   const accountInfo = useMemo(
     () =>
@@ -878,39 +994,84 @@ export function CustomHomePage({ id }: { id: string }): JSX.Element {
 
   /* ---------------- 能力桥 ---------------- */
 
+  /**
+   * 当前生效的安全档位（开发模式专用）：
+   * 仅在开发模式「已授权且已开启」时才采用用户选择的档位，否则一律为「完全模拟」。
+   * 这样档位可以在设置页里保留，但离开开发模式后不会削弱正式环境的安全防护。
+   */
+  const securityMode = useMemo<'full' | 'warn' | 'off'>(() => {
+    const granted = settings.devModeGrantedUntil > Date.now()
+    if (!granted || !settings.devModeEnabled) return 'full'
+    return settings.devModeSecurityMode
+  }, [settings.devModeGrantedUntil, settings.devModeEnabled, settings.devModeSecurityMode])
+
+  /**
+   * 安全命中的三档处置（对应 homepage-debug.html 的 securityHit）：
+   *   - off  完全关闭：不检测，直接放行；
+   *   - warn 仅提示  ：写一条警告日志后放行，不阻止脚本；
+   *   - full 完全模拟：照常封锁并停用该主页（返回 true，调用方应中止当前动作）。
+   */
+  const securityHit = useCallback(
+    (reason: string, detail: string): boolean => {
+      if (securityMode === 'off') return false
+      if (securityMode === 'warn') {
+        const line = `[安全·仅提示] ${reason}${detail ? ` ｜ ${detail}` : ''}（真实启动器会立即停用该主页）`
+        console.warn(line)
+        window.api.homepage.log('warn', line)
+        return false
+      }
+      lockdown(reason, detail)
+      return true
+    },
+    [securityMode, lockdown]
+  )
+
   const clampMemory = useCallback(
     (raw: unknown): number => {
       const mb = Math.round(Number(raw))
-      if (!Number.isFinite(mb)) {
-        lockdown('主页脚本传入了非法的内存参数（疑似伪造 / 探测）', `memoryMb=${String(raw)}`)
-        throw new Error('内存参数非法')
-      }
       const cap = Math.max(1024, Math.floor((memInfo?.free ?? 16384) / 512) * 512)
+      if (!Number.isFinite(mb)) {
+        if (securityHit('主页脚本传入了非法的内存参数（疑似伪造 / 探测）', `memoryMb=${String(raw)}`)) {
+          throw new Error('内存参数非法')
+        }
+        // 仅提示 / 完全关闭：不阻断，回落到当前设置值。
+        return settings.memoryMb
+      }
       if (mb < 1024 || mb > cap) {
-        lockdown(
-          '主页脚本请求写入超出范围的内存参数（疑似越权篡改启动配置）',
-          `memoryMb=${mb}（允许 1024–${cap} MB）`
-        )
-        throw new Error(`内存参数超出允许范围（1024–${cap} MB）`)
+        if (
+          securityHit(
+            '主页脚本请求写入超出范围的内存参数（疑似越权篡改启动配置）',
+            `memoryMb=${mb}（允许 1024–${cap} MB）`
+          )
+        ) {
+          throw new Error(`内存参数超出允许范围（1024–${cap} MB）`)
+        }
+        // 仅提示 / 完全关闭：夹到允许范围内，避免真的写入越权值。
+        return Math.min(cap, Math.max(1024, mb))
       }
       return mb
     },
-    [memInfo, lockdown]
+    [memInfo, securityHit, settings.memoryMb]
   )
 
   const dispatch = useCallback(
     async (method: string, params: Record<string, unknown>): Promise<unknown> => {
       // 每条指令运行前都过一遍安全检查：脚本可能把危险代码藏进参数交给宿主执行。
-      let probeText = method
-      try {
-        probeText = `${method} ${JSON.stringify(params ?? {})}`
-      } catch {
-        /* 参数不可序列化时只查方法名 */
-      }
-      const hits = scanHomepageCode(probeText, 'payload')
-      if (hits.length > 0) {
-        lockdown(hits[0], `指令 ${method}：${hits.join('；')}`)
-        throw new Error('该指令被安全策略拦截，已停用该主页')
+      // 「完全关闭」档位下跳过扫描，便于开发者自由调试。
+      if (securityMode !== 'off') {
+        let probeText = method
+        try {
+          probeText = `${method} ${JSON.stringify(params ?? {})}`
+        } catch {
+          /* 参数不可序列化时只查方法名 */
+        }
+        // 异步扫描（分片让出事件循环），避免拖长指令响应；判定与同步版完全一致。
+        const hits = await scanHomepageCodeAsync(probeText, 'payload')
+        if (hits.length > 0) {
+          if (securityHit(hits[0], `指令 ${method}：${hits.join('；')}`)) {
+            throw new Error('该指令被安全策略拦截，已停用该主页')
+          }
+        }
       }
       switch (method) {
         case 'system.memory':
@@ -943,6 +1104,15 @@ export function CustomHomePage({ id }: { id: string }): JSX.Element {
           return selectedVersion?.loaderName ?? '原版'
         case 'versions.number':
           return selectedVersion?.number ?? ''
+        case 'versiondirs.list':
+          return versionDirInfos
+        case 'versiondirs.selected':
+          return activeDirId
+        case 'versiondirs.select': {
+          const next = String(params['id'] ?? '')
+          await selectVersionDir(next)
+          return next
+        }
         case 'launcher.version':
           return launcherVersion
         case 'game.state':
@@ -962,7 +1132,7 @@ export function CustomHomePage({ id }: { id: string }): JSX.Element {
           const opts: LaunchOptions = {
             versionId: selectedVersionId,
             accountId: selectedAccount.id,
-            gameDir: settings.gameDir,
+            gameDir: activeGameDir(settings),
             memoryMb: settings.memoryMb,
             javaPath: settings.javaPath || undefined
           }
@@ -1003,8 +1173,10 @@ export function CustomHomePage({ id }: { id: string }): JSX.Element {
           // 只放行安装清单里声明过的源：拼接 / 运行期生成的地址静态收集不到，多半是诱骗外链（F-13 / D06 / C10③）。
           const origin = httpOrigin(url)
           if (!origin || !approvedOrigins.includes(origin)) {
-            lockdown('脚本请求打开安装清单之外的链接（疑似诱骗外链）', url)
-            throw new Error('该链接不在安装时声明的外部地址清单内，已拒绝打开')
+            // 完全模拟：直接封锁；仅提示 / 完全关闭：放行继续打开。
+            if (securityHit('脚本请求打开安装清单之外的链接（疑似诱骗外链）', url)) {
+              throw new Error('该链接不在安装时声明的外部地址清单内，已拒绝打开')
+            }
           }
           await window.api.shell.openExternal(url)
           return url
@@ -1016,7 +1188,7 @@ export function CustomHomePage({ id }: { id: string }): JSX.Element {
     [
       memInfo,
       clampMemory,
-      lockdown,
+      securityHit,
       updateSettings,
       settings.memoryMb,
       settings.gameDir,
@@ -1030,6 +1202,9 @@ export function CustomHomePage({ id }: { id: string }): JSX.Element {
       installed,
       selectedVersionId,
       selectedVersion,
+      versionDirInfos,
+      activeDirId,
+      selectVersionDir,
       launcherVersion,
       launchState,
       running,
@@ -1069,6 +1244,8 @@ export function CustomHomePage({ id }: { id: string }): JSX.Element {
       versions: installed,
       selectedVersionId,
       selectedVersion,
+      versionDirs: versionDirInfos,
+      selectedVersionDirId: activeDirId,
       launcherVersion,
       launch: {
         state: launchState,
@@ -1098,6 +1275,8 @@ export function CustomHomePage({ id }: { id: string }): JSX.Element {
       installed,
       selectedVersionId,
       selectedVersion,
+      versionDirInfos,
+      activeDirId,
       launcherVersion,
       launchState,
       running,
@@ -1128,61 +1307,96 @@ export function CustomHomePage({ id }: { id: string }): JSX.Element {
 
   // 脚本 → 宿主：只接受本 iframe 发来的消息。
   useEffect(() => {
+    /**
+     * 处理一批运行时探针（新增元素 / 动态写入的源码）。
+     *
+     * 扫描已异步化（scanHomepageCodeAsync 分片让出事件循环），因此调用方把批次串行挂在
+     * probeChainRef 上：先到的批次先处理，绝不让任何一批被跳过（漏一批 = 漏一次检测）。
+     * 到达这里的元素其实已经进了 DOM，所以这里做的是「发现即封停」，真正的预防由
+     * 沙箱 iframe + CSP 承担。
+     */
+    const handleProbeBatch = async (batch: NonNullable<FrameProbe['batch']>): Promise<void> => {
+      for (const item of batch) {
+        const where = String(item?.where ?? 'element')
+        const text = String(item?.text ?? '')
+        if (where === FLOOD_WHERE) {
+          if (securityHit('短时间内在页面中插入大量元素，疑似规避安全检查', '运行时探针队列溢出')) return
+          continue
+        }
+        // 绕过 CSP 的隐蔽通道（WebRTC / STUN）：与是否授权联网无关，一律封锁（D08）。
+        if (where.startsWith('danger:')) {
+          if (securityHit('脚本使用了绕过 CSP 的隐蔽通道（WebRTC，疑似外泄 / 内网探测）', `${where.slice(7)} → ${text}`)) return
+          continue
+        }
+        // 未获准联网的脚本真的发起外部请求时立即封锁：拼接 / 模板构造出的地址静态收集不到（F-08），
+        // 这是 CSP 之外的第二道兜底。
+        if (where.startsWith('net:')) {
+          const origin = httpOrigin(text)
+          // 启动器通过 hc.account.avatar() 暴露的头像源属于宿主可信资源，不是脚本外链：
+          // 无论脚本是否授权联网都放行，否则只是显示玩家头像的主页会被误判成「非法联网」。
+          if (origin && avatarOrigin && origin === avatarOrigin) continue
+          if (!entry?.networkApproved) {
+            if (securityHit('未获准联网的脚本发起了外部请求（疑似伪装行为）', `${where.slice(4)} → ${text}`)) return
+            continue
+          }
+          // 已授权也要比对「源」：清单只放行安装时看到的那些源，其余一律按越权外泄处理（F-04 / D03 / D04）。
+          if (origin && !approvedOrigins.includes(origin)) {
+            if (
+              securityHit(
+                '脚本访问了安装清单之外的外部地址（疑似越权外泄）',
+                `${where.slice(4)} → ${text}（不在授权源清单内）`
+              )
+            ) {
+              return
+            }
+          }
+          continue
+        }
+        // write / writeln 注入脚本，或元素属性写成 javascript: 伪协议：按「伪装代码」处理（F-10 / B06）。
+        if (where.includes('#')) {
+          const [kind, flags] = where.split('#')
+          if (
+            securityHit(
+              '运行时动态写入了脚本 / 事件处理器 / javascript: 伪协议内容（疑似伪装代码）',
+              `${kind} 写入内容含：${flags}`
+            )
+          ) {
+            return
+          }
+          continue
+        }
+        // 不截断：截断会让危险关键字落在被砍掉的部分而漏检（F-01 / B01）。
+        // 异步扫描（分片让出事件循环）与同步版判定完全一致，只改变何时出结论。
+        const hits = await scanHomepageCodeAsync(text, 'code', { maxLength: 0 })
+        if (hits.length > 0) {
+          if (securityHit(hits[0], `${where}：${hits.join('；')}`)) return
+        }
+      }
+    }
+
     const onMessage = (e: MessageEvent): void => {
       const frame = frameRef.current
       if (!frame || e.source !== frame.contentWindow) return
-      const data = e.data as FrameCall | FrameHello | FrameProbe | null
+      const data = e.data as FrameCall | FrameHello | FrameProbe | FrameCursor | null
       if (!data || typeof data !== 'object' || data.hc !== 1) return
+
+      // 沙箱内鼠标移动：换算成宿主窗口坐标，驱动跟随光标的光晕（iframe 会吞掉 mousemove）。
+      if (data.kind === 'cursor') {
+        const rect = frame.getBoundingClientRect()
+        emitCursor(rect.left + Number(data.x || 0), rect.top + Number(data.y || 0))
+        return
+      }
 
       // 沙箱内「每个元素加载」后的探针：把新增元素 / 动态写入的源码再查一遍。
       if (data.kind === 'probe') {
         if (!Array.isArray(data.batch)) return
-        for (const item of data.batch) {
-          const where = String(item?.where ?? 'element')
-          const text = String(item?.text ?? '')
-          if (where === FLOOD_WHERE) {
-            lockdown('短时间内在页面中插入大量元素，疑似规避安全检查', '运行时探针队列溢出')
-            return
-          }
-          // 绕过 CSP 的隐蔽通道（WebRTC / STUN）：与是否授权联网无关，一律封锁（D08）。
-          if (where.startsWith('danger:')) {
-            lockdown('脚本使用了绕过 CSP 的隐蔽通道（WebRTC，疑似外泄 / 内网探测）', `${where.slice(7)} → ${text}`)
-            return
-          }
-          // 未获准联网的脚本真的发起外部请求时立即封锁：拼接 / 模板构造出的地址静态收集不到（F-08），
-          // 这是 CSP 之外的第二道兜底。
-          if (where.startsWith('net:')) {
-            if (!entry?.networkApproved) {
-              lockdown('未获准联网的脚本发起了外部请求（疑似伪装行为）', `${where.slice(4)} → ${text}`)
-              return
-            }
-            // 已授权也要比对「源」：清单只放行安装时看到的那些源，其余一律按越权外泄处理（F-04 / D03 / D04）。
-            const origin = httpOrigin(text)
-            if (origin && !approvedOrigins.includes(origin)) {
-              lockdown(
-                '脚本访问了安装清单之外的外部地址（疑似越权外泄）',
-                `${where.slice(4)} → ${text}（不在授权源清单内）`
-              )
-              return
-            }
-            continue
-          }
-          // write / writeln 注入脚本，或元素属性写成 javascript: 伪协议：按「伪装代码」处理（F-10 / B06）。
-          if (where.includes('#')) {
-            const [kind, flags] = where.split('#')
-            lockdown(
-              '运行时动态写入了脚本 / 事件处理器 / javascript: 伪协议内容（疑似伪装代码）',
-              `${kind} 写入内容含：${flags}`
-            )
-            return
-          }
-          // 不截断：截断会让危险关键字落在被砍掉的部分而漏检（F-01 / B01）。
-          const hits = scanHomepageCode(text, 'code', { maxLength: 0 })
-          if (hits.length > 0) {
-            lockdown(hits[0], `${where}：${hits.join('；')}`)
-            return
-          }
-        }
+        const batch = data.batch
+        // 串行排队：保证批次顺序，且不让「让出事件循环」影响「每一批迟早都会被检查」。
+        probeChainRef.current = probeChainRef.current
+          .then(() => handleProbeBatch(batch))
+          .catch(() => {
+            /* 单批异常不阻断后续批次 */
+          })
         return
       }
 
@@ -1217,7 +1431,7 @@ export function CustomHomePage({ id }: { id: string }): JSX.Element {
     }
     window.addEventListener('message', onMessage)
     return () => window.removeEventListener('message', onMessage)
-  }, [postToFrame, readTokens, snapshot, settings.debugMode, launchLog, lockdown, entry?.networkApproved, approvedOrigins])
+  }, [postToFrame, readTokens, snapshot, settings.debugMode, launchLog, securityHit, entry?.networkApproved, approvedOrigins, avatarOrigin])
 
   // 运行日志：仅在 Debug 模式推送给脚本，且只推增量。
   useEffect(() => {
@@ -1260,42 +1474,43 @@ export function CustomHomePage({ id }: { id: string }): JSX.Element {
   }, [srcDoc])
   useEffect(() => {
     if (!approved || !srcDoc) return
+    if (securityMode === 'off') return
     const timer = window.setTimeout(() => {
       if (helloRef.current) return
-      lockdown(
+      securityHit(
         '主页安全组件未生效，已拒绝运行',
         '未收到沙箱内安全检查 SDK 的握手（window.hc 缺失，CSP 也可能未注入）'
       )
     }, 6000)
     return () => window.clearTimeout(timer)
-  }, [approved, srcDoc, lockdown])
+  }, [approved, srcDoc, securityMode, securityHit])
 
   // 主进程在导航发生「前」拦下沙箱主页的对外跳转（F-05 / D01 / D02）：meta refresh 由 SDK
   // 就地摘除、location 赋值由主进程阻断。这类导航不受 connect-src 管辖，命中即视为外泄，
   // 这里负责把全屏封锁遮罩弹出来。
   useEffect(() => {
     return window.api.homepage.onNavBlocked((url) => {
-      lockdown('沙箱主页尝试跳转到外部地址（导航外泄）', url)
+      securityHit('沙箱主页尝试跳转到外部地址（导航外泄）', url)
     })
-  }, [lockdown])
+  }, [securityHit])
 
   if (error) {
     return (
       <div className="glass flex h-full flex-col items-center justify-center gap-3 rounded-[28px] p-10 text-center">
-        <div className="headline">自定义主页无法加载</div>
+        <div className="headline">{t('ch.loadFailed')}</div>
         <p className="caption selectable max-w-md">{error}</p>
       </div>
     )
   }
 
-  if (!entry) return <LoadingState text="正在载入自定义主页…" />
+  if (!entry) return <LoadingState text={t('ch.loading')} />
 
   return (
     <div className="relative h-full">
       {approved ? (
         <iframe
           ref={frameRef}
-          title={entry.meta.name || '自定义主页'}
+          title={entry.meta.name || t('ch.frameTitle')}
           sandbox="allow-scripts"
           srcDoc={srcDoc}
           className="h-full w-full border-0 no-drag"
@@ -1304,12 +1519,16 @@ export function CustomHomePage({ id }: { id: string }): JSX.Element {
       ) : (
         <HomepageGate
           id={entry.id}
-          cancelLabel="使用内置界面"
+          cancelLabel={t('ch.useBuiltin')}
           onApproved={(next) => {
             setEntry((prev) => (prev ? { ...prev, ...next } : prev))
             setPassed(true)
           }}
-          onCancel={() => void window.api.homepage.setActive('')}
+          // 关闭 / 取消：停用该主页并刷新设置，让外层 HomeRoute 退回内置「启动游戏」界面
+          //（只调 setActive('') 而不刷新，界面会一直停在闸门弹窗上，表现为「关闭无效」）。
+          onCancel={() => {
+            void window.api.homepage.setActive('').then(reloadSettings)
+          }}
         />
       )}
     </div>

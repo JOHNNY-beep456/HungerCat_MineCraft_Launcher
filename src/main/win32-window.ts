@@ -151,6 +151,15 @@ const placed = new Map<string, Placed>()
 const metaCache = new Map<string, { title: string; exe: string; kind: 'minecraft' }>()
 /** 被推迟的下发：用户正在亲手拖它 / 退避结束时重新摆放一次 */
 const retryTimers = new Map<string, ReturnType<typeof setTimeout>>()
+/**
+ * 渲染层正在拖动的桌面窗口（的 id）。
+ *
+ * 拖动期间**一次 SetWindowPos 都不能下发**：拖动的一方（渲染层在改预留矩形，
+ * 或者用户正按着这个外部窗口的标题栏）和我们又同时对同一个窗口做移动，
+ * MC 的 GL 窗口会直接崩掉。这里由渲染层在 pointerdown / pointerup 时精确置位，
+ * 补上「渲染层状态更新是异步的」这段空窗期 —— 光靠渲染层的 hidden 标志封不住。
+ */
+const dragging = new Set<string>()
 /** 宿主（启动器）窗口句柄 */
 let hostHwnd: bigint | null = null
 
@@ -348,11 +357,32 @@ function schedulePlaceRetry(id: string): void {
     retryTimers.delete(id)
     const entry = placed.get(id)
     if (!entry || !entry.hole) return
+    // 还在拖动（渲染层在拖这个桌面窗口，或用户正按着它自己的标题栏）：
+    // 继续往后推，绝不在人家手里动这个窗口 —— 直到真的松手再补上。
+    const hwnd = resolve(id)
+    if (dragging.has(id) || (hwnd !== null && inMoveSizeLoop(hwnd))) {
+      schedulePlaceRetry(id)
+      return
+    }
     placeWindow(id, entry.hole, entry.raised === true)
   }, PLACE_RETRY_MS)
   // 别让这个定时器拖住进程退出
   timer.unref()
   retryTimers.set(id, timer)
+}
+
+/**
+ * 渲染层开始 / 结束拖动某个桌面窗口。
+ * 拖动期间禁止对它下发任何 SetWindowPos（含延迟重试）；松手后补一次摆放。
+ */
+export function setDragging(id: string, on: boolean): void {
+  if (on) {
+    dragging.add(id)
+    return
+  }
+  dragging.delete(id)
+  const entry = placed.get(id)
+  if (entry?.hole) schedulePlaceRetry(id)
 }
 
 function clearRetry(id: string): void {
@@ -589,6 +619,10 @@ export function placeWindow(id: string, hole: NativeWindowRect, raise = false): 
   if (!hostOrigin) return false
 
   const entry = placed.get(id)
+  // 渲染层正拖着这个桌面窗口：拖动期间一次都不下发（也不改洞），等松手后补。
+  // 关键是**不要**在这里写 entry.hole —— 拖动时渲染层会把洞收起来（setVisible
+  // false），这里再写回洞就等于把它又露出来了。
+  if (dragging.has(id)) return true
   // 失败退避期：这个窗口的下发已经连续失败过，先晾一会儿再试，别把它打死。
   if (entry?.cooldownUntil !== undefined && Date.now() < entry.cooldownUntil) {
     schedulePlaceRetry(id)
@@ -733,6 +767,7 @@ export function setHoleVisible(id: string, visible: boolean): boolean {
 /** 忘掉某个窗口（已销毁 / 被关掉）：清记录并重建区域 */
 function forget(id: string): void {
   clearRetry(id)
+  dragging.delete(id)
   if (!placed.delete(id)) return
   metaCache.delete(id)
   applyRegion()
@@ -744,6 +779,7 @@ export function releaseWindow(id: string): boolean {
   const entry = placed.get(id)
   placed.delete(id)
   clearRetry(id)
+  dragging.delete(id)
   const hwnd = resolve(id)
   if (!api || !hwnd || !entry) {
     applyRegion()
@@ -778,6 +814,7 @@ export function releaseAll(): number {
     if (releaseWindow(id)) n++
   }
   for (const id of Array.from(retryTimers.keys())) clearRetry(id)
+  dragging.clear()
   metaCache.clear()
   // releaseWindow 内部会重建区域；这里兜底确保宿主窗口恢复整块（并让区域缓存失效）
   lastRegionKey = null

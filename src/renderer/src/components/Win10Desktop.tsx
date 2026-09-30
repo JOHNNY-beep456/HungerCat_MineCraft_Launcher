@@ -12,7 +12,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as
 import type { NativeWindowInfo } from '@shared/types'
 import { NAV, type PageId } from './Sidebar'
 import { Avatar, Icon } from './ui'
-import { useApp } from '../store'
+import { activeGameDir, useApp } from '../store'
 import { useRuntime } from '../runtime'
 import { renderPage } from '../pages/router'
 import { InstanceManagePage } from '../pages/InstanceManagePage'
@@ -35,7 +35,7 @@ interface WinState {
   managingId?: string
   /** 自实现资源管理器窗口当前显示的目录 */
   filePath?: string
-  /** 被搬进桌面的外部窗口（MC / 资源管理器） */
+  /** 被摆进桌面的外部窗口（目前只有 MC） */
   native?: { id: string; kind: NativeWindowInfo['kind'] }
   x: number
   y: number
@@ -78,7 +78,7 @@ function Glyph({ d, size = 12 }: { d: string; size?: number }): JSX.Element {
 /* ---------------- 外部窗口占位 ---------------- */
 
 /**
- * 被摆进桌面的 MC / 资源管理器窗口对应的占位层。
+ * 被摆进桌面的 MC 窗口对应的占位层。
  *
  * 这里不画任何内容：外部窗口始终是独立顶层窗口，被摆在这块矩形的屏幕位置上，
  * 而启动器窗口在这块矩形上挖了洞（SetWindowRgn），于是它直接从这里透出来。
@@ -142,6 +142,10 @@ function NativeView({
       // 收起空洞：宿主窗口恢复整块，外部窗口被压在下面，启动器界面完整可见。
       // 用户正在拖动这个桌面窗口时也走这里 —— 拖动期间**一次都不下发 SetWindowPos**，
       // 松手后由下一次 sync(true) 一次性摆到新位置。
+      // 清掉去重缓存：拖动时预留矩形变了，但拖动期间不下发，松手时必须**强制**摆一次，
+      // 否则会被「矩形看起来没变」的判重挡掉。
+      lastSent.current = null
+      lastAt.current = 0
       void window.api.desktop.setVisible(id, false)
       return
     }
@@ -168,7 +172,7 @@ function NativeView({
 /* ---------------- 桌面 ---------------- */
 
 export function Win10Desktop(): JSX.Element {
-  const { settings, selectedAccount, fileManagerPath, fileManagerSeq, openFileManager, closeFileManager } =
+  const { settings, selectedAccount, fileManagerPath, fileManagerSeq, openFileManager, closeFileManager, t } =
     useApp()
   const { downloads } = useRuntime()
   const [wins, setWins] = useState<WinState[]>([])
@@ -178,7 +182,7 @@ export function Win10Desktop(): JSX.Element {
   const [startOpen, setStartOpen] = useState(false)
   const [now, setNow] = useState(() => new Date())
   const zRef = useRef(10)
-  const dragRef = useRef<{ key: string; dx: number; dy: number } | null>(null)
+  const dragRef = useRef<{ key: string; dx: number; dy: number; nativeId?: string } | null>(null)
   /**
    * 正在被拖动的桌面窗口 key。
    *
@@ -197,29 +201,20 @@ export function Win10Desktop(): JSX.Element {
     [settings.mode]
   )
 
-  /* --- 自动全屏：进入即全屏，退出该模式（组件卸载）时还原 --- */
+  /* --- 强置顶外壳：进入即全屏 + 最高层级置顶 + 从系统任务栏隐藏，
+         让 Windows 的任务栏与开始菜单都盖不进来；退出该模式（组件卸载）时还原， */
   useEffect(() => {
-    void window.api.window.setFullscreen(true)
+    void window.api.window.setDesktopMode(true)
     return () => {
-      void window.api.window.setFullscreen(false)
-    }
-  }, [])
-
-  /* --- 桌面置顶 + 退出时把外部窗口还给系统 --- */
-  useEffect(() => {
-    void window.api.window.setAlwaysOnTop(true)
-    return () => {
-      void window.api.window.setAlwaysOnTop(false)
+      void window.api.window.setDesktopMode(false)
       // 外部窗口是宿主窗口的子窗口，会随宿主一起销毁：退出前必须还给系统
       void window.api.desktop.releaseAll()
     }
   }, [])
 
-  /* --- 外部窗口：自动捕获 MC 与文件资源管理器 --- */
+  /* --- 外部窗口：自动摆放 Minecraft --- */
   const [nativeOk, setNativeOk] = useState(false)
   const [nativeList, setNativeList] = useState<NativeWindowInfo[]>([])
-  /** 被用户主动移出桌面的窗口，本次会话不再自动搬回（窗口关掉重开是新的句柄，会重新捕获） */
-  const dismissed = useRef<Set<string>>(new Set())
 
   /**
    * 重新拉取外部窗口列表。
@@ -258,28 +253,35 @@ export function Win10Desktop(): JSX.Element {
       })
     }
     scan()
-    const timer = setInterval(scan, 2500)
+    // 超低占用模式：扫描周期放宽到约 3 倍，并在窗口不可见时暂停（重新可见立即补一次）。
+    const period = settings.lowUsageMode ? 8000 : 2500
+    const tick = (): void => {
+      if (settings.lowUsageMode && document.visibilityState === 'hidden') return
+      scan()
+    }
+    const timer = setInterval(tick, period)
+    const onVisible = (): void => {
+      if (document.visibilityState !== 'hidden') scan()
+    }
+    if (settings.lowUsageMode) document.addEventListener('visibilitychange', onVisible)
     return () => {
       alive = false
       clearInterval(timer)
+      document.removeEventListener('visibilitychange', onVisible)
     }
-  }, [nativeOk])
+  }, [nativeOk, settings.lowUsageMode])
 
-  // 新发现的窗口自动搬进桌面（这就是「自动捕获」），已移出的不再自动搬回
+  // MC 启动后自动摆进桌面（列表里只有 MC），窗口还在就同步标题、没了就等下一轮移除
   useEffect(() => {
     if (!nativeOk || nativeList.length === 0) return
-    const present = new Set(nativeList.map((n) => n.id))
-    for (const id of Array.from(dismissed.current)) {
-      if (!present.has(id)) dismissed.current.delete(id)
-    }
     setWins((ws) => {
       let next = ws
       for (const n of nativeList) {
-        if (dismissed.current.has(n.id)) continue
+        if (n.kind !== 'minecraft') continue
         const key = `native:${n.id}`
         const exist = next.find((w) => w.key === key)
         if (exist) {
-          // 标题会变（例如资源管理器切目录），保持同步
+          // 标题会变（例如 MC 切到存档标题），保持同步
           if (exist.title !== n.title) next = next.map((w) => (w.key === key ? { ...w, title: n.title } : w))
           continue
         }
@@ -331,7 +333,7 @@ export function Win10Desktop(): JSX.Element {
         {
           key: FILES_KEY,
           page: 'home',
-          title: '文件资源管理器',
+          title: t('shell.win10.fileExplorer'),
           icon: 'folder',
           filePath: fileManagerPath,
           x: Math.min(96 + idx * 26, Math.max(0, vw - 560)),
@@ -344,7 +346,7 @@ export function Win10Desktop(): JSX.Element {
         }
       ]
     })
-  }, [fileManagerPath, fileManagerSeq])
+  }, [fileManagerPath, fileManagerSeq, t])
 
   /* --- 任务栏时钟 --- */
   useEffect(() => {
@@ -367,10 +369,13 @@ export function Win10Desktop(): JSX.Element {
     return () => window.removeEventListener('keydown', onKey)
   }, [])
 
-  const metaOf = useCallback((page: PageId): { title: string; icon: string } => {
-    const item = NAV.find((n) => n.id === page)
-    return { title: item?.label ?? page, icon: item?.icon ?? 'cube' }
-  }, [])
+  const metaOf = useCallback(
+    (page: PageId): { title: string; icon: string } => {
+      const item = NAV.find((n) => n.id === page)
+      return { title: t(`nav.${page}`), icon: item?.icon ?? 'cube' }
+    },
+    [t]
+  )
 
   /* ---------------- 窗口操作 ---------------- */
 
@@ -425,7 +430,7 @@ export function Win10Desktop(): JSX.Element {
         {
           key,
           page: 'instances',
-          title: `实例管理 · ${versionId}`,
+          title: t('shell.win10.instanceManage', { id: versionId }),
           icon: 'box',
           managingId: versionId,
           x: Math.min(96 + idx * 26, Math.max(0, vw - 560)),
@@ -438,7 +443,7 @@ export function Win10Desktop(): JSX.Element {
         }
       ]
     })
-  }, [])
+  }, [t])
 
   const closeWin = useCallback((key: string) => {
     setWins((ws) => ws.filter((w) => w.key !== key))
@@ -449,34 +454,6 @@ export function Win10Desktop(): JSX.Element {
     closeFileManager()
     setWins((ws) => ws.filter((w) => w.key !== FILES_KEY))
   }, [closeFileManager])
-
-  /**
-   * 关闭桌面里的外部窗口 = 还给系统（**不会**关掉玩家的 MC / 资源管理器），
-   * 并记住本次会话不再自动搬回。
-   */
-  const closeNative = useCallback((key: string, id: string) => {
-    dismissed.current.add(id)
-    void window.api.desktop.release(id)
-    setWins((ws) => ws.filter((w) => w.key !== key))
-  }, [])
-
-  /** 开始菜单里手动把某个外部窗口搬回桌面（解除「已移出」标记后立即重扫） */
-  const captureNative = useCallback(
-    (n: NativeWindowInfo) => {
-      dismissed.current.delete(n.id)
-      setStartOpen(false)
-      refreshNative()
-    },
-    [refreshNative]
-  )
-
-  /** 把所有外部窗口一次性还给系统 */
-  const releaseAllNative = useCallback((list: NativeWindowInfo[]) => {
-    for (const n of list) dismissed.current.add(n.id)
-    void window.api.desktop.releaseAll()
-    setWins((ws) => ws.filter((w) => !w.native))
-    setStartOpen(false)
-  }, [])
 
   const minimizeWin = useCallback((key: string) => {
     setWins((ws) => ws.map((w) => (w.key === key ? { ...w, minimized: true } : w)))
@@ -498,18 +475,28 @@ export function Win10Desktop(): JSX.Element {
     [wins, minimizeWin, focusWin]
   )
 
-  const renameManage = useCallback((key: string, versionId: string) => {
-    setWins((ws) =>
-      ws.map((w) => (w.key === key ? { ...w, managingId: versionId, title: `实例管理 · ${versionId}` } : w))
-    )
-  }, [])
+  const renameManage = useCallback(
+    (key: string, versionId: string) => {
+      setWins((ws) =>
+        ws.map((w) =>
+          w.key === key
+            ? { ...w, managingId: versionId, title: t('shell.win10.instanceManage', { id: versionId }) }
+            : w
+        )
+      )
+    },
+    [t]
+  )
 
   /* ---------------- 拖动 ---------------- */
 
   const beginDrag = (e: ReactPointerEvent<HTMLDivElement>, w: WinState): void => {
     if (w.maximized) return
     if ((e.target as HTMLElement).closest('button')) return
-    dragRef.current = { key: w.key, dx: e.clientX - w.x, dy: e.clientY - w.y }
+    dragRef.current = { key: w.key, dx: e.clientX - w.x, dy: e.clientY - w.y, nativeId: w.native?.id }
+    // 立刻同步告诉主进程「开始拖了」：React 的 setState 是异步的，等 hidden 生效再
+    // 让主进程停下来，中间这段空窗期里已经在飞的 place() 仍会 SetWindowPos。
+    if (w.native) void window.api.desktop.drag(w.native.id, true)
     setDragKey(w.key)
     e.currentTarget.setPointerCapture(e.pointerId)
   }
@@ -526,7 +513,10 @@ export function Win10Desktop(): JSX.Element {
   }
 
   const endDrag = (): void => {
+    const nativeId = dragRef.current?.nativeId
     dragRef.current = null
+    // 先解除「拖动中」，松手后 NativeView 的 sync(true) 才允许真正下发一次摆放。
+    if (nativeId) void window.api.desktop.drag(nativeId, false)
     setDragKey(null)
   }
 
@@ -573,7 +563,7 @@ export function Win10Desktop(): JSX.Element {
             key={item.id}
             type="button"
             className={`win10-icon${selected === item.id ? ' is-selected' : ''}`}
-            aria-label={item.label}
+            aria-label={t(`nav.${item.id}`)}
             onMouseDown={(e) => {
               e.stopPropagation()
               setSelected(item.id)
@@ -582,12 +572,12 @@ export function Win10Desktop(): JSX.Element {
             onKeyDown={(e) => {
               if (e.key === 'Enter') openPage(item.id)
             }}
-            title={`${item.label}（双击打开）`}
+            title={t('shell.win10.openOnDoubleClick', { name: t(`nav.${item.id}`) })}
           >
             <span className="win10-icon-tile">
               <Icon name={item.icon} size={24} />
             </span>
-            <span className="win10-icon-label">{item.label}</span>
+            <span className="win10-icon-label">{t(`nav.${item.id}`)}</span>
           </button>
         ))}
 
@@ -597,21 +587,21 @@ export function Win10Desktop(): JSX.Element {
         <button
           type="button"
           className={`win10-icon${selected === FILES_KEY ? ' is-selected' : ''}`}
-          aria-label="文件资源管理器"
+          aria-label={t('shell.win10.fileExplorer')}
           onMouseDown={(e) => {
             e.stopPropagation()
             setSelected(FILES_KEY)
           }}
-          onDoubleClick={() => openFileManager(settings.gameDir)}
+          onDoubleClick={() => openFileManager(activeGameDir(settings))}
           onKeyDown={(e) => {
-            if (e.key === 'Enter') openFileManager(settings.gameDir)
+            if (e.key === 'Enter') openFileManager(activeGameDir(settings))
           }}
-          title="文件资源管理器（双击打开）"
+          title={t('shell.win10.openOnDoubleClick', { name: t('shell.win10.fileExplorer') })}
         >
           <span className="win10-icon-tile">
             <Icon name="folder" size={24} />
           </span>
-          <span className="win10-icon-label">文件资源管理器</span>
+          <span className="win10-icon-label">{t('shell.win10.fileExplorer')}</span>
         </button>
       </div>
 
@@ -619,7 +609,7 @@ export function Win10Desktop(): JSX.Element {
       {wins.map((w) => (
         <section
           key={w.key}
-          className="win10-window"
+          className={`win10-window${w.native ? ' is-native' : ''}`}
           style={{
             left: w.maximized ? 0 : w.x,
             top: w.maximized ? 0 : w.y,
@@ -630,46 +620,52 @@ export function Win10Desktop(): JSX.Element {
           }}
           onMouseDown={() => focusWin(w.key)}
         >
-          <div
-            className="win10-titlebar is-draggable"
-            onPointerDown={(e) => beginDrag(e, w)}
-            onPointerMove={(e) => moveDrag(e, w)}
-            onPointerUp={endDrag}
-            onPointerCancel={endDrag}
-            onDoubleClick={() => toggleMax(w.key)}
-          >
-            <span style={{ color: 'var(--fill-primary)', display: 'inline-flex' }}>
-              <Icon name={w.icon} size={15} />
-            </span>
-            <span className="win10-title">{w.title}</span>
-            <div className="win10-controls">
-              <button className="win10-ctl" title="最小化" aria-label="最小化" onClick={() => minimizeWin(w.key)}>
-                <Glyph d="M2 8h12" />
-              </button>
-              <button
-                className="win10-ctl"
-                title={w.maximized ? '还原' : '最大化'}
-                aria-label={w.maximized ? '还原' : '最大化'}
-                onClick={() => toggleMax(w.key)}
-              >
-                {w.maximized ? (
-                  <Glyph d="M4 6h6v6H4zM6 4h6v6" size={13} />
-                ) : (
-                  <Glyph d="M3.5 3.5h9v9h-9z" size={13} />
-                )}
-              </button>
-              <button
-                className="win10-ctl is-close"
-                title={w.native ? '从桌面移出（不关闭该窗口）' : '关闭'}
-                aria-label={w.native ? '从桌面移出（不关闭该窗口）' : '关闭'}
-                onClick={() =>
-                  w.native ? closeNative(w.key, w.native.id) : w.key === FILES_KEY ? closeFiles() : closeWin(w.key)
-                }
-              >
-                <Glyph d="M4 4l8 8M12 4l-8 8" size={13} />
-              </button>
+          {/* MC 用它自己系统标题栏：桌面这里不画「桌面模式标题栏」，整块都让给它 */}
+          {!w.native && (
+            <div
+              className="win10-titlebar is-draggable"
+              onPointerDown={(e) => beginDrag(e, w)}
+              onPointerMove={(e) => moveDrag(e, w)}
+              onPointerUp={endDrag}
+              onPointerCancel={endDrag}
+              onDoubleClick={() => toggleMax(w.key)}
+            >
+              <span style={{ color: 'var(--fill-primary)', display: 'inline-flex' }}>
+                <Icon name={w.icon} size={15} />
+              </span>
+              <span className="win10-title">{w.title}</span>
+              <div className="win10-controls">
+                <button
+                  className="win10-ctl"
+                  title={t('titlebar.minimize')}
+                  aria-label={t('titlebar.minimize')}
+                  onClick={() => minimizeWin(w.key)}
+                >
+                  <Glyph d="M2 8h12" />
+                </button>
+                <button
+                  className="win10-ctl"
+                  title={w.maximized ? t('titlebar.restore') : t('titlebar.maximize')}
+                  aria-label={w.maximized ? t('titlebar.restore') : t('titlebar.maximize')}
+                  onClick={() => toggleMax(w.key)}
+                >
+                  {w.maximized ? (
+                    <Glyph d="M4 6h6v6H4zM6 4h6v6" size={13} />
+                  ) : (
+                    <Glyph d="M3.5 3.5h9v9h-9z" size={13} />
+                  )}
+                </button>
+                <button
+                  className="win10-ctl is-close"
+                  title={t('titlebar.close')}
+                  aria-label={t('titlebar.close')}
+                  onClick={() => (w.key === FILES_KEY ? closeFiles() : closeWin(w.key))}
+                >
+                  <Glyph d="M4 4l8 8M12 4l-8 8" size={13} />
+                </button>
+              </div>
             </div>
-          </div>
+          )}
 
           <div
             className="win10-body"
@@ -686,7 +682,7 @@ export function Win10Desktop(): JSX.Element {
               />
             ) : w.filePath ? (
               // 自实现资源管理器：key 用当前目录，换目录时整块重挂载，内部状态干净
-              <FileManager key={w.filePath} initialPath={w.filePath} />
+              <FileManager key={w.filePath} initialPath={w.filePath} editOnDoubleClick />
             ) : w.managingId ? (
               <InstanceManagePage
                 versionId={w.managingId}
@@ -710,14 +706,19 @@ export function Win10Desktop(): JSX.Element {
               skinUrl={selectedAccount?.skinUrl}
               authType={selectedAccount?.authType}
               yggdrasilServer={selectedAccount?.yggdrasilServer}
+              offline={selectedAccount?.offline}
               size={34}
             />
             <div className="min-w-0">
               <div className="truncate text-[13px] font-semibold leading-tight">
-                {selectedAccount?.name ?? '未登录'}
+                {selectedAccount?.name ?? t('sidebar.notLoggedIn')}
               </div>
               <div className="caption">
-                {settings.mode === 'local' ? '本地模式' : settings.mode === 'minimal' ? '极简模式' : '普通模式'}
+                {settings.mode === 'local'
+                  ? t('sidebar.localMode')
+                  : settings.mode === 'minimal'
+                    ? t('sidebar.minimalMode')
+                    : t('shell.win10.modeNormal')}
               </div>
             </div>
           </div>
@@ -732,48 +733,9 @@ export function Win10Desktop(): JSX.Element {
               <span style={{ color: 'var(--fill-primary)', display: 'inline-flex' }}>
                 <Icon name={item.icon} size={18} />
               </span>
-              <span className="text-[13px] font-medium">{item.label}</span>
+              <span className="text-[13px] font-medium">{t(`nav.${item.id}`)}</span>
             </button>
           ))}
-          {nativeOk && nativeList.length > 0 && (
-            <>
-              <div style={{ height: 1, background: 'var(--divider)', margin: '10px 0' }} />
-              <div className="caption" style={{ padding: '0 10px 4px' }}>
-                自动捕获的外部窗口（点一下搬进桌面）
-              </div>
-              {nativeList.map((n) => (
-                <button
-                  key={n.id}
-                  type="button"
-                  className="win10-startitem"
-                  role="menuitem"
-                  onClick={() => captureNative(n)}
-                  style={{ opacity: dismissed.current.has(n.id) ? 0.55 : 1 }}
-                >
-                  <span style={{ color: 'var(--fill-primary)', display: 'inline-flex' }}>
-                    <Icon name={n.kind === 'minecraft' ? 'play' : 'folder'} size={18} />
-                  </span>
-                  <span
-                    className="text-[13px] font-medium"
-                    style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
-                  >
-                    {n.title}
-                  </span>
-                </button>
-              ))}
-              <button
-                type="button"
-                className="win10-startitem"
-                role="menuitem"
-                onClick={() => releaseAllNative(nativeList)}
-              >
-                <span style={{ color: 'var(--text-secondary)', display: 'inline-flex' }}>
-                  <Icon name="chevronLeft" size={18} />
-                </span>
-                <span className="text-[13px] font-medium">全部还给系统</span>
-              </button>
-            </>
-          )}
           <div style={{ height: 1, background: 'var(--divider)', margin: '10px 0' }} />
           <button
             type="button"
@@ -784,7 +746,7 @@ export function Win10Desktop(): JSX.Element {
             <span style={{ color: 'var(--fill-danger)', display: 'inline-flex' }}>
               <Icon name="xmark" size={18} />
             </span>
-            <span className="text-[13px] font-medium">退出启动器</span>
+            <span className="text-[13px] font-medium">{t('shell.win10.exitLauncher')}</span>
           </button>
         </div>
       )}
@@ -794,8 +756,8 @@ export function Win10Desktop(): JSX.Element {
         <button
           type="button"
           className={`win10-task-btn${startOpen ? ' is-active' : ''}`}
-          title="开始"
-          aria-label="开始"
+          title={t('shell.win10.start')}
+          aria-label={t('shell.win10.start')}
           aria-expanded={startOpen}
           onMouseDown={(e) => e.stopPropagation()}
           onClick={() => setStartOpen((v) => !v)}
@@ -822,8 +784,8 @@ export function Win10Desktop(): JSX.Element {
             <button
               type="button"
               className="win10-task-btn"
-              title="下载进度"
-              aria-label="下载进度"
+              title={t('shell.win10.downloadProgress')}
+              aria-label={t('shell.win10.downloadProgress')}
               onMouseDown={(e) => e.stopPropagation()}
               onClick={() => openPage('downloads')}
             >
