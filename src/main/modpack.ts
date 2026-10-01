@@ -17,6 +17,8 @@ import type {
 import type { MirrorKind } from './mirror'
 import { streamDownload } from './stream-download'
 import { netRequest } from './broker'
+import { CLASS_DIR, cfClassIds, cfFileById, cfFilesByIds, type CfFile } from './curseforge'
+import { defaultCurseforgeKey } from './curseforge-key'
 import { resolveVersionJson, createVanillaInstance } from './versions'
 import { installVersion } from './downloader'
 import { loaderVersions, installLoader } from './loaders'
@@ -688,6 +690,9 @@ async function applyModpackFiles(
   }
 
   const concurrency = Math.max(1, settings.get().maxDownloadConcurrency || 1)
+  // CurseForge 文件先用官方 API 批量解析（文件名 / 下载地址 / 校验信息 / 落点目录），
+  // 剩下的漏网条目由下面的老兜底逐个处理。
+  await preResolveCurseFiles(files, signal)
   let index = 0
   const workers = Array.from({ length: Math.min(concurrency, Math.max(1, total)) }, async () => {
     for (;;) {
@@ -726,17 +731,11 @@ async function applyModpackFiles(
       }
       await fsp.mkdir(dirname(dest), { recursive: true })
       emit(rel)
-      // 候选源：清单给出的地址（含 Modrinth 镜像）；CurseFile 再补 CurseForge API 端点
+      // 候选源：清单给出的地址（含 Modrinth 镜像）与备用镜像。
+      // 不再附加 www.curseforge.com/api/v1/... 那两个端点——它们要求浏览器登录态，
+      // 启动器请求必然失败；CurseForge 文件的真实地址已在上面的批量解析里拿到。
       const candidates = Array.from(
-        new Set([
-          ...(f.mirrors && f.mirrors.length > 0 ? f.mirrors : [f.url]),
-          ...(f.curseFile
-            ? [
-                `https://www.curseforge.com/api/v1/mods/${f.curseFile.projectID}/files/${f.curseFile.fileID}/download-with-ip`,
-                `https://www.curseforge.com/api/v1/mods/${f.curseFile.projectID}/files/${f.curseFile.fileID}/download`
-              ]
-            : [])
-        ])
+        new Set([...(f.mirrors && f.mirrors.length > 0 ? f.mirrors : [f.url])])
       ).filter(Boolean)
 
       // 下载 + 完整性校验：单次下载可能因服务器提前断流 / 镜像截断得到不完整文件，
@@ -826,6 +825,54 @@ async function applyModpackFiles(
 /* ------------------------------------------------------------------ */
 /* 导入 / 导出                                                         */
 /* ------------------------------------------------------------------ */
+
+/**
+ * 整合包内 CurseForge 文件的批量解析（官方 Core API）。
+ *
+ * 两次批量请求即可：POST /mods/files 一次拿齐 fileName / 下载地址 / 体积 / SHA-1，
+ * POST /mods 一次拿到每个项目的 classId，据此把文件放进正确的目录
+ * （mods / resourcepacks / shaderpacks）。
+ *
+ * 这替换了原先依赖 cursemeta.dries007.net 与 addons-ecs.forgesvc.net 的逐文件探测
+ * ——那两个第三方镜像早已停服，导致 CurseForge 整合包大量文件只能靠重定向猜文件名、
+ * 拿不到体积与校验信息。
+ *
+ * 没配 KEY、或某个文件接口没返回时保持原样，交给下载阶段的老兜底继续处理。
+ */
+async function preResolveCurseFiles(files: PackFile[], signal?: AbortSignal): Promise<void> {
+  const key = defaultCurseforgeKey()
+  if (!key) return
+  const refs = files.filter((f) => f.curseFile)
+  if (refs.length === 0) return
+  const projectIds = [...new Set(refs.map((f) => f.curseFile?.projectID ?? 0))]
+  const fileIds = [...new Set(refs.map((f) => f.curseFile?.fileID ?? 0))]
+  let infos: CfFile[]
+  let classIds: Map<number, number>
+  try {
+    ;[infos, classIds] = await Promise.all([cfFilesByIds(key, fileIds), cfClassIds(key, projectIds)])
+  } catch {
+    // KEY 失效 / 网络异常：整体退回老兜底，不打断导入
+    return
+  }
+  const byId = new Map(infos.map((f) => [f.id, f]))
+  for (const f of refs) {
+    if (signal?.aborted) return
+    const ref = f.curseFile
+    if (!ref) continue
+    const info = byId.get(ref.fileID) ?? (await cfFileById(key, ref.projectID, ref.fileID).catch(() => null))
+    if (!info) continue
+    const dir = CLASS_DIR[classIds.get(ref.projectID) ?? 6] ?? 'mods'
+    const name = sanitizeFileName(info.fileName)
+    if (name) f.path = `${dir}/${name}`
+    if (info.downloadUrl) f.url = info.downloadUrl
+    const sha1 = info.hashes?.find((h) => h.algo === 1)?.value
+    if (sha1) f.sha1 = sha1.toLowerCase()
+    if (info.fileLength > 0) f.size = info.fileLength
+    // 已经拿到官方下载地址：清掉标记，下载阶段不必再走老镜像探测。
+    // 拿不到地址（作者禁止第三方分发）时保留标记，让老兜底再试一次。
+    if (info.downloadUrl) delete f.curseFile
+  }
+}
 
 export async function importModpack(
   archive: string,

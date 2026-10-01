@@ -153,11 +153,21 @@ async function streamOnce(url: string, dest: string, opts: StreamDownloadOptions
   await fsp.mkdir(dirname(dest), { recursive: true })
 
   let size = sizeHint ?? 0
-  if (size <= 0) {
+  // 分段下载必须打在「真正提供 Range 的那台主机」上：CurseForge 的 edge.forgecdn.net
+  // 会 302 到 mediafilez.forgecdn.net，而前者对带 Range 的请求直接回 404（后者才回 206）。
+  // 因此跟随一次重定向拿到最终地址。
+  let direct = url
+  // 只有「大小未知」或「要走分段」时才探测：
+  //   * 大小未知：HEAD 顺便取 content-length；
+  //   * 已知且要走分段：仍需 HEAD 解析重定向。
+  // 已知大小且是小文件时**完全跳过 HEAD**——这一步在重定向 CDN 上要约 1s，
+  // 而模组/资源包绝大多数都是小文件，逐个 HEAD 是下载慢的主因。
+  if (size <= 0 || size >= PARALLEL_THRESHOLD) {
     try {
       const head = await fetch(url, { method: 'HEAD', headers: { ...UA, ...(opts.headers ?? {}) }, signal })
       const cl = Number(head.headers.get('content-length') ?? 0)
-      if (cl > 0) size = cl
+      if (size <= 0 && cl > 0) size = cl
+      if (head.url && head.url !== url) direct = head.url
     } catch {
       /* 服务器不支持 HEAD 时忽略，退化为单连接 */
     }
@@ -166,10 +176,16 @@ async function streamOnce(url: string, dest: string, opts: StreamDownloadOptions
 
   // 大文件优先动态分段；服务器不支持 Range（返回 200）时并行流程返回 false，回退单连接。
   if (size >= PARALLEL_THRESHOLD) {
-    const ok = await parallelDownload(url, dest, size, opts)
-    if (ok) return
+    const ok = await parallelDownload(direct, dest, size, opts)
+    if (ok) {
+      // 防御：若 sizeHint 与实际文件不符（服务端换了同名的另一个文件），分段下载会按
+      // sizeHint 截断。这里核对落盘大小，不符则丢弃并回退单连接完整重下。
+      const st = await fsp.stat(dest).catch(() => null)
+      if (st && st.size === size) return
+      await fsp.rm(dest, { force: true }).catch(() => {})
+    }
   }
-  await singleDownload(url, dest, opts)
+  await singleDownload(direct, dest, opts)
 }
 
 /**
@@ -263,6 +279,13 @@ async function downloadSegment(
       }
       // 416：请求区间越界（通常意味着服务器不支持 Range 或文件比预期短），同样回退单连接。
       if (res.status === 416) {
+        markRangeUnsupported()
+        return false
+      }
+      // 404 / 405 / 403：部分 CDN（典型如 CurseForge 的 edge.forgecdn.net）对「带 Range 的
+      // 请求」直接回 404，而**不带 Range 时正常**。这类情况必须回退单连接，否则整个文件下载失败。
+      // 注意 404 不在 TRANSIENT_STATUS 里，若不在此拦截会被当成硬错误直接上抛。
+      if (res.status === 404 || res.status === 405 || res.status === 403) {
         markRangeUnsupported()
         return false
       }

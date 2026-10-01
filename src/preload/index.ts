@@ -12,10 +12,12 @@ import type {
   ModEntry,
   ModrinthType,
   ModpackExportOptions,
+  ModSource,
   ResourceKind,
   ResourceUpdated,
   ResourceUpdateEvent,
   ResourceUpdateInfo,
+  SourceFilter,
   UpdateInfo,
   VersionDirKind,
   DebugLogEntry,
@@ -114,14 +116,23 @@ const api: LauncherApi = {
     onProgress: subscribe<DownloadProgress>('download:progress')
   },
   mods: {
-    search: (query: string, type?: ModrinthType, category?: string, gameVersion?: string, loader?: string, offset?: number) =>
-      ipcRenderer.invoke('mods:search', query, type, category, gameVersion, loader, offset),
-    project: (id: string): Promise<ModrinthProjectDetail> => ipcRenderer.invoke('mods:project', id),
-    versions: (slug: string, loaders: string[], gameVersions: string[]) =>
-      ipcRenderer.invoke('mods:versions', slug, loaders, gameVersions),
-    install: (fileUrl: string, filename: string, versionId: string, type?: ModrinthType) =>
-      ipcRenderer.invoke('mods:install', fileUrl, filename, versionId, type),
-    downloadTo: (fileUrl: string, destPath: string) => ipcRenderer.invoke('mods:downloadTo', fileUrl, destPath),
+    search: (
+      query: string,
+      type?: ModrinthType,
+      category?: string,
+      gameVersion?: string,
+      loader?: string,
+      offset?: number,
+      source?: SourceFilter
+    ) => ipcRenderer.invoke('mods:search', query, type, category, gameVersion, loader, offset, source),
+    project: (id: string, type?: ModrinthType): Promise<ModrinthProjectDetail> =>
+      ipcRenderer.invoke('mods:project', id, type),
+    versions: (slug: string, loaders: string[], gameVersions: string[], source?: ModSource, type?: ModrinthType) =>
+      ipcRenderer.invoke('mods:versions', slug, loaders, gameVersions, source, type),
+    install: (fileUrl: string, filename: string, versionId: string, type?: ModrinthType, sizeHint?: number) =>
+      ipcRenderer.invoke('mods:install', fileUrl, filename, versionId, type, sizeHint),
+    downloadTo: (fileUrl: string, destPath: string, sizeHint?: number) =>
+      ipcRenderer.invoke('mods:downloadTo', fileUrl, destPath, sizeHint),
     installFabricApi: (mcVersion: string, versionId: string) =>
       ipcRenderer.invoke('mods:installFabricApi', mcVersion, versionId)
   },
@@ -244,18 +255,6 @@ const api: LauncherApi = {
   },
   display: {
     primary: () => ipcRenderer.invoke('display:primary')
-  },
-  desktop: {
-    supported: () => ipcRenderer.invoke('desktop:supported'),
-    list: () => ipcRenderer.invoke('desktop:list'),
-    place: (id: string, rect: unknown, raise?: boolean) =>
-      ipcRenderer.invoke('desktop:place', id, rect, raise),
-    setVisible: (id: string, visible: boolean) => ipcRenderer.invoke('desktop:setVisible', id, visible),
-    drag: (id: string, dragging: boolean) => ipcRenderer.invoke('desktop:drag', id, dragging),
-    release: (id: string) => ipcRenderer.invoke('desktop:release', id),
-    releaseAll: () => ipcRenderer.invoke('desktop:releaseAll'),
-    resync: () => ipcRenderer.invoke('desktop:resync'),
-    focus: (id: string) => ipcRenderer.invoke('desktop:focus', id)
   },
   shell: {
     openExternal: (url: string) => ipcRenderer.invoke('shell:openExternal', url),

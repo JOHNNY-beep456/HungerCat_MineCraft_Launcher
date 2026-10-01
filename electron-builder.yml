@@ -6,14 +6,7 @@ directories:
 files:
   - out/**
   - package.json
-  # koffi 是运行时依赖（Win10 桌面模式调用 Win32 用），必须显式打包：
-  # 它的原生二进制在平台子包里，靠运行时 require 加载，不能被打进 asar。
-  - node_modules/koffi/**
-  - node_modules/@koromix/**
 asar: true
-asarUnpack:
-  # 原生模块（.node）无法从 asar 内 dlopen，必须解包
-  - node_modules/@koromix/**/*.node
 extraResources:
   - from: build/icon.png
     to: icon.png

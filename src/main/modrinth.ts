@@ -158,7 +158,9 @@ export async function installMod(
   isolated: boolean,
   type: ModrinthType = 'mod',
   onProgress?: (received: number, total: number) => void,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  /** 已知文件大小：可跳过下载前的 HEAD 探测（CurseForge 这类重定向 CDN 上能省约 1s/文件）。 */
+  sizeHint?: number
 ): Promise<string> {
   const runDir = isolated ? join(gameDir, 'versions', versionId) : gameDir
   const targetDir = join(runDir, folderFor(type))
@@ -168,9 +170,10 @@ export async function installMod(
   const dest = join(targetDir, safeName)
 
   let received = 0
-  let total = 0
+  let total = sizeHint && sizeHint > 0 ? sizeHint : 0
   await streamDownload(fileUrl, dest, {
     signal,
+    sizeHint,
     onBytes: (n) => {
       received += n
       onProgress?.(received, total)
@@ -188,12 +191,14 @@ export async function downloadTo(
   fileUrl: string,
   destPath: string,
   onProgress?: (received: number, total: number) => void,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  sizeHint?: number
 ): Promise<string> {
   let received = 0
-  let total = 0
+  let total = sizeHint && sizeHint > 0 ? sizeHint : 0
   await streamDownload(fileUrl, destPath, {
     signal,
+    sizeHint,
     onBytes: (n) => {
       received += n
       onProgress?.(received, total)

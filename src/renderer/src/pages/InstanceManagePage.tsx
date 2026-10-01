@@ -80,7 +80,13 @@ function OnlineInstaller({
     setBusySlug(p.slug)
     try {
       const mc = mcVersion.trim()
-      const versions = await window.api.mods.versions(p.slug, loaders.length > 0 ? [loader] : [], mc ? [mc] : [])
+      const versions = await window.api.mods.versions(
+        p.slug,
+        loaders.length > 0 ? [loader] : [],
+        mc ? [mc] : [],
+        p.source,
+        type
+      )
       const v = versions[0]
       if (!v) {
         const target = `${mc || t('ins.currentVersion')}${loaders.length > 0 ? ` + ${loader}` : ''}`
@@ -522,7 +528,7 @@ export function InstanceManagePage({
     setNotice(null)
     setBusyId(p.slug)
     try {
-      const versions = await window.api.mods.versions(p.slug, [loaderSel], [mcSel])
+      const versions = await window.api.mods.versions(p.slug, [loaderSel], [mcSel], p.source, 'mod')
       const v = versions[0]
       if (!v) {
         setNotice(t('ins.noMatchingVersion', { target: `${mcSel} + ${loaderSel}` }))
@@ -928,7 +934,11 @@ export function InstanceManagePage({
                       <button
                         type="button"
                         title={t('ins.openModrinthTitle')}
-                        onClick={() => void window.api.shell.openExternal(`https://modrinth.com/resourcepack/${p.slug}`)}
+                        onClick={() =>
+                          void window.api.shell.openExternal(
+                            p.pageUrl ?? `https://modrinth.com/resourcepack/${p.slug}`
+                          )
+                        }
                         className="no-drag opacity-50 hover:opacity-100"
                       >
                         <Icon name="link" size={15} />
@@ -1015,7 +1025,11 @@ export function InstanceManagePage({
                       <button
                         type="button"
                         title={t('ins.openModrinthTitle')}
-                        onClick={() => void window.api.shell.openExternal(`https://modrinth.com/shader/${s.slug}`)}
+                        onClick={() =>
+                          void window.api.shell.openExternal(
+                            s.pageUrl ?? `https://modrinth.com/shader/${s.slug}`
+                          )
+                        }
                         className="no-drag opacity-50 hover:opacity-100"
                       >
                         <Icon name="link" size={15} />
@@ -1185,7 +1199,9 @@ function ModDetailSheet({ mod, onClose }: { mod: ModEntry; onClose: () => void }
           <div className="flex shrink-0 items-center gap-2">
             {mod.slug && (
               <button
-                onClick={() => void window.api.shell.openExternal(`https://modrinth.com/mod/${mod.slug}`)}
+                onClick={() =>
+                  void window.api.shell.openExternal(mod.pageUrl ?? `https://modrinth.com/mod/${mod.slug}`)
+                }
                 className="mica no-drag shrink-0 rounded-lg px-2 py-1 text-[12px] font-medium"
               >
                 {t('ins.moreInfo')}

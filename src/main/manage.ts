@@ -2,7 +2,7 @@ import { existsSync, promises as fsp } from 'fs'
 import { basename, join } from 'path'
 import type { ModEntry, ResourceFile, ResourceKind, SchematicEntry, VersionDirKind } from '@shared/types'
 import { listArchive, readArchiveText } from './archive'
-import { findProject, findProjectByName } from './modrinth'
+import { resolveProjectByIdentity, resolveProjectByName } from './sources'
 import { listResources, rememberResourceMeta } from './resources'
 import { withLocalTimeout } from './local-timeout'
 
@@ -169,14 +169,16 @@ export async function enrichMods(
   }
   await mapLimit(loaded, 6, async ({ mod, meta }) => {
             if (!meta) return
-            const project = await findProject(meta.id, meta.name)
+            const project = await resolveProjectByIdentity(meta.id, meta.name)
             if (project)
               onUpdate({
                 ...mod,
                 displayName: project.title,
                 iconUrl: project.icon_url,
                 slug: project.slug,
-                description: project.description
+                description: project.description,
+                source: project.source,
+                pageUrl: project.pageUrl
               })
           })
 }
@@ -225,14 +227,16 @@ export async function enrichResources(
   const pending = files.filter((f) => !f.displayName)
   const type = kind === 'shaderpacks' ? 'shader' : 'resourcepack'
   await mapLimit(pending, 4, async (file) => {
-    const project = await findProjectByName(packSearchName(file.name), type)
+    const project = await resolveProjectByName(packSearchName(file.name), type)
     if (!project) return
     const enriched: ResourceFile = {
       ...file,
       displayName: project.title,
       iconUrl: project.icon_url,
       slug: project.slug,
-      description: project.description
+      description: project.description,
+      source: project.source,
+      pageUrl: project.pageUrl
     }
     rememberResourceMeta(enriched)
     onUpdate(enriched)

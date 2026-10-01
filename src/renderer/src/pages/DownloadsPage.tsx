@@ -72,10 +72,8 @@ export function DownloadsPage(): JSX.Element {
 
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           <InfoRow label={t('downloads.versionDir')} value={activeVersionDir(settings).path} />
-          <InfoRow
-            label={t('downloads.mirror')}
-            value={settings.mirror === 'mojang' ? t('downloads.mirrorMojang') : t('downloads.mirrorBmclapi')}
-          />
+          {/* 下载源已强制官方（Mojang），镜像选择已停用 */}
+          <InfoRow label={t('downloads.mirror')} value={t('downloads.mirrorMojang')} />
           <InfoRow
             label={t('downloads.concurrency')}
             value={t('downloads.concurrencyUnit', { n: settings.maxDownloadConcurrency })}

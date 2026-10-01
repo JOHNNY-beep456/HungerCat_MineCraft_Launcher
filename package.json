@@ -1,6 +1,6 @@
 {
   "name": "hunger-cat-minecraft-launcher",
-  "version": "0.5.1-alpha2",
+  "version": "0.5.3",
   "description": "HungerCat MineCraft Launcher — cross-platform (Windows/macOS), iOS 26 Liquid Glass UI, PCL-CE-class features",
   "main": "./out/main/index.js",
   "author": "Hunger Cat",
@@ -18,7 +18,6 @@
     "dist:mac": "electron-vite build && electron-builder --mac"
   },
   "dependencies": {
-    "koffi": "^3.3.1",
     "marked": "^15.0.7"
   },
   "devDependencies": {

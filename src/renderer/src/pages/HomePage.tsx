@@ -26,14 +26,41 @@ export function HomePage(): JSX.Element {
   }
 
   // 已安装版本随「当前版本目录」收敛：切换目录后重新拉取。
+  //
+  // 首次挂载刻意延后到首帧之后：installed:list 要全量扫描版本目录（几十个版本 ×
+  // 存档 / 服务器 / 版本 JSON），若在挂载时立即发起，会和首屏渲染抢主进程 IO 与主线程，
+  // 表现为「启动后界面要点一下才动 / 首屏卡顿」。延后到空闲时执行，首屏先出骨架。
+  const installedFirstRun = useRef(true)
   useEffect(() => {
-    void (async () => {
-      try {
-        setInstalled(await window.api.installed.list())
-      } catch {
-        /* installed:list 偶发失败时保持上次状态，不做阻塞 */
-      }
-    })()
+    let cancelled = false
+    let idleId: number | undefined
+    let timerId: ReturnType<typeof setTimeout> | undefined
+    const run = (): void => {
+      void (async () => {
+        try {
+          const list = await window.api.installed.list()
+          if (!cancelled) setInstalled(list)
+        } catch {
+          /* installed:list 偶发失败时保持上次状态，不做阻塞 */
+        }
+      })()
+    }
+    if (installedFirstRun.current) {
+      installedFirstRun.current = false
+      // 优先 requestIdleCallback（浏览器空闲）；不支持时退化为 setTimeout 宏任务，
+      // 两者都在首帧提交之后执行，不再阻塞启动。
+      const ric = (window as unknown as { requestIdleCallback?: (cb: () => void) => number }).requestIdleCallback
+      if (typeof ric === 'function') idleId = ric(run)
+      else timerId = setTimeout(run, 0)
+    } else {
+      run()
+    }
+    return () => {
+      cancelled = true
+      const cic = (window as unknown as { cancelIdleCallback?: (id: number) => void }).cancelIdleCallback
+      if (idleId !== undefined && typeof cic === 'function') cic(idleId)
+      if (timerId !== undefined) clearTimeout(timerId)
+    }
   }, [activeDirId])
 
   /**

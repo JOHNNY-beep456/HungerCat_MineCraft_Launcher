@@ -11,6 +11,7 @@ import {
 } from 'react'
 import { createPortal } from 'react-dom'
 import { AnimatePresence, motion } from 'motion/react'
+import { marked } from 'marked'
 import defaultAvatar from '../assets/stevE.jpg'
 import { useApp } from '../store'
 
@@ -814,6 +815,51 @@ export function Avatar({
       className="rounded-xl"
       draggable={false}
       style={{ objectFit: 'cover', flexShrink: 0 }}
+    />
+  )
+}
+
+/* ------------------------------------------------------------------ */
+/* Markdown（更新日志 / 完整介绍等富文本渲染）                          */
+/* ------------------------------------------------------------------ */
+
+/** 渲染前的 XSS 基础清理：移除脚本类标签、on* 事件属性与 javascript: 协议。 */
+function sanitizeHtml(html: string): string {
+  return html
+    .replace(/<\s*(script|style|iframe)\b[^>]*>[\s\S]*?<\s*\/\s*\1\s*>/gi, '')
+    .replace(/<\s*\/?\s*(script|style|iframe)\b[^>]*>/gi, '')
+    .replace(/\son\w+\s*=\s*"[^"]*"/gi, '')
+    .replace(/\son\w+\s*=\s*'[^']*'/gi, '')
+    .replace(/\son\w+\s*=\s*[^\s>]+/gi, '')
+    .replace(/javascript:/gi, '')
+}
+
+/** 正文内的通用 Markdown 排版样式（标题 / 列表 / 代码块 / 引用 / 链接）。 */
+export const MARKDOWN_PROSE_CLASS =
+  'selectable [&_a]:underline [&_blockquote]:border-l-2 [&_blockquote]:pl-3 [&_blockquote]:opacity-80 [&_code]:rounded [&_code]:bg-[var(--fill-secondary)] [&_code]:px-1 [&_code]:py-0.5 [&_h1]:mb-2 [&_h1]:mt-4 [&_h1]:text-[18px] [&_h1]:font-semibold [&_h2]:mb-2 [&_h2]:mt-4 [&_h2]:text-[16px] [&_h2]:font-semibold [&_h3]:mb-1.5 [&_h3]:mt-3 [&_h3]:text-[14px] [&_h3]:font-semibold [&_img]:my-2 [&_img]:max-w-full [&_img]:rounded-lg [&_li]:my-0.5 [&_ol]:my-2 [&_ol]:list-decimal [&_ol]:pl-5 [&_p]:my-2 [&_pre]:my-2 [&_pre]:overflow-x-auto [&_pre]:rounded-lg [&_pre]:bg-[var(--fill-secondary)] [&_pre]:p-3 [&_ul]:my-2 [&_ul]:list-disc [&_ul]:pl-5'
+
+/**
+ * 把 Markdown 文本渲染为富文本。
+ * 传入 `text`（原文）或 `html`（已渲染并清理过的 HTML）之一；空内容时渲染 `fallback`。
+ */
+export function Markdown({
+  text,
+  html: htmlProp,
+  fallback,
+  className = ''
+}: {
+  text?: string
+  html?: string
+  fallback?: ReactNode
+  className?: string
+}): JSX.Element {
+  const src = (text ?? '').trim()
+  const html = htmlProp ?? (src ? sanitizeHtml(marked.parse(src) as string) : '')
+  if (!html) return <>{fallback ?? null}</>
+  return (
+    <div
+      className={`${MARKDOWN_PROSE_CLASS} break-words ${className}`}
+      dangerouslySetInnerHTML={{ __html: html }}
     />
   )
 }

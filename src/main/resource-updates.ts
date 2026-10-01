@@ -14,13 +14,15 @@
 
 import { promises as fsp } from 'fs'
 import type {
+  ModSource,
   ModrinthType,
   ModrinthVersion,
   ResourceFile,
   ResourceUpdateInfo,
   UpdateKind
 } from '@shared/types'
-import { findProject, findProjectByName, getVersions, installMod } from './modrinth'
+import { installMod } from './modrinth'
+import { resolveProjectByIdentity, resolveProjectByName, resolveVersionsFor } from './sources'
 import { listResources } from './resources'
 import { loadModFiles, mapLimit, packSearchName, resolveVersionDir, type ModMeta } from './manage'
 
@@ -41,6 +43,10 @@ const projectCache = new Map<string, ProjectRef | null>()
 interface ProjectRef {
   slug: string
   title: string
+  /** 命中的来源：决定版本列表去问谁。 */
+  source?: ModSource
+  /** 资源类型：CurseForge 侧要用它决定 classId / 过滤。 */
+  type: ModrinthType
 }
 
 function cacheKey(kind: UpdateKind, path: string, size: number): string {
@@ -55,7 +61,7 @@ function invalidateCache(path: string): void {
   }
 }
 
-/** 解析模组对应的 Modrinth 项目；识别不出返回 null。 */
+/** 解析模组对应的项目（Modrinth 优先，未命中再试 CurseForge）；识别不出返回 null。 */
 async function resolveModProject(meta: ModMeta): Promise<ProjectRef | null> {
   const id = (meta.id ?? '').trim()
   const name = (meta.name ?? '').trim()
@@ -63,21 +69,21 @@ async function resolveModProject(meta: ModMeta): Promise<ProjectRef | null> {
   const key = `mod:${(id || name).toLowerCase()}`
   const cached = projectCache.get(key)
   if (cached !== undefined) return cached
-  const project = await findProject(id, name)
-  const ref = project ? { slug: project.slug, title: project.title } : null
+  const project = await resolveProjectByIdentity(id, name)
+  const ref = project ? { slug: project.slug, title: project.title, source: project.source, type: 'mod' as const } : null
   projectCache.set(key, ref)
   return ref
 }
 
-/** 解析资源包 / 光影对应的 Modrinth 项目（压缩包里没有可读元数据，只能按文件名搜）。 */
+/** 解析资源包 / 光影对应的项目（压缩包里没有可读元数据，只能按文件名搜）。 */
 async function resolvePackProject(fileName: string, type: 'resourcepack' | 'shader'): Promise<ProjectRef | null> {
   const search = packSearchName(fileName)
   if (!search) return null
   const key = `${type}:${search.toLowerCase()}`
   const cached = projectCache.get(key)
   if (cached !== undefined) return cached
-  const project = await findProjectByName(search, type)
-  const ref = project ? { slug: project.slug, title: project.title } : null
+  const project = await resolveProjectByName(search, type)
+  const ref = project ? { slug: project.slug, title: project.title, source: project.source, type } : null
   projectCache.set(key, ref)
   return ref
 }
@@ -115,7 +121,13 @@ async function detectUpdate(input: DetectInput): Promise<ResourceUpdateInfo | nu
 
   let versions: ModrinthVersion[]
   try {
-    versions = await getVersions(input.project.slug, input.loaders, input.gameVersions)
+    versions = await resolveVersionsFor(
+      input.project.slug,
+      input.project.source,
+      input.project.type,
+      input.loaders,
+      input.gameVersions
+    )
   } catch {
     // 联网失败 / 项目不存在：本次无法判定，且不写缓存，下次进入再试。
     return null

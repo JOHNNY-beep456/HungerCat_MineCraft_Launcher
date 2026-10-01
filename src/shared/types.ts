@@ -248,6 +248,10 @@ export interface ModEntry {
   slug?: string
   /** Modrinth 项目简介，命中时才有。 */
   description?: string
+  /** 元数据来源；缺省为 Modrinth。 */
+  source?: ModSource
+  /** 项目主页地址（见 ModrinthProject.pageUrl）。 */
+  pageUrl?: string
 }
 
 export interface SchematicEntry {
@@ -498,30 +502,6 @@ export interface ModpackExportOptions {
 }
 
 /* ------------------------------------------------------------------ */
-/* 实验性 Win10 桌面：外部窗口捕获（Windows 专用）                        */
-/* ------------------------------------------------------------------ */
-
-/** 矩形：x/y/w/h，单位为设备像素（相对宿主窗口客户区）。 */
-export interface NativeWindowRect {
-  x: number
-  y: number
-  w: number
-  h: number
-}
-
-/** 被摆进启动器桌面的外部窗口（MC / 文件资源管理器）。 */
-export interface NativeWindowInfo {
-  /** 窗口句柄（十进制字符串） */
-  id: string
-  title: string
-  /** 可执行文件名，如 javaw.exe / explorer.exe */
-  exe: string
-  kind: 'minecraft' | 'explorer'
-  /** 是否已经摆进启动器桌面 */
-  placed: boolean
-}
-
-/* ------------------------------------------------------------------ */
 /* 启动器自实现的资源管理器（替代打开系统资源管理器）                     */
 /* ------------------------------------------------------------------ */
 
@@ -584,6 +564,16 @@ export type ForgeKind = 'forge' | 'neoforge'
 /** Modrinth project types we surface in the UI. */
 export type ModrinthType = 'mod' | 'resourcepack' | 'shader' | 'modpack'
 
+/**
+ * 资源来源。缺省（undefined）视为 Modrinth；CurseForge 的结果会显式标注。
+ * 之所以用可选字段而不是必填：Modrinth 的 DTO 由网络进程构造，路径很长，
+ * 让「只有新增来源才需要标注」可以把改动面压到最小。
+ */
+export type ModSource = 'modrinth' | 'curseforge'
+
+/** 资源下载页的来源筛选。 */
+export type SourceFilter = 'all' | 'modrinth' | 'curseforge'
+
 /** Folder names inside a game directory. */
 export type ResourceKind = 'resourcepacks' | 'shaderpacks'
 
@@ -599,6 +589,10 @@ export interface ResourceFile {
   slug?: string
   /** Modrinth 项目简介，命中时才有。 */
   description?: string
+  /** 元数据来源；缺省为 Modrinth。 */
+  source?: ModSource
+  /** 项目主页地址（见 ModrinthProject.pageUrl）。 */
+  pageUrl?: string
 }
 
 /** 后台补齐已安装光影 / 资源包 Modrinth 元数据时的推送载荷。 */
@@ -651,6 +645,15 @@ export interface ModrinthProject {
   downloads: number
   categories: string[]
   project_type: string
+  /** 来源；缺省为 Modrinth。 */
+  source?: ModSource
+  /**
+   * 项目主页地址。CurseForge 是 curseforge.com/…，Modrinth 由界面按类型拼；
+   * 有这个字段时界面优先用它，避免把 CurseForge 项目链到 modrinth.com。
+   */
+  pageUrl?: string
+  /** 是否允许第三方渠道下载（CurseForge 的 allowModDistribution；false = 只能去官网下）。 */
+  downloadable?: boolean
 }
 
 /** Modrinth 单个项目的完整信息（含 body 完整介绍，用于「完整介绍」弹窗）。 */
@@ -664,6 +667,10 @@ export interface ModrinthProjectDetail {
   downloads: number
   categories: string[]
   project_type: string
+  /** 来源；缺省为 Modrinth。 */
+  source?: ModSource
+  /** 项目主页地址（见 ModrinthProject.pageUrl）。 */
+  pageUrl?: string
 }
 
 /** Modrinth 搜索分页结果。 */
@@ -696,6 +703,12 @@ export interface ModrinthVersion {
   files: Array<{ url: string; filename: string; primary: boolean; size: number }>
   /** 依赖声明；required 项在安装到实例时需检查是否已有前置。 */
   dependencies?: ModrinthDependency[]
+  /** 来源；缺省为 Modrinth。 */
+  source?: ModSource
+  /** 是否可在启动器内直接下载（CurseForge 禁止分发时为 false）。 */
+  downloadable?: boolean
+  /** 文件页地址（禁止分发时用于跳转官网）。 */
+  pageUrl?: string
 }
 
 /* ------------------------------------------------------------------ */
@@ -996,12 +1009,35 @@ export interface LauncherApi {
     onProgress: (cb: (p: DownloadProgress) => void) => () => void
   }
   mods: {
-    search: (query: string, type?: ModrinthType, category?: string, gameVersion?: string, loader?: string, offset?: number) => Promise<ModrinthSearchResult>
-    versions: (slug: string, loaders: string[], gameVersions: string[]) => Promise<ModrinthVersion[]>
+    search: (
+      query: string,
+      type?: ModrinthType,
+      category?: string,
+      gameVersion?: string,
+      loader?: string,
+      offset?: number,
+      /** 来源筛选：全部（两源合并）/ 仅 Modrinth / 仅 CurseForge。 */
+      source?: SourceFilter
+    ) => Promise<ModrinthSearchResult>
+    versions: (
+      slug: string,
+      loaders: string[],
+      gameVersions: string[],
+      /** 项目来源；缺省按 Modrinth 处理。 */
+      source?: ModSource,
+      type?: ModrinthType
+    ) => Promise<ModrinthVersion[]>
     /** 获取项目完整信息（含 Markdown 正文），用于「完整介绍」弹窗。 */
-    project: (id: string) => Promise<ModrinthProjectDetail>
-    install: (fileUrl: string, filename: string, versionId: string, type?: ModrinthType) => Promise<string>
-    downloadTo: (fileUrl: string, destPath: string) => Promise<string>
+    project: (id: string, type?: ModrinthType) => Promise<ModrinthProjectDetail>
+    install: (
+      fileUrl: string,
+      filename: string,
+      versionId: string,
+      type?: ModrinthType,
+      /** 已知文件大小：可跳过下载前的 HEAD 探测（CurseForge 这类重定向 CDN 上能省约 1s/文件）。 */
+      sizeHint?: number
+    ) => Promise<string>
+    downloadTo: (fileUrl: string, destPath: string, sizeHint?: number) => Promise<string>
     installFabricApi: (mcVersion: string, versionId: string) => Promise<string>
   }
   java: {
@@ -1191,35 +1227,6 @@ export interface LauncherApi {
       workHeight: number
       scaleFactor: number
     }>
-  }
-  /** 实验性 Win10 桌面：把 MC / 资源管理器窗口显示在启动器桌面里（仅 Windows 支持）。 */
-  desktop: {
-    /** 是否支持（非 Windows 或缺原生模块时为 false） */
-    supported: () => Promise<boolean>
-    /** 列出可显示的外部窗口（含已摆放的） */
-    list: () => Promise<NativeWindowInfo[]>
-    /**
-     * 把外部窗口摆到桌面预留矩形处并挖洞透出（rect 为客户端设备像素）。
-     * 只移动位置、不改窗口层级与样式，因此 GL/DirectComposition 画面不受影响。
-     * raise=true 时把它提到最上层（聚焦的窗口用）。
-     */
-    place: (id: string, rect: NativeWindowRect, raise?: boolean) => Promise<boolean>
-    /** 是否在该矩形上挖洞（最小化 / 被启动器界面盖住 / 开始菜单打开时传 false） */
-    setVisible: (id: string, visible: boolean) => Promise<boolean>
-    /**
-     * 通知主进程：渲染层开始 / 结束拖动这个桌面窗口。
-     * 拖动期间主进程对该窗口不下发任何 SetWindowPos（含延迟重试），
-     * 避免和拖动这一方同时移动同一个外部窗口把 MC 的 GL 窗口搞崩。
-     */
-    drag: (id: string, dragging: boolean) => Promise<boolean>
-    /** 从桌面收回，放回原位置（不会关闭它） */
-    release: (id: string) => Promise<boolean>
-    /** 全部收回（退出桌面模式 / 关窗前必须调用） */
-    releaseAll: () => Promise<number>
-    /** 宿主窗口移动/缩放后重新摆放所有窗口 */
-    resync: () => Promise<boolean>
-    /** 聚焦该外部窗口（点任务栏条目时用） */
-    focus: (id: string) => Promise<boolean>
   }
   /**
    * 启动器自实现的资源管理器：只做「浏览 + 打开」，

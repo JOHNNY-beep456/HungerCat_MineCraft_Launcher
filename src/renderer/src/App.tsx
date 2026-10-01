@@ -13,7 +13,7 @@ import { CursorGlow } from './components/CursorGlow'
 import { DownloadOrb } from './components/DownloadOrb'
 import { Win10Desktop } from './components/Win10Desktop'
 import { FileManager } from './components/FileManager'
-import { Button, Icon } from './components/ui'
+import { Button, Icon, Markdown } from './components/ui'
 import { renderPage, type ResourcePreset } from './pages/router'
 import { InstanceManagePage } from './pages/InstanceManagePage'
 
@@ -304,9 +304,10 @@ function Shell(): JSX.Element {
                   </div>
                 </div>
                 {launcherUpdateNotice.notes?.trim() && (
-                  <div className="glass-soft mb-5 max-h-[30vh] selectable overflow-y-auto whitespace-pre-wrap break-words rounded-2xl p-4 text-[13px] leading-relaxed opacity-80">
-                    {launcherUpdateNotice.notes}
-                  </div>
+                  <Markdown
+                    text={launcherUpdateNotice.notes}
+                    className="glass-soft mb-5 max-h-[30vh] overflow-y-auto rounded-2xl p-4 text-[13px] leading-relaxed opacity-80"
+                  />
                 )}
                 <div className="flex gap-2">
                   <Button className="flex-1" onClick={dismissLauncherUpdateNotice}>

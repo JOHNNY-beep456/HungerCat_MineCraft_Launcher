@@ -16,13 +16,23 @@ import type {
   DebugLogEntry,
   HomepageSubmitPayload,
   HomepageUpdate,
-  NativeWindowRect,
   DevModeStatus,
   ConflictPolicy,
   DownloadPhase,
-  ResourceUpdateInfo
+  ResourceUpdateInfo,
+  ModSource,
+  SourceFilter
 } from '@shared/types'
-import { accounts, settings, createOfflineAccount, activeGameDir, allVersionDirs, detectHardware } from './store'
+import {
+  accounts,
+  settings,
+  createOfflineAccount,
+  activeGameDir,
+  allVersionDirs,
+  detectHardware,
+  flushWrites,
+  invalidateSettingsCache
+} from './store'
 import { clearUapisKey, getUapisKey, setUapisKey } from './secret'
 import { initLogger, getLogBuffer, subscribeLogs } from './logger'
 import { startNetworkWorker, stopNetworkWorker, netRequest } from './broker'
@@ -33,11 +43,12 @@ import { fetchVersionManifest, resolveVersionJson, createVanillaInstance } from 
 import { listInstalled } from './installed'
 import { scanExternalVersions, importExternalVersion } from './import-version'
 import { installVersion } from './downloader'
-import { detectJava, installJava, javaVersionAt, pickJava, pickInstallerJava, requiredJavaForMc } from './java'
+import { detectJava, installJava, invalidateJavaCache, javaVersionAt, pickJava, pickInstallerJava, requiredJavaForMc } from './java'
 import { spawnGame } from './launcher'
 import { loaderVersions, installLoader } from './loaders'
 import { forgeVersions, installForge } from './forge'
-import { searchMods, getVersions as getModVersions, installMod, downloadTo, findFabricApi, fetchProject } from './modrinth'
+import { installMod, downloadTo, findFabricApi } from './modrinth'
+import { resolveProjectDetail, resolveVersionsFor, searchResources } from './sources'
 import { listResources, removeResource, openResourceDir } from './resources'
 import { applyResourceUpdate, checkResourceUpdates } from './resource-updates'
 import {
@@ -65,19 +76,6 @@ import {
   startDevModeExpiryWatch,
   verifyDevMode
 } from './devmode'
-import {
-  focusWindow,
-  isNativeWindowSupported,
-  listWindows,
-  placeWindow,
-  placedCount,
-  releaseAll,
-  releaseWindow,
-  resyncAll,
-  setDragging,
-  setHoleVisible,
-  setHost
-} from './win32-window'
 import {
   listHomepages,
   readHomepage,
@@ -129,7 +127,13 @@ let desktopShellTimer: ReturnType<typeof setInterval> | null = null
 // 高频重复读取通道的去抖 + 结果缓存：多个页面挂载时会独立调用同一 channel，
 // 并发重复请求合并为一次底层执行；版本变更时显式失效保证即时刷新。
 const versionsCache = new DedupCache(5 * 60 * 1000) // 原版版本清单：TTL 5min（mirror 固定，清单很少变）
-const installedCache = new DedupCache(5 * 1000) // 已安装版本/世界/服务器列表：TTL 5s（本地扫描，变化快）
+// 已安装版本/世界/服务器列表缓存：本地扫描很重（几十个版本 × 存档 / 服务器 / version JSON），
+// 原先 TTL 仅 5s —— 用户在多个版本目录间来回切换时，每次超过 5s 都要重新全量扫描，
+// 这是「切换版本目录卡顿 / 未响应」的直接原因之一。
+// 所有会改变结果的入口（装版本 / 删 / 改 / 导入 / 版本目录增删改）都已显式 invalidateAll，
+// 因此这里可以把 TTL 放宽到 60s：应用内的任何变更仍即时生效，只有「用户手动在文件管理器里
+// 改动版本目录」这种外部变化最多延迟 60s 才被感知。
+const installedCache = new DedupCache(60 * 1000)
 
 /** 已装版本列表缓存 key：当前版本目录 + 隔离策略决定扫描范围。 */
 function installedCacheKey(s: ReturnType<typeof settings.get>): string {
@@ -169,14 +173,6 @@ function windowBackgroundColor(): string {
 /** 主题 / 背景预设 / 系统明暗变化后刷新主窗口底色。 */
 function applyWindowBackground(): void {
   if (mainWindow && !mainWindow.isDestroyed()) mainWindow.setBackgroundColor(windowBackgroundColor())
-}
-
-/** 取窗口句柄（HWND，十进制字符串）：外部窗口要挂成它的子窗口。 */
-function mainWindowHandleId(w: BrowserWindow): string {
-  const buf = w.getNativeWindowHandle()
-  // x64 为 8 字节指针，32 位为 4 字节
-  const hwnd = buf.length === 8 ? buf.readBigUInt64LE(0) : BigInt(buf.readUInt32LE(0))
-  return hwnd.toString()
 }
 
 /**
@@ -231,7 +227,14 @@ function createWindow(): void {
     }
   })
 
-  mainWindow.once('ready-to-show', () => mainWindow?.show())
+  // 首帧可见后立即显示窗口，并把「网络进程 fork」推迟到窗口显示之后：
+  // fork utilityProcess 会拉起一个新的 Node 进程（几百 MB 内存 + CPU 冷启动），
+  // 放在建窗口之前会和 Chromium 抢启动资源、拖慢首屏。网络进程只在真正发起网络请求时
+  // 才会被用到（版本清单 / 主页更新检查），推迟建立不影响任何功能。
+  mainWindow.once('ready-to-show', () => {
+    mainWindow?.show()
+    startNetworkWorker()
+  })
 
   // 安全：主页沙箱（iframe）只能渲染，绝不允许自我导航把数据带出去
   // （d01 meta refresh / d02 location 赋值）。这类导航不受 connect-src 管辖，
@@ -246,22 +249,9 @@ function createWindow(): void {
     console.warn(`[主页安全] 已拦截沙箱主页的对外导航：${url}`)
   })
 
-  // 实验性 Win10 桌面把 MC / 资源管理器的窗口摆进桌面（它们仍是独立顶层窗口，
-  // 只是位置被挪到预留矩形里，启动器窗口在这些矩形上挖洞透出）。因此：
-  //   * 启动器窗口移动 / 缩放 / 进出全屏后，要把它们重新摆到新的客户区位置；
-  //   * 关闭窗口 / 退出程序前必须 releaseAll()，把它们放回原来的位置。
-  const resyncPlaced = (): void => {
-    if (placedCount() > 0) resyncAll()
-  }
-  mainWindow.on('move', resyncPlaced)
-  mainWindow.on('resize', resyncPlaced)
-  mainWindow.on('enter-full-screen', resyncPlaced)
-  mainWindow.on('leave-full-screen', resyncPlaced)
-  mainWindow.on('restore', resyncPlaced)
-  mainWindow.on('close', () => {
-    const n = releaseAll()
-    if (n > 0) console.log(`[桌面] 关窗前已把 ${n} 个外部窗口放回原位`)
-  })
+  // 实验性 Win10 桌面只做「启动器自己的桌面外壳」：不再捕获 / 搬动任何外部窗口，
+  // 因此窗口移动与缩放无需做任何外部窗口重新摆放。桌面模式下的 MC 由启动参数强制全屏
+  // （见 launch:start 的 winMode），它就是一个正常的独立全屏窗口。
 
   if (process.env['ELECTRON_RENDERER_URL']) {
     mainWindow.loadURL(process.env['ELECTRON_RENDERER_URL'])
@@ -554,6 +544,11 @@ function registerIpc(): void {
   })
 
   // ---- 版本目录（多版本列表根目录） ----
+  //
+  // 注意：这四个处理器都不再调 installedCache.invalidateAll()。
+  // installedCacheKey 里已经含「当前生效目录 + 隔离策略」，切换 / 增删 / 改目录本身就会落到
+  // 另一个 key——失效缓存并不会让新目录更快出结果，反而会把「刚扫过的另一个目录」也一并清掉，
+  // 用户来回切目录时每次都要重新全量扫描。这才是「切换版本目录很卡」的直接原因之一。
   ipcMain.handle('versionDirs:list', () => allVersionDirs(settings.get()))
   ipcMain.handle('versionDirs:add', (_e, input: { path: string; alias?: string }) => {
     const s = settings.get()
@@ -564,7 +559,6 @@ function registerIpc(): void {
     settings.set({
       versionDirs: [...s.versionDirs, { id, alias: (input.alias ?? '').trim(), path }]
     })
-    installedCache.invalidateAll()
     return allVersionDirs(settings.get())
   })
   ipcMain.handle('versionDirs:update', (_e, id: string, patch: { alias?: string; path?: string }) => {
@@ -584,7 +578,6 @@ function registerIpc(): void {
           : d
       )
     })
-    installedCache.invalidateAll()
     return allVersionDirs(settings.get())
   })
   ipcMain.handle('versionDirs:remove', (_e, id: string) => {
@@ -594,7 +587,6 @@ function registerIpc(): void {
       versionDirs: s.versionDirs.filter((d) => d.id !== id),
       selectedVersionDirId: s.selectedVersionDirId === id ? '' : s.selectedVersionDirId
     })
-    installedCache.invalidateAll()
     return allVersionDirs(settings.get())
   })
   ipcMain.handle('versionDirs:select', (_e, id: string) => {
@@ -602,7 +594,6 @@ function registerIpc(): void {
     const valid = id === 'default' || s.versionDirs.some((d) => d.id === id)
     const next = valid ? (id === 'default' ? '' : id) : ''
     settings.set({ selectedVersionDirId: next })
-    installedCache.invalidateAll()
     return next || 'default'
   })
 
@@ -668,17 +659,32 @@ function registerIpc(): void {
   })
 
   // ---- Mods & resources (Modrinth) ----
-  ipcMain.handle('mods:search', (_e, query: string, type?: ModrinthType, category?: string, gameVersion?: string, loader?: string, offset?: number) =>
-    searchMods(query, 24, type, category, gameVersion, loader, offset ?? 0)
+  // ---- Mods & resources（Modrinth 优先，未命中回落 CurseForge）----
+  ipcMain.handle(
+    'mods:search',
+    (
+      _e,
+      query: string,
+      type?: ModrinthType,
+      category?: string,
+      gameVersion?: string,
+      loader?: string,
+      offset?: number,
+      source?: SourceFilter
+    ) => searchResources({ source: source ?? 'all', query, limit: 24, type: type ?? 'mod', category, gameVersion, loader, offset: offset ?? 0 })
   )
-  ipcMain.handle('mods:versions', (_e, slug: string, loaders: string[], gameVersions: string[]) =>
-    getModVersions(slug, loaders, gameVersions)
+  ipcMain.handle(
+    'mods:versions',
+    (_e, slug: string, loaders: string[], gameVersions: string[], source?: ModSource, type?: ModrinthType) =>
+      resolveVersionsFor(slug, source, type ?? 'mod', loaders, gameVersions)
   )
-  // 「完整介绍」弹窗：拉取单个项目的完整信息（含 Markdown 正文 body）。
-  ipcMain.handle('mods:project', (_e, id: string) => fetchProject(id))
+  // 「完整介绍」弹窗：拉取单个项目的完整信息（含 Markdown 正文 body；CurseForge 无正文）。
+  ipcMain.handle('mods:project', (_e, id: string, type?: ModrinthType) =>
+    resolveProjectDetail(id, type ?? 'mod')
+  )
   ipcMain.handle(
     'mods:install',
-    async (event, fileUrl: string, filename: string, versionId: string, type?: ModrinthType) => {
+    async (event, fileUrl: string, filename: string, versionId: string, type?: ModrinthType, sizeHint?: number) => {
       const s = settings.get()
       const controller = new AbortController()
       downloadAborts.set(filename, controller)
@@ -694,7 +700,17 @@ function registerIpc(): void {
           percent: total > 0 ? Math.round((received / total) * 100) : 0
         })
       try {
-        const dest = await installMod(fileUrl, filename, activeGameDir(s), versionId, isIsolated(versionId), type, emit, controller.signal)
+        const dest = await installMod(
+          fileUrl,
+          filename,
+          activeGameDir(s),
+          versionId,
+          isIsolated(versionId),
+          type,
+          emit,
+          controller.signal,
+          sizeHint
+        )
         sendToSender(event.sender, 'download:progress', {
           taskId: filename,
           task: filename,
@@ -748,7 +764,7 @@ function registerIpc(): void {
       downloadAborts.delete(file.filename)
     }
   })
-  ipcMain.handle('mods:downloadTo', async (event, fileUrl: string, destPath: string) => {
+  ipcMain.handle('mods:downloadTo', async (event, fileUrl: string, destPath: string, sizeHint?: number) => {
     const filename = destPath.split(/[\\/]/).pop() ?? destPath
     const controller = new AbortController()
     downloadAborts.set(filename, controller)
@@ -764,7 +780,7 @@ function registerIpc(): void {
         percent: total > 0 ? Math.round((received / total) * 100) : 0
       })
     try {
-      const dest = await downloadTo(fileUrl, destPath, emit, controller.signal)
+      const dest = await downloadTo(fileUrl, destPath, emit, controller.signal, sizeHint)
       sendToSender(event.sender, 'download:progress', {
         taskId: filename,
         task: filename,
@@ -1000,6 +1016,8 @@ function registerIpc(): void {
     try {
       const path = await installJava(major, activeGameDir(s), emit, controller.signal)
       settings.set({ javaPath: path, javaAutoDetect: false })
+      // 新装了一个 Java：让检测缓存失效，设置页下次拉取就能看到它。
+      invalidateJavaCache()
       return path
     } catch (err) {
       // 取消 / 失败都必须补发一条 done：渲染层只在收到 done 时才移除任务条目，
@@ -1284,10 +1302,14 @@ function registerIpc(): void {
     if (!test.ok) return test
     const err = setUapisKey(key)
     if (err) return { ok: false, message: err }
+    // uapisApiKeySet 是「由安全存储派生的字段」，不落 settings.json：密钥变了要让设置缓存失效，
+    // 否则设置页仍会显示「未设置」。
+    invalidateSettingsCache()
     return { ok: true, message: `${test.message}（已加密保存到本机）` }
   })
   ipcMain.handle('translate:clearKey', () => {
     clearUapisKey()
+    invalidateSettingsCache()
     return { ok: true, message: '已删除本机保存的 API KEY，已回到访客额度' }
   })
   ipcMain.handle('about:agreement', () => fetchAgreement())
@@ -1481,34 +1503,9 @@ function registerIpc(): void {
     return w.isFullScreen()
   })
 
-  // ---- 实验性 Win10 桌面：把外部窗口（MC / 资源管理器）显示在桌面里 ----
-  ipcMain.handle('desktop:supported', () => isNativeWindowSupported())
-  ipcMain.handle('desktop:list', () => listWindows())
-  ipcMain.handle('desktop:place', (e, id: string, rect: NativeWindowRect, raise?: boolean) => {
-    const w = BrowserWindow.fromWebContents(e.sender)
-    if (!w) return false
-    setHost(mainWindowHandleId(w))
-    return placeWindow(id, rect, raise === true)
-  })
-  ipcMain.handle('desktop:setVisible', (_e, id: string, visible: boolean) => setHoleVisible(id, visible))
-  // 渲染层开始/结束拖这个桌面窗口：拖动期间主进程绝不移动它（含延迟重试），
-  // 避免和「拖动」这一方同时对同一个外部窗口做移动把 MC 的 GL 窗口搞崩。
-  ipcMain.handle('desktop:drag', (e, id: string, on: boolean) => {
-    const w = BrowserWindow.fromWebContents(e.sender)
-    if (w) setHost(mainWindowHandleId(w))
-    setDragging(id, on === true)
-    return true
-  })
-  ipcMain.handle('desktop:release', (_e, id: string) => releaseWindow(id))
-  ipcMain.handle('desktop:releaseAll', () => releaseAll())
-  ipcMain.handle('desktop:resync', (e) => {
-    const w = BrowserWindow.fromWebContents(e.sender)
-    if (!w) return false
-    setHost(mainWindowHandleId(w))
-    resyncAll()
-    return true
-  })
-  ipcMain.handle('desktop:focus', (_e, id: string) => focusWindow(id))
+  // ---- 实验性 Win10 桌面：只做「启动器自己的桌面外壳」 ----
+  // 外部窗口（MC / 资源管理器）不再被搬进桌面，因此这里没有任何与 Win32 窗口捕获
+  // 相关的 IPC；桌面模式下的 MC 由启动参数强制全屏（见 launch:start 里的 winMode）。
 
   // ---- 自实现的资源管理器（替代系统资源管理器）----
   ipcMain.handle('files:places', () => {
@@ -1577,8 +1574,9 @@ process.on('uncaughtException', (err) => {
 app.whenReady().then(() => {
   initLogger()
   registerIpc()
-  // 主动拉起网络进程：让版本清单/版本 JSON 等网络操作走网络进程，主进程不再被网络拖累。
-  startNetworkWorker()
+  // 注意：不再在启动关键路径上 fork 网络进程。netRequest 首次调用时会经 ensureNetworkWorker
+  // 自动拉起，因此这里改为在窗口 ready-to-show 之后再建立（见 createWindow），
+  // 避免 utilityProcess 冷启动与 Chromium 抢资源、拖慢首屏。
   createWindow()
   // 用户在系统里切换明暗模式时，同步窗口底色（主题为「跟随系统」时才实际变化）。
   nativeTheme.on('updated', applyWindowBackground)
@@ -1604,8 +1602,8 @@ app.on('window-all-closed', () => {
 })
 
 app.on('will-quit', () => {
-  // 桌面模式摆放的外部窗口：退出前放回原位（它们不是子窗口，不会被销毁）
-  releaseAll()
   // 回收网络进程并拒绝所有在途网络请求。
   stopNetworkWorker()
+  // 把在途的设置 / 账号异步写盘刷完，避免退出时丢掉最后一次修改。
+  void flushWrites()
 })

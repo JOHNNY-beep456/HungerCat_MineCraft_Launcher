@@ -8,8 +8,8 @@ function resourceDir(gameDir: string, versionId: string, isolated: boolean, kind
   return join(runDir, kind)
 }
 
-/** 从 Modrinth 补来的那部分元数据。 */
-type ResourceMeta = Pick<ResourceFile, 'displayName' | 'iconUrl' | 'slug' | 'description'>
+/** 从 Modrinth / CurseForge 补来的那部分元数据。 */
+type ResourceMeta = Pick<ResourceFile, 'displayName' | 'iconUrl' | 'slug' | 'description' | 'source' | 'pageUrl'>
 
 /**
  * path::size → Modrinth 元数据。补过一次就记住：
@@ -29,7 +29,9 @@ export function rememberResourceMeta(file: ResourceFile): void {
     displayName: file.displayName,
     iconUrl: file.iconUrl,
     slug: file.slug,
-    description: file.description
+    description: file.description,
+    source: file.source,
+    pageUrl: file.pageUrl
   })
 }
 

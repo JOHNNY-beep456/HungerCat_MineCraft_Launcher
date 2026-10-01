@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { AnimatePresence, motion } from 'motion/react'
-import { marked } from 'marked'
-import type { InstalledVersion, ModEntry, ModpackProbe, ModrinthProject, ModrinthProjectDetail, ModrinthType, ModrinthVersion, VersionManifest } from '@shared/types'
+import type { InstalledVersion, ModEntry, ModpackProbe, ModrinthProject, ModrinthProjectDetail, ModrinthType, ModrinthVersion, SourceFilter, VersionManifest } from '@shared/types'
 import { useRuntimeActions } from '../runtime'
-import { Button, Icon, LoadingState, Segmented, Select, Spinner } from '../components/ui'
+import { Button, Icon, LoadingState, Markdown, Segmented, Select, Spinner } from '../components/ui'
 import { VersionsPage } from './VersionsPage'
 import { useAutoTranslate } from '../translate'
 import { useApp } from '../store'
@@ -116,6 +116,8 @@ function Browser({ type }: { type: BrowseTab }): JSX.Element {
   const [loader, setLoader] = useState('all')
   const [category, setCategory] = useState('all')
   const [query, setQuery] = useState('')
+  /** 来源筛选：全部（Modrinth + CurseForge 合并）/ 仅 Modrinth / 仅 CurseForge。 */
+  const [source, setSource] = useState<SourceFilter>('all')
   const [results, setResults] = useState<ModrinthProject[]>([])
   const [totalHits, setTotalHits] = useState(0)
   const [searching, setSearching] = useState(false)
@@ -157,7 +159,7 @@ function Browser({ type }: { type: BrowseTab }): JSX.Element {
     setMessage(null)
     try {
       const cat = type === 'mod' ? category : undefined
-      const r = await window.api.mods.search(q, modrinthType, cat, mcVersion || undefined, loader, 0)
+      const r = await window.api.mods.search(q, modrinthType, cat, mcVersion || undefined, loader, 0, source)
       if (seq !== requestSeq.current) return
       setResults(r.hits)
       setTotalHits(r.totalHits)
@@ -176,12 +178,13 @@ function Browser({ type }: { type: BrowseTab }): JSX.Element {
     setLoadingMore(true)
     try {
       const cat = type === 'mod' ? category : undefined
-      const r = await window.api.mods.search(query, modrinthType, cat, mcVersion || undefined, loader, results.length)
+      const r = await window.api.mods.search(query, modrinthType, cat, mcVersion || undefined, loader, results.length, source)
       if (seq !== requestSeq.current) return
       setTotalHits(r.totalHits)
       setResults((prev) => {
-        const seen = new Set(prev.map((p) => p.slug))
-        return [...prev, ...r.hits.filter((p) => !seen.has(p.slug))]
+        // 按「来源 + slug」去重：两个源的 slug 空间不同，只用 slug 会误合并
+        const seen = new Set(prev.map((p) => `${p.source ?? 'modrinth'}:${p.slug}`))
+        return [...prev, ...r.hits.filter((p) => !seen.has(`${p.source ?? 'modrinth'}:${p.slug}`))]
       })
     } catch (err) {
       if (seq !== requestSeq.current) return
@@ -202,7 +205,7 @@ function Browser({ type }: { type: BrowseTab }): JSX.Element {
     const timer = setTimeout(() => void doSearch(query), 300)
     return () => clearTimeout(timer)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [query, type, category, mcVersion, loader])
+  }, [query, type, category, mcVersion, loader, source])
 
   return (
     // 结果列表 ⇄ 项目详情：按 key 切换做淡入入场。同样只做入场、不用 mode="wait" 退场，
@@ -243,6 +246,8 @@ function Browser({ type }: { type: BrowseTab }): JSX.Element {
           />
         </form>
 
+        <FilterSelect label={t('res.filter.source')} value={source} onChange={(v) => setSource(v as SourceFilter)} options={['all', 'modrinth', 'curseforge']} render={(s) => t(`res.source.${s}`)} />
+
         <FilterSelect label={t('res.filter.version')} value={mcVersion} onChange={setMcVersion} options={(manifest?.versions ?? []).filter((v) => v.type === 'release').slice(0, 60).map((v) => v.id)} />
         {loaders.length > 0 && (
           <FilterSelect
@@ -279,7 +284,7 @@ function Browser({ type }: { type: BrowseTab }): JSX.Element {
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3">
               {results.map((p, i) => (
                 <motion.button
-                  key={p.slug}
+                  key={`${p.source ?? 'modrinth'}:${p.slug}`}
                   initial={{ opacity: 0, y: 8 }}
                   animate={{ opacity: 1, y: 0 }}
                   transition={{ delay: Math.min(i * 0.02, 0.3) }}
@@ -292,6 +297,11 @@ function Browser({ type }: { type: BrowseTab }): JSX.Element {
                     <p className="caption mt-0.5 line-clamp-2">{tr(p.description)}</p>
                     <div className="mt-2 flex items-center gap-2">
                       <span className="chip">{t('res.downloadsCount', { n: formatCount(p.downloads) })}</span>
+                      {source === 'all' && (
+                        <span className="chip" title={p.source === 'curseforge' ? 'CurseForge' : 'Modrinth'}>
+                          {t(`res.source.${p.source ?? 'modrinth'}`)}
+                        </span>
+                      )}
                       {p.categories.slice(0, 2).map((c) => (
                         <span key={c} className="chip">
                           {c}
@@ -344,14 +354,14 @@ function ProjectDetail({
 
   useEffect(() => {
     setLoading(true)
-    void window.api.mods.versions(project.slug, [], []).then((vs) => {
+    void window.api.mods.versions(project.slug, [], [], project.source, type).then((vs) => {
       setVersions(vs)
       // 优先选中筛选器锁定的 MC 版本
       const allGv = vs.flatMap((v) => v.game_versions)
       setMcTab(filterMcVersion && allGv.includes(filterMcVersion) ? filterMcVersion : vs[0]?.game_versions[0] ?? '')
       setLoading(false)
     })
-  }, [project.slug, filterMcVersion])
+  }, [project.slug, project.source, type, filterMcVersion])
 
   const mcGroups = useMemo(() => groupVersions(versions), [versions])
   const mcTabs = sortMc([...mcGroups.keys()].filter((k) => k !== GENERIC_MC_KEY))
@@ -588,17 +598,6 @@ function splitIntro(body: string): Array<{ text: string; translate: boolean }> {
   return out
 }
 
-/** 渲染前的 XSS 基础清理：移除脚本类标签、on* 事件属性与 javascript: 协议。 */
-function sanitizeHtml(html: string): string {
-  return html
-    .replace(/<\s*(script|style|iframe)\b[^>]*>[\s\S]*?<\s*\/\s*\1\s*>/gi, '')
-    .replace(/<\s*\/?\s*(script|style|iframe)\b[^>]*>/gi, '')
-    .replace(/\son\w+\s*=\s*"[^"]*"/gi, '')
-    .replace(/\son\w+\s*=\s*'[^']*'/gi, '')
-    .replace(/\son\w+\s*=\s*[^\s>]+/gi, '')
-    .replace(/javascript:/gi, '')
-}
-
 /** 资源「完整介绍」弹窗：打开时拉取 Modrinth 详情，按段落翻译后渲染 Markdown。 */
 function ProjectIntroModal({ project, onClose }: { project: ModrinthProject; onClose: () => void }): JSX.Element {
   const { t, settings } = useApp()
@@ -612,7 +611,7 @@ function ProjectIntroModal({ project, onClose }: { project: ModrinthProject; onC
     setLoading(true)
     setError(null)
     void window.api.mods
-      .project(project.slug)
+      .project(project.slug, project.source === 'curseforge' ? 'mod' : undefined)
       .then((d) => {
         if (cancelled) return
         setDetail(d)
@@ -642,9 +641,8 @@ function ProjectIntroModal({ project, onClose }: { project: ModrinthProject; onC
   const tr = useAutoTranslate(translatables)
 
   const body = (detail?.body ?? '').trim()
-  const html = body
-    ? sanitizeHtml(marked.parse(segments.map((s) => (s.translate ? tr(s.text) : s.text)).join('\n\n')) as string)
-    : ''
+  // Markdown 的渲染与清理交给共享的 Markdown 组件；这里只负责把段落翻译结果拼成原文。
+  const mdText = body ? segments.map((s) => (s.translate ? tr(s.text) : s.text)).join('\n\n') : ''
 
   return (
     <motion.div
@@ -690,9 +688,9 @@ function ProjectIntroModal({ project, onClose }: { project: ModrinthProject; onC
         ) : !body ? (
           <p className="caption py-8 text-center">{t('res.detail.empty')}</p>
         ) : (
-          <div
-            className="selectable max-h-[70vh] overflow-y-auto pr-2 text-[13px] leading-relaxed [&_a]:underline [&_blockquote]:border-l-2 [&_blockquote]:pl-3 [&_blockquote]:opacity-80 [&_code]:rounded [&_code]:bg-[var(--fill-secondary)] [&_code]:px-1 [&_code]:py-0.5 [&_h1]:mb-2 [&_h1]:mt-4 [&_h1]:text-[18px] [&_h1]:font-semibold [&_h2]:mb-2 [&_h2]:mt-4 [&_h2]:text-[16px] [&_h2]:font-semibold [&_h3]:mb-1.5 [&_h3]:mt-3 [&_h3]:text-[14px] [&_h3]:font-semibold [&_img]:my-2 [&_img]:max-w-full [&_img]:rounded-lg [&_li]:my-0.5 [&_ol]:my-2 [&_ol]:list-decimal [&_ol]:pl-5 [&_p]:my-2 [&_pre]:my-2 [&_pre]:overflow-x-auto [&_pre]:rounded-lg [&_pre]:bg-[var(--fill-secondary)] [&_pre]:p-3 [&_ul]:my-2 [&_ul]:list-disc [&_ul]:pl-5"
-            dangerouslySetInnerHTML={{ __html: html }}
+          <Markdown
+            text={mdText}
+            className="max-h-[70vh] overflow-y-auto pr-2 text-[13px] leading-relaxed"
           />
         )}
 
@@ -868,6 +866,8 @@ function VersionEntry({
   const { t } = useApp()
   const [expanded, setExpanded] = useState(false)
   const [busy, setBusy] = useState(false)
+  /** 安装 / 下载失败的提示（非空即展示）；成功或重试时清空。 */
+  const [error, setError] = useState<string | null>(null)
   /** 非空表示：安装到实例时检测到缺失前置，正等用户确认是否一并下载。 */
   const [depPrompt, setDepPrompt] = useState<DepPrompt | null>(null)
 
@@ -896,9 +896,17 @@ function VersionEntry({
   const fire = async (e: React.MouseEvent, target: InstalledVersion | null): Promise<void> => {
     const r = (e.currentTarget as HTMLElement).getBoundingClientRect()
     triggerFly(r.left + r.width / 2, r.top + r.height / 2)
+    // CurseForge 上「禁止第三方分发」的资源拿不到下载地址：只能去官网下，
+    // 这里直接把项目文件页在系统浏览器里打开。
+    if (v.downloadable === false) {
+      const url = v.pageUrl
+      if (url) await window.api.shell.openExternal(url)
+      return
+    }
     const file = v.files.find((f) => f.primary) ?? v.files[0]
     if (!file) return
     setBusy(true)
+    setError(null)
     try {
       if (target) {
         // 安装到实例前先检查必需前置；缺失则弹窗征求是否一并下载。
@@ -907,12 +915,15 @@ function VersionEntry({
           setDepPrompt({ target, missing })
           return
         }
-        await window.api.mods.install(file.url, file.filename, target.id, type)
+        await window.api.mods.install(file.url, file.filename, target.id, type, file.size)
       } else {
         const dest = await window.api.shell.saveFile(file.filename)
-        if (dest) await window.api.mods.downloadTo(file.url, dest)
+        if (dest) await window.api.mods.downloadTo(file.url, dest, file.size)
       }
       setExpanded(false)
+    } catch (err) {
+      // 以前这里静默失败：用户只看到面板收回去、以为「点了没反应」。
+      setError(err instanceof Error ? err.message : String(err))
     } finally {
       setBusy(false)
     }
@@ -925,13 +936,16 @@ function VersionEntry({
     setDepPrompt(null)
     if (!p || !file) return
     setBusy(true)
+    setError(null)
     try {
       for (const m of p.missing) {
         const f = m.version.files.find((x) => x.primary) ?? m.version.files[0]
-        if (f) await window.api.mods.install(f.url, f.filename, p.target.id, 'mod')
+        if (f) await window.api.mods.install(f.url, f.filename, p.target.id, 'mod', f.size)
       }
-      await window.api.mods.install(file.url, file.filename, p.target.id, type)
+      await window.api.mods.install(file.url, file.filename, p.target.id, type, file.size)
       setExpanded(false)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
     } finally {
       setBusy(false)
     }
@@ -951,17 +965,19 @@ function VersionEntry({
           size="sm"
           variant={isModpack ? 'primary' : expanded ? 'secondary' : 'primary'}
           disabled={busy || modpackBusy}
-          onClick={() => (isModpack ? onInstallModpack?.(v) : setExpanded((x) => !x))}
+          onClick={(e) => (v.downloadable === false && !isModpack ? void fire(e, null) : isModpack ? onInstallModpack?.(v) : setExpanded((x) => !x))}
         >
-          {isModpack
-            ? modpackBusy
-              ? t('res.installing')
-              : t('res.installModpack')
-            : busy
-              ? t('res.downloading')
-              : expanded
-                ? t('res.collapse')
-                : t('res.install')}
+          {v.downloadable === false && !isModpack
+            ? t('res.openOnCurseforge')
+            : isModpack
+              ? modpackBusy
+                ? t('res.installing')
+                : t('res.installModpack')
+              : busy
+                ? t('res.downloading')
+                : expanded
+                  ? t('res.collapse')
+                  : t('res.install')}
         </Button>
       </div>
 
@@ -993,39 +1009,56 @@ function VersionEntry({
         </div>
       )}
 
-      {/* 缺前置确认：列出缺失的必需前置，由用户决定是否一并下载 */}
-      {depPrompt && (
-        <div className="fixed inset-0 z-[130] flex items-center justify-center p-6">
-          <div className="absolute inset-0" style={{ background: 'var(--scrim)' }} onClick={() => setDepPrompt(null)} />
-          <div className="glass-strong relative z-10 w-full max-w-md rounded-[28px] p-6">
-            <div className="mb-2 flex items-center gap-2">
-              <Icon name="info" size={20} style={{ color: 'var(--fill-primary)' }} />
-              <span className="title">{t('res.dep.title')}</span>
-            </div>
-            <p className="caption mt-2">{t('res.dep.desc', { target: depPrompt.target.id })}</p>
-            <ul className="mt-3 max-h-56 space-y-1 overflow-y-auto">
-              {depPrompt.missing.map((m) => (
-                <li
-                  key={m.projectId}
-                  className="truncate rounded-lg px-3 py-1.5 text-[13px]"
-                  style={{ background: 'var(--chip-bg)' }}
-                  title={m.title}
-                >
-                  {m.title}
-                </li>
-              ))}
-            </ul>
-            <div className="mt-5 flex gap-2">
-              <Button className="flex-1" onClick={() => setDepPrompt(null)}>
-                {t('res.dep.cancel')}
-              </Button>
-              <Button variant="primary" className="flex-1" icon="download" onClick={() => void installWithDependencies()}>
-                {t('res.dep.confirm')}
-              </Button>
-            </div>
-          </div>
+      {error && (
+        <div
+          className="mt-2 flex items-start gap-2 rounded-lg px-3 py-2 text-[12px]"
+          style={{ background: 'var(--chip-bg)', color: 'var(--fill-danger)' }}
+        >
+          <Icon name="info" size={14} className="mt-0.5 shrink-0" />
+          <span className="min-w-0 flex-1 break-words">{t('res.installFailed', { msg: error })}</span>
+          <button className="no-drag shrink-0 opacity-60 hover:opacity-100" onClick={() => setError(null)}>
+            <Icon name="xmark" size={13} />
+          </button>
         </div>
       )}
+
+      {/* 缺前置确认：列出缺失的必需前置，由用户决定是否一并下载。
+          必须 portal 到 body：本组件位于带 transform 的入场动画容器内，
+          那种祖先会让 fixed 定位改为相对该容器解析，遮罩会盖住整个结果区（看起来「变黑」）。 */}
+      {depPrompt &&
+        createPortal(
+          <div className="fixed inset-0 z-[130] flex items-center justify-center p-6">
+            <div className="absolute inset-0" style={{ background: 'var(--scrim)' }} onClick={() => setDepPrompt(null)} />
+            <div className="glass-strong relative z-10 w-full max-w-md rounded-[28px] p-6">
+              <div className="mb-2 flex items-center gap-2">
+                <Icon name="info" size={20} style={{ color: 'var(--fill-primary)' }} />
+                <span className="title">{t('res.dep.title')}</span>
+              </div>
+              <p className="caption mt-2">{t('res.dep.desc', { target: depPrompt.target.id })}</p>
+              <ul className="mt-3 max-h-56 space-y-1 overflow-y-auto">
+                {depPrompt.missing.map((m) => (
+                  <li
+                    key={m.projectId}
+                    className="truncate rounded-lg px-3 py-1.5 text-[13px]"
+                    style={{ background: 'var(--chip-bg)' }}
+                    title={m.title}
+                  >
+                    {m.title}
+                  </li>
+                ))}
+              </ul>
+              <div className="mt-5 flex gap-2">
+                <Button className="flex-1" onClick={() => setDepPrompt(null)}>
+                  {t('res.dep.cancel')}
+                </Button>
+                <Button variant="primary" className="flex-1" icon="download" onClick={() => void installWithDependencies()}>
+                  {t('res.dep.confirm')}
+                </Button>
+              </div>
+            </div>
+          </div>,
+          document.body
+        )}
     </div>
   )
 }

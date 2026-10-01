@@ -8,7 +8,7 @@ import type {
   UpdateInfo
 } from '@shared/types'
 import { useApp } from '../store'
-import { Button, Icon, ProgressBar, Segmented, Switch } from '../components/ui'
+import { Button, Icon, Markdown, ProgressBar, Segmented, Switch } from '../components/ui'
 import { dataUrlToBlobUrl } from '../wallpaper'
 import { LOCALES, type TFunction } from '../i18n'
 
@@ -977,9 +977,11 @@ export function SettingsPage(): JSX.Element {
         {/* 下载 */}
         <Section title={t('settings.section.download')} icon="download">
           <Row label={t('settings.row.mirror')}>
+            {/* 下载源已强制官方（Mojang），镜像选择置灰停用 */}
             <Segmented
+              disabled
               value={settings.mirror}
-              onChange={(v) => void updateSettings({ mirror: v })}
+              onChange={() => {}}
               options={[
                 { value: 'mojang', label: t('settings.download.mojang') },
                 { value: 'bmclapi', label: 'BMCLAPI' }
@@ -1071,9 +1073,10 @@ export function SettingsPage(): JSX.Element {
                   </>
                 )}
                 {updateResult.latest.notes && (
-                  <div className="caption mt-2 whitespace-pre-wrap border-t pt-2" style={{ borderColor: 'var(--divider)' }}>
-                    {updateResult.latest.notes}
-                  </div>
+                  <Markdown
+                    text={updateResult.latest.notes}
+                    className="caption mt-2 border-t pt-2"
+                  />
                 )}
               </div>
             )}
@@ -1085,9 +1088,10 @@ export function SettingsPage(): JSX.Element {
                 </div>
                 <div className="caption selectable break-all opacity-70">{updateResult.latest.url}</div>
                 {updateResult.latest.notes && (
-                  <div className="caption mt-2 whitespace-pre-wrap border-t pt-2" style={{ borderColor: 'var(--divider)' }}>
-                    {updateResult.latest.notes}
-                  </div>
+                  <Markdown
+                    text={updateResult.latest.notes}
+                    className="caption mt-2 border-t pt-2"
+                  />
                 )}
               </div>
             )}
@@ -1162,9 +1166,12 @@ export function SettingsPage(): JSX.Element {
               </div>
               <div className="mb-5 mt-3">
                 <div className="caption mb-2">{t('settings.updLog.notes')}</div>
-                <div className="glass-soft max-h-[38vh] selectable overflow-y-auto whitespace-pre-wrap break-words rounded-2xl p-4 text-[13px] leading-relaxed opacity-80">
-                  {pendingUpdate.notes?.trim() || t('settings.updLog.empty')}
-                </div>
+                {/* 更新日志按 Markdown 渲染（标题 / 列表 / 代码块 / 链接等） */}
+                <Markdown
+                  text={pendingUpdate.notes}
+                  fallback={t('settings.updLog.empty')}
+                  className="glass-soft max-h-[38vh] overflow-y-auto rounded-2xl p-4 text-[13px] leading-relaxed opacity-80"
+                />
               </div>
               <div className="flex items-center gap-2">
                 <Button className="flex-1" onClick={() => setPendingUpdate(null)}>

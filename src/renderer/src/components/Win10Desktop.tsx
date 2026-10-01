@@ -5,11 +5,13 @@
 // 落在可拖动的窗口里，底部是任务栏（开始菜单 / 已开窗口 / 时钟）。窗口内部渲染的
 // 仍是启动器原有页面，配色由 [data-skin='win10'] 的扁平令牌接管。
 //
+// 桌面里只有启动器自己的窗口：不再捕获 / 搬动任何外部窗口（MC 由启动参数强制全屏，
+// 就是一个普通的独立全屏窗口），因此不涉及任何 Win32 窗口句柄操作。
+//
 // 与「仿 Mac 玻璃」皮肤互斥：设置里两者共用一个 experimental 字段。
 // ---------------------------------------------------------------------------
 
 import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
-import type { NativeWindowInfo } from '@shared/types'
 import { NAV, type PageId } from './Sidebar'
 import { Avatar, Icon } from './ui'
 import { activeGameDir, useApp } from '../store'
@@ -26,7 +28,7 @@ const TASKBAR_H = 48
 const FILES_KEY = 'files'
 
 interface WinState {
-  /** 同一页面只保留一个窗口，故 key 即页面 id；实例管理窗口用 manage:<实例id>；外部窗口用 native:<hwnd> */
+  /** 同一页面只保留一个窗口，故 key 即页面 id；实例管理窗口用 manage:<实例id> */
   key: string
   page: PageId
   title: string
@@ -35,8 +37,6 @@ interface WinState {
   managingId?: string
   /** 自实现资源管理器窗口当前显示的目录 */
   filePath?: string
-  /** 被摆进桌面的外部窗口（目前只有 MC） */
-  native?: { id: string; kind: NativeWindowInfo['kind'] }
   x: number
   y: number
   w: number
@@ -75,100 +75,6 @@ function Glyph({ d, size = 12 }: { d: string; size?: number }): JSX.Element {
   )
 }
 
-/* ---------------- 外部窗口占位 ---------------- */
-
-/**
- * 被摆进桌面的 MC 窗口对应的占位层。
- *
- * 这里不画任何内容：外部窗口始终是独立顶层窗口，被摆在这块矩形的屏幕位置上，
- * 而启动器窗口在这块矩形上挖了洞（SetWindowRgn），于是它直接从这里透出来。
- * 组件只负责把矩形的**设备像素**位置（相对宿主客户区）持续同步给主进程，
- * 拖动 / 最大化 / 改窗口尺寸后外部窗口才会跟着走。
- */
-function NativeView({
-  id,
-  hidden,
-  raise,
-  onGone
-}: {
-  id: string
-  hidden: boolean
-  raise: boolean
-  onGone?: () => void
-}): JSX.Element {
-  const ref = useRef<HTMLDivElement | null>(null)
-  const lastSent = useRef<{ x: number; y: number; w: number; h: number } | null>(null)
-  const lastAt = useRef(0)
-
-  const measure = useCallback(() => {
-    const el = ref.current
-    if (!el) return null
-    // getBoundingClientRect 是相对视口 = 宿主客户区左上角；乘 dpr 得设备像素
-    const r = el.getBoundingClientRect()
-    const dpr = window.devicePixelRatio || 1
-    return {
-      x: Math.round(r.left * dpr),
-      y: Math.round(r.top * dpr),
-      w: Math.round(r.width * dpr),
-      h: Math.round(r.height * dpr)
-    }
-  }, [])
-
-  const sync = useCallback(
-    (force = false) => {
-      const r = measure()
-      if (!r) return
-      const prev = lastSent.current
-      if (!force && prev && prev.x === r.x && prev.y === r.y && prev.w === r.w && prev.h === r.h) return
-      // 兜底节流：即使矩形一直在变，也不比下面这个间隔更密地下发。
-      // 高频 SetWindowPos 会把外部窗口（尤其 MC 的 GL 窗口）拖崩。
-      const now = Date.now()
-      if (!force && now - lastAt.current < 80) return
-      lastSent.current = r
-      lastAt.current = now
-      void window.api.desktop.place(id, r, raise).then((ok) => {
-        if (!ok) {
-          // 窗口已经不在（被关掉了）：清掉缓存并通知上层重新扫描
-          lastSent.current = null
-          onGone?.()
-        }
-      })
-    },
-    [id, measure, raise, onGone]
-  )
-
-  useEffect(() => {
-    if (hidden) {
-      // 收起空洞：宿主窗口恢复整块，外部窗口被压在下面，启动器界面完整可见。
-      // 用户正在拖动这个桌面窗口时也走这里 —— 拖动期间**一次都不下发 SetWindowPos**，
-      // 松手后由下一次 sync(true) 一次性摆到新位置。
-      // 清掉去重缓存：拖动时预留矩形变了，但拖动期间不下发，松手时必须**强制**摆一次，
-      // 否则会被「矩形看起来没变」的判重挡掉。
-      lastSent.current = null
-      lastAt.current = 0
-      void window.api.desktop.setVisible(id, false)
-      return
-    }
-    sync(true)
-
-    // 位置变化没有可靠的事件源（拖动、最大化、宿主缩放）。
-    // 用「变化检测 + 节流」的轻量轮询兜底，静止时 sync() 会在测完矩形后直接返回，
-    // 不产生任何 IPC 与 SetWindowPos。
-    const timer = setInterval(() => sync(), 100)
-    const el = ref.current
-    const observer =
-      el && typeof ResizeObserver !== 'undefined' ? new ResizeObserver(() => sync()) : null
-    if (el && observer) observer.observe(el)
-
-    return () => {
-      clearInterval(timer)
-      observer?.disconnect()
-    }
-  }, [id, hidden, sync])
-
-  return <div ref={ref} className="absolute inset-0" />
-}
-
 /* ---------------- 桌面 ---------------- */
 
 export function Win10Desktop(): JSX.Element {
@@ -182,15 +88,7 @@ export function Win10Desktop(): JSX.Element {
   const [startOpen, setStartOpen] = useState(false)
   const [now, setNow] = useState(() => new Date())
   const zRef = useRef(10)
-  const dragRef = useRef<{ key: string; dx: number; dy: number; nativeId?: string } | null>(null)
-  /**
-   * 正在被拖动的桌面窗口 key。
-   *
-   * 拖动**外部窗口**（MC）的桌面窗口时不能跟着下发布局：两个线程同时移动同一个
-   * 窗口会把 MC 的 GL 窗口拖崩。所以拖动期间把它的空洞收起来（外部窗口被启动器
-   * 界面盖住），松手后一次性摆到新位置。
-   */
-  const [dragKey, setDragKey] = useState<string | null>(null)
+  const dragRef = useRef<{ key: string; dx: number; dy: number } | null>(null)
 
   // 本地模式隐藏联网相关入口，与侧栏保持一致。
   const nav = useMemo(
@@ -207,108 +105,8 @@ export function Win10Desktop(): JSX.Element {
     void window.api.window.setDesktopMode(true)
     return () => {
       void window.api.window.setDesktopMode(false)
-      // 外部窗口是宿主窗口的子窗口，会随宿主一起销毁：退出前必须还给系统
-      void window.api.desktop.releaseAll()
     }
   }, [])
-
-  /* --- 外部窗口：自动摆放 Minecraft --- */
-  const [nativeOk, setNativeOk] = useState(false)
-  const [nativeList, setNativeList] = useState<NativeWindowInfo[]>([])
-
-  /**
-   * 重新拉取外部窗口列表。
-   * 必须是稳定引用：NativeView 的同步回调依赖它，若每次渲染都换新引用，
-   * 拖动时每次重渲染都会重建回调并重跑 effect，把 SetWindowPos 打到每秒上百次
-   * —— 这正是移动窗口会导致外部窗口崩溃的根源。
-   */
-  const refreshNative = useCallback((): void => {
-    void window.api.desktop.list().then(setNativeList)
-  }, [])
-
-  useEffect(() => {
-    let alive = true
-    void window.api.desktop.supported().then((ok) => {
-      if (alive) setNativeOk(ok)
-    })
-    return () => {
-      alive = false
-    }
-  }, [])
-
-  // MC / 资源管理器窗口随时可能开合，定时扫描
-  useEffect(() => {
-    if (!nativeOk) return
-    let alive = true
-    const scan = (): void => {
-      void window.api.desktop.list().then((list) => {
-        if (!alive) return
-        setNativeList(list)
-        // 外部窗口被关掉了：移除对应的桌面窗口（主进程会保证列表里包含仍存活的已摆放窗口）
-        const ids = new Set(list.map((n) => n.id))
-        setWins((ws) => {
-          const kept = ws.filter((w) => !w.native || ids.has(w.native.id))
-          return kept.length === ws.length ? ws : kept
-        })
-      })
-    }
-    scan()
-    // 超低占用模式：扫描周期放宽到约 3 倍，并在窗口不可见时暂停（重新可见立即补一次）。
-    const period = settings.lowUsageMode ? 8000 : 2500
-    const tick = (): void => {
-      if (settings.lowUsageMode && document.visibilityState === 'hidden') return
-      scan()
-    }
-    const timer = setInterval(tick, period)
-    const onVisible = (): void => {
-      if (document.visibilityState !== 'hidden') scan()
-    }
-    if (settings.lowUsageMode) document.addEventListener('visibilitychange', onVisible)
-    return () => {
-      alive = false
-      clearInterval(timer)
-      document.removeEventListener('visibilitychange', onVisible)
-    }
-  }, [nativeOk, settings.lowUsageMode])
-
-  // MC 启动后自动摆进桌面（列表里只有 MC），窗口还在就同步标题、没了就等下一轮移除
-  useEffect(() => {
-    if (!nativeOk || nativeList.length === 0) return
-    setWins((ws) => {
-      let next = ws
-      for (const n of nativeList) {
-        if (n.kind !== 'minecraft') continue
-        const key = `native:${n.id}`
-        const exist = next.find((w) => w.key === key)
-        if (exist) {
-          // 标题会变（例如 MC 切到存档标题），保持同步
-          if (exist.title !== n.title) next = next.map((w) => (w.key === key ? { ...w, title: n.title } : w))
-          continue
-        }
-        const vw = window.innerWidth
-        const vh = window.innerHeight
-        const idx = next.length
-        next = [
-          ...next,
-          {
-            key,
-            page: 'home',
-            title: n.title,
-            icon: n.kind === 'minecraft' ? 'play' : 'folder',
-            native: { id: n.id, kind: n.kind },
-            x: Math.min(96 + idx * 26, Math.max(0, vw - 560)),
-            y: Math.min(56 + idx * 24, Math.max(0, vh - TASKBAR_H - 420)),
-            w: Math.min(960, Math.max(560, vw - 200)),
-            h: Math.min(640, Math.max(380, vh - TASKBAR_H - 160)),
-            z: (zRef.current += 1),
-            minimized: false,
-            maximized: false
-          }
-        ]
-      }
-      return next
-    })
-  }, [nativeList, nativeOk])
 
   /* --- 自实现资源管理器：把 store 里的目标目录同步成桌面上唯一的「文件」窗口 --- */
   useEffect(() => {
@@ -493,11 +291,7 @@ export function Win10Desktop(): JSX.Element {
   const beginDrag = (e: ReactPointerEvent<HTMLDivElement>, w: WinState): void => {
     if (w.maximized) return
     if ((e.target as HTMLElement).closest('button')) return
-    dragRef.current = { key: w.key, dx: e.clientX - w.x, dy: e.clientY - w.y, nativeId: w.native?.id }
-    // 立刻同步告诉主进程「开始拖了」：React 的 setState 是异步的，等 hidden 生效再
-    // 让主进程停下来，中间这段空窗期里已经在飞的 place() 仍会 SetWindowPos。
-    if (w.native) void window.api.desktop.drag(w.native.id, true)
-    setDragKey(w.key)
+    dragRef.current = { key: w.key, dx: e.clientX - w.x, dy: e.clientY - w.y }
     e.currentTarget.setPointerCapture(e.pointerId)
   }
 
@@ -513,33 +307,12 @@ export function Win10Desktop(): JSX.Element {
   }
 
   const endDrag = (): void => {
-    const nativeId = dragRef.current?.nativeId
     dragRef.current = null
-    // 先解除「拖动中」，松手后 NativeView 的 sync(true) 才允许真正下发一次摆放。
-    if (nativeId) void window.api.desktop.drag(nativeId, false)
-    setDragKey(null)
   }
 
   const topKey = wins
     .filter((w) => !w.minimized)
     .reduce<WinState | null>((acc, w) => (acc === null || w.z > acc.z ? w : acc), null)?.key
-
-  /**
-   * 外部窗口的矩形是否要留洞。
-   * 不留洞的三种情况：最小化、开始菜单打开、被启动器自己的窗口（层级更高且相交）盖住
-   * ——此时宿主窗口恢复整块，外部窗口被压在下面，启动器界面完整可见。
-   */
-  const nativeHoleHidden = (w: WinState): boolean => {
-    if (!w.native) return false
-    if (w.minimized || startOpen) return true
-    return wins.some(
-      (o) =>
-        !o.native &&
-        !o.minimized &&
-        o.z > w.z &&
-        !(o.x + o.w <= w.x || w.x + w.w <= o.x || o.y + o.h <= w.y || w.y + w.h <= o.y)
-    )
-  }
 
   return (
     <div className="win10-desktop">
@@ -609,7 +382,7 @@ export function Win10Desktop(): JSX.Element {
       {wins.map((w) => (
         <section
           key={w.key}
-          className={`win10-window${w.native ? ' is-native' : ''}`}
+          className="win10-window"
           style={{
             left: w.maximized ? 0 : w.x,
             top: w.maximized ? 0 : w.y,
@@ -620,67 +393,55 @@ export function Win10Desktop(): JSX.Element {
           }}
           onMouseDown={() => focusWin(w.key)}
         >
-          {/* MC 用它自己系统标题栏：桌面这里不画「桌面模式标题栏」，整块都让给它 */}
-          {!w.native && (
-            <div
-              className="win10-titlebar is-draggable"
-              onPointerDown={(e) => beginDrag(e, w)}
-              onPointerMove={(e) => moveDrag(e, w)}
-              onPointerUp={endDrag}
-              onPointerCancel={endDrag}
-              onDoubleClick={() => toggleMax(w.key)}
-            >
-              <span style={{ color: 'var(--fill-primary)', display: 'inline-flex' }}>
-                <Icon name={w.icon} size={15} />
-              </span>
-              <span className="win10-title">{w.title}</span>
-              <div className="win10-controls">
-                <button
-                  className="win10-ctl"
-                  title={t('titlebar.minimize')}
-                  aria-label={t('titlebar.minimize')}
-                  onClick={() => minimizeWin(w.key)}
-                >
-                  <Glyph d="M2 8h12" />
-                </button>
-                <button
-                  className="win10-ctl"
-                  title={w.maximized ? t('titlebar.restore') : t('titlebar.maximize')}
-                  aria-label={w.maximized ? t('titlebar.restore') : t('titlebar.maximize')}
-                  onClick={() => toggleMax(w.key)}
-                >
-                  {w.maximized ? (
-                    <Glyph d="M4 6h6v6H4zM6 4h6v6" size={13} />
-                  ) : (
-                    <Glyph d="M3.5 3.5h9v9h-9z" size={13} />
-                  )}
-                </button>
-                <button
-                  className="win10-ctl is-close"
-                  title={t('titlebar.close')}
-                  aria-label={t('titlebar.close')}
-                  onClick={() => (w.key === FILES_KEY ? closeFiles() : closeWin(w.key))}
-                >
-                  <Glyph d="M4 4l8 8M12 4l-8 8" size={13} />
-                </button>
-              </div>
+          <div
+            className="win10-titlebar is-draggable"
+            onPointerDown={(e) => beginDrag(e, w)}
+            onPointerMove={(e) => moveDrag(e, w)}
+            onPointerUp={endDrag}
+            onPointerCancel={endDrag}
+            onDoubleClick={() => toggleMax(w.key)}
+          >
+            <span style={{ color: 'var(--fill-primary)', display: 'inline-flex' }}>
+              <Icon name={w.icon} size={15} />
+            </span>
+            <span className="win10-title">{w.title}</span>
+            <div className="win10-controls">
+              <button
+                className="win10-ctl"
+                title={t('titlebar.minimize')}
+                aria-label={t('titlebar.minimize')}
+                onClick={() => minimizeWin(w.key)}
+              >
+                <Glyph d="M2 8h12" />
+              </button>
+              <button
+                className="win10-ctl"
+                title={w.maximized ? t('titlebar.restore') : t('titlebar.maximize')}
+                aria-label={w.maximized ? t('titlebar.restore') : t('titlebar.maximize')}
+                onClick={() => toggleMax(w.key)}
+              >
+                {w.maximized ? (
+                  <Glyph d="M4 6h6v6H4zM6 4h6v6" size={13} />
+                ) : (
+                  <Glyph d="M3.5 3.5h9v9h-9z" size={13} />
+                )}
+              </button>
+              <button
+                className="win10-ctl is-close"
+                title={t('titlebar.close')}
+                aria-label={t('titlebar.close')}
+                onClick={() => (w.key === FILES_KEY ? closeFiles() : closeWin(w.key))}
+              >
+                <Glyph d="M4 4l8 8M12 4l-8 8" size={13} />
+              </button>
             </div>
-          )}
+          </div>
 
           <div
             className="win10-body"
-            style={w.native ? { position: 'relative', padding: 0 } : w.filePath ? { padding: 0, overflow: 'hidden' } : undefined}
+            style={w.filePath ? { padding: 0, overflow: 'hidden' } : undefined}
           >
-            {w.native ? (
-              // 外部窗口被摆在这块矩形的屏幕位置上，宿主窗口在此挖洞透出，
-              // 所以这里只留占位；被自己的窗口盖住或菜单打开时收起空洞。
-              <NativeView
-                id={w.native.id}
-                hidden={nativeHoleHidden(w) || dragKey === w.key}
-                raise={topKey === w.key}
-                onGone={refreshNative}
-              />
-            ) : w.filePath ? (
+            {w.filePath ? (
               // 自实现资源管理器：key 用当前目录，换目录时整块重挂载，内部状态干净
               <FileManager key={w.filePath} initialPath={w.filePath} editOnDoubleClick />
             ) : w.managingId ? (
