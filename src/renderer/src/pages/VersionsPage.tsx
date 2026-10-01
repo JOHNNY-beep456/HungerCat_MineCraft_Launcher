@@ -2,14 +2,15 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { motion } from 'motion/react'
 import type { ForgeKind, InstalledVersion, LoaderKind, VersionManifest } from '@shared/types'
 import { useRuntime } from '../runtime'
+import { useApp } from '../store'
 import { Button, Checkbox, GlassCard, Icon, LoadingState, ProgressBar, Segmented, Select } from '../components/ui'
 
 type Filter = 'all' | 'release' | 'snapshot'
 type AnyLoader = LoaderKind | ForgeKind
 type InstallKind = 'vanilla' | AnyLoader
 
-const LOADER_OPTIONS: Array<{ value: InstallKind; label: string }> = [
-  { value: 'vanilla', label: '原版' },
+const LOADER_OPTIONS: Array<{ value: InstallKind; label?: string; labelKey?: string }> = [
+  { value: 'vanilla', labelKey: 'res.loader.vanilla' },
   { value: 'fabric', label: 'Fabric' },
   { value: 'quilt', label: 'Quilt' },
   { value: 'forge', label: 'Forge' },
@@ -44,6 +45,7 @@ function withTimeout<T>(p: Promise<T>, ms: number, tip: string): Promise<T> {
 
 export function VersionsPage({ presetSearch }: { presetSearch?: string }): JSX.Element {
   const { download, installingId, busy, installVersion } = useRuntime()
+  const { t } = useApp()
 
   const [manifest, setManifest] = useState<VersionManifest | null>(null)
   const [loading, setLoading] = useState(true)
@@ -125,7 +127,7 @@ export function VersionsPage({ presetSearch }: { presetSearch?: string }): JSX.E
           ? window.api.forge.versions(kind, mc)
           : window.api.loaders.versions(kind, mc),
         10_000,
-        `获取 ${kind} 加载器版本超时（超过 10 秒）`
+        t('res.versions.loaderTimeout', { kind })
       )
       // 陈旧响应作废：仅在本次请求仍是“最新一次”时才回写状态，
       // 避免快速切换分段时乱序返回的旧响应覆盖当前选择的加载器版本。
@@ -135,7 +137,7 @@ export function VersionsPage({ presetSearch }: { presetSearch?: string }): JSX.E
       if (versions.length === 0) {
         // 取到空列表（非错误）也应复位到“待选择”并给出提示，避免留下“加载中…”误导态。
         setLoaderVersion('')
-        setLoaderError(`当前 MC 版本 ${mc} 未发现可用 ${kind} 加载器版本`)
+        setLoaderError(t('res.versions.noLoaderFor', { mc, kind }))
       } else {
         setLoaderVersion(versions[0])
       }
@@ -147,7 +149,7 @@ export function VersionsPage({ presetSearch }: { presetSearch?: string }): JSX.E
       setLoaderVersion('')
       const msg = err instanceof Error ? err.message : String(err)
       // fabric/quilt 与 forge 主源均以 “HTTP 404” 表示该 MC 版本不支持，友好提示而不是抛未处理异常。
-      setLoaderError(/HTTP 404/.test(msg) ? `当前 MC 版本 ${mc} 暂不支持 ${kind} 加载器` : msg)
+      setLoaderError(/HTTP 404/.test(msg) ? t('res.versions.loaderUnsupported', { mc, kind }) : msg)
     }
   }
 
@@ -185,11 +187,11 @@ export function VersionsPage({ presetSearch }: { presetSearch?: string }): JSX.E
     if (!loaderTarget) return
     const name = sanitizeName(customName)
     if (!name) {
-      setLoaderError('请输入有效的版本名')
+      setLoaderError(t('res.versions.invalidName'))
       return
     }
     if (installed.some((v) => v.id === name)) {
-      setLoaderError(`版本名「${name}」已存在，请更换`)
+      setLoaderError(t('res.versions.nameExists', { name }))
       return
     }
     if (loaderKind !== 'vanilla' && !loaderVersion) return
@@ -213,7 +215,9 @@ export function VersionsPage({ presetSearch }: { presetSearch?: string }): JSX.E
           try {
             await window.api.mods.installFabricApi(loaderTarget, id)
           } catch (err) {
-            setLoaderError(`Fabric API 安装失败：${err instanceof Error ? err.message : String(err)}`)
+            setLoaderError(
+              t('res.versions.fabricApiFailed', { msg: err instanceof Error ? err.message : String(err) })
+            )
           }
         }
       }
@@ -244,26 +248,30 @@ export function VersionsPage({ presetSearch }: { presetSearch?: string }): JSX.E
         >
           <div className="flex items-end justify-between">
           <div>
-            <h1 className="display">版本</h1>
+            <h1 className="display">{t('res.versions.title')}</h1>
           <p className="caption mt-1">
             {manifest
-              ? `最新正式版 ${manifest.latest.release} · 最新快照 ${manifest.latest.snapshot} · 已安装 ${installed.length} 个`
-              : '正在加载版本清单…'}
+              ? t('res.versions.summary', {
+                  release: manifest.latest.release,
+                  snapshot: manifest.latest.snapshot,
+                  n: installed.length
+                })
+              : t('res.versions.loadingManifest')}
           </p>
         </div>
         <Button icon="refresh" onClick={() => void refresh()}>
-          刷新
+          {t('res.versions.refresh')}
         </Button>
       </div>
 
       {loading ? (
-        <LoadingState text="正在获取版本列表…" />
+        <LoadingState text={t('res.versions.loadingList')} />
       ) : (
         <div className="min-h-0 flex-1 overflow-y-auto pr-1">
           {/* 所有版本（可重复安装） */}
           <div className="mb-2 flex flex-wrap items-center gap-3">
             <div className="flex items-center gap-2">
-              <span className="title">所有版本</span>
+              <span className="title">{t('res.versions.all')}</span>
               <span className="chip">{list.length}</span>
             </div>
             <div className="relative min-w-[180px] flex-1">
@@ -271,7 +279,7 @@ export function VersionsPage({ presetSearch }: { presetSearch?: string }): JSX.E
               <input
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
-                placeholder="搜索版本…"
+                placeholder={t('res.versions.searchPlaceholder')}
                 className="input w-full pl-9"
               />
             </div>
@@ -279,9 +287,9 @@ export function VersionsPage({ presetSearch }: { presetSearch?: string }): JSX.E
               value={filter}
               onChange={setFilter}
               options={[
-                { value: 'all', label: '全部' },
-                { value: 'release', label: '正式版' },
-                { value: 'snapshot', label: '快照' }
+                { value: 'all', label: t('res.versions.filter.all') },
+                { value: 'release', label: t('res.versions.filter.release') },
+                { value: 'snapshot', label: t('res.versions.filter.snapshot') }
               ]}
             />
           </div>
@@ -311,7 +319,8 @@ export function VersionsPage({ presetSearch }: { presetSearch?: string }): JSX.E
                   <div className="min-w-0 flex-1">
                     <div className="truncate text-[14px] font-semibold">{v.id}</div>
                     <div className="caption">
-                      {v.type === 'snapshot' ? '快照' : '正式'} · {v.releaseTime.slice(0, 10)}
+                      {t(v.type === 'snapshot' ? 'res.versions.typeSnapshot' : 'res.versions.typeRelease')} ·{' '}
+                      {v.releaseTime.slice(0, 10)}
                     </div>
                   </div>
                   <div className="flex items-center gap-1">
@@ -322,7 +331,7 @@ export function VersionsPage({ presetSearch }: { presetSearch?: string }): JSX.E
                       disabled={busy && !installing}
                       onClick={() => void openLoader(v.id)}
                     >
-                      {installing ? '安装中' : '安装'}
+                      {installing ? t('res.versions.installing') : t('res.install')}
                     </Button>
                   </div>
                 </motion.div>
@@ -333,7 +342,7 @@ export function VersionsPage({ presetSearch }: { presetSearch?: string }): JSX.E
           {installingId && download && (
             <div className="glass-strong sticky bottom-2 rounded-2xl p-4">
               <div className="mb-2 flex items-center justify-between">
-                <span className="headline">正在安装 {installingId}</span>
+                <span className="headline">{t('res.versions.installingName', { name: installingId })}</span>
                 <span className="caption">{download.percent}%</span>
               </div>
               <ProgressBar percent={download.percent} />
@@ -359,11 +368,11 @@ export function VersionsPage({ presetSearch }: { presetSearch?: string }): JSX.E
           {/* 页头 */}
           <div className="flex items-end justify-between gap-4">
             <div>
-              <h2 className="display">安装版本 {loaderTarget}</h2>
-              <p className="caption mt-1">选择安装方式（可同时安装模组加载器）</p>
+              <h2 className="display">{t('res.versions.installTitle', { name: loaderTarget })}</h2>
+              <p className="caption mt-1">{t('res.versions.installSubtitle')}</p>
             </div>
             <Button icon="chevronLeft" onClick={() => setLoaderTarget(null)} disabled={loaderBusy}>
-              返回
+              {t('res.back')}
             </Button>
           </div>
 
@@ -374,8 +383,8 @@ export function VersionsPage({ presetSearch }: { presetSearch?: string }): JSX.E
               <GlassCard className="p-6">
                 <div className="mb-5 flex items-center justify-between gap-4">
                   <div>
-                    <h3 className="headline">MC 版本</h3>
-                    <p className="caption mt-0.5">要安装的基础版本与版本名</p>
+                    <h3 className="headline">{t('res.versions.mcVersion')}</h3>
+                    <p className="caption mt-0.5">{t('res.versions.mcVersionDesc')}</p>
                   </div>
                   <span
                     className="rounded-full px-3 py-1 text-[12px] font-semibold"
@@ -385,7 +394,9 @@ export function VersionsPage({ presetSearch }: { presetSearch?: string }): JSX.E
                         : { background: 'rgba(10,132,255,0.16)', color: 'rgb(10,132,255)' }
                     }
                   >
-                    {targetSummary?.type === 'snapshot' ? '快照' : '正式版'}
+                    {targetSummary?.type === 'snapshot'
+                      ? t('res.versions.typeSnapshot')
+                      : t('res.versions.badgeRelease')}
                   </span>
                 </div>
 
@@ -394,39 +405,39 @@ export function VersionsPage({ presetSearch }: { presetSearch?: string }): JSX.E
                   style={{ background: 'var(--fill-secondary)' }}
                 >
                   <div>
-                    <div className="caption">MC 版本</div>
+                    <div className="caption">{t('res.versions.mcVersion')}</div>
                     <div className="text-[15px] font-semibold" style={{ color: 'var(--text-primary)' }}>
                       {loaderTarget}
                     </div>
                   </div>
                   <div>
-                    <div className="caption">发布时间</div>
+                    <div className="caption">{t('res.versions.releaseTime')}</div>
                     <div className="text-[15px] font-medium" style={{ color: 'var(--text-primary)' }}>
                       {targetSummary?.releaseTime.slice(0, 10) ?? '—'}
                     </div>
                   </div>
                   <div>
-                    <div className="caption">当前加载器</div>
+                    <div className="caption">{t('res.versions.currentLoader')}</div>
                     <div className="text-[15px] font-medium" style={{ color: 'var(--text-primary)' }}>
-                      {isVanilla ? '原版' : loaderKind}
+                      {isVanilla ? t('res.loader.vanilla') : loaderKind}
                     </div>
                   </div>
                 </div>
 
                 <div className="mt-5">
-                  <div className="caption mb-2">安装版本名</div>
+                  <div className="caption mb-2">{t('res.versions.installName')}</div>
                   <input
                     value={customName}
                     onChange={(e) => {
                       setCustomName(e.target.value)
                       setNameTouched(true)
                     }}
-                    placeholder="输入自定义版本名"
+                    placeholder={t('res.versions.namePlaceholder')}
                     className="input w-full"
                   />
                   {nameTaken && (
                     <div className="mt-1.5 text-[12px]" style={{ color: 'var(--fill-danger)' }}>
-                      版本名「{sanitizeName(customName)}」已存在，请更换
+                      {t('res.versions.nameExists', { name: sanitizeName(customName) })}
                     </div>
                   )}
                 </div>
@@ -435,11 +446,18 @@ export function VersionsPage({ presetSearch }: { presetSearch?: string }): JSX.E
               {/* ② 加载方式 */}
               <GlassCard className="p-6">
                 <div className="mb-5">
-                  <h3 className="headline">加载方式</h3>
-                  <p className="caption mt-0.5">选择要安装的模组加载器</p>
+                  <h3 className="headline">{t('res.versions.loadMethod')}</h3>
+                  <p className="caption mt-0.5">{t('res.versions.loadMethodDesc')}</p>
                 </div>
 
-                <Segmented value={loaderKind} onChange={(v) => void switchLoaderKind(v)} options={LOADER_OPTIONS} />
+                <Segmented
+                  value={loaderKind}
+                  onChange={(v) => void switchLoaderKind(v)}
+                  options={LOADER_OPTIONS.map((o) => ({
+                    value: o.value,
+                    label: o.labelKey ? t(o.labelKey) : o.label ?? o.value
+                  }))}
+                />
 
                 {loaderError && (
                   <div
@@ -452,24 +470,30 @@ export function VersionsPage({ presetSearch }: { presetSearch?: string }): JSX.E
 
                 {!isVanilla && (
                   <div className="mt-5">
-                    <div className="caption mb-2">加载器版本</div>
+                    <div className="caption mb-2">{t('res.versions.loaderVersion')}</div>
                     <Select
                       value={loaderVersion}
                       onChange={setLoaderVersion}
                       className="w-full"
                       disabled={loaderVersions.length === 0 || loaderBusy}
-                      placeholder={loaderBusy ? '安装中…' : loaderLoading ? '加载中…' : '无可用加载器版本'}
+                      placeholder={
+                        loaderBusy
+                          ? t('res.installing')
+                          : loaderLoading
+                            ? t('res.loading')
+                            : t('res.versions.noLoaderVersion')
+                      }
                       options={loaderVersions.map((lv) => ({ value: lv, label: lv }))}
                     />
 
                     <div className="caption mt-1.5">
                       {loaderBusy
-                        ? '正在安装…'
+                        ? t('res.versions.installingNow')
                         : loaderLoading
-                          ? `正在获取 ${loaderKind} 加载器版本…`
+                          ? t('res.versions.fetchingLoader', { kind: loaderKind })
                           : loaderVersions.length === 0
-                            ? '该 MC 版本暂无可选的加载器版本'
-                            : `已自动选择最新可用版本：${loaderVersion}`}
+                            ? t('res.versions.noLoaderVersionFor')
+                            : t('res.versions.autoSelected', { version: loaderVersion })}
                     </div>
                   </div>
                 )}
@@ -481,9 +505,9 @@ export function VersionsPage({ presetSearch }: { presetSearch?: string }): JSX.E
                   >
                     <div>
                       <div className="text-[13px] font-semibold" style={{ color: 'var(--text-primary)' }}>
-                        同时安装 Fabric API
+                        {t('res.versions.installFabricApi')}
                       </div>
-                      <div className="caption mt-0.5">安装该加载器时一并安装对应版本的 Fabric API</div>
+                      <div className="caption mt-0.5">{t('res.versions.installFabricApiDesc')}</div>
                     </div>
                     <Checkbox checked={installFabricApi} onChange={setInstallFabricApi} />
                   </div>
@@ -491,7 +515,7 @@ export function VersionsPage({ presetSearch }: { presetSearch?: string }): JSX.E
 
                 {isForge && loaderLog.length > 0 && (
                   <div className="mt-5">
-                    <div className="caption mb-2">安装日志</div>
+                    <div className="caption mb-2">{t('res.versions.installLog')}</div>
                     <div
                       ref={logRef}
                       className="selectable max-h-40 min-h-[80px] overflow-y-auto rounded-xl p-3 font-mono text-[11px] leading-relaxed"
@@ -514,7 +538,11 @@ export function VersionsPage({ presetSearch }: { presetSearch?: string }): JSX.E
             {(loaderBusy || (installingId && download)) && (
               <div className="mb-4">
                 <div className="mb-2 flex items-center justify-between gap-3">
-                  <span className="headline">{loaderBusy ? '正在安装…' : `正在安装 ${installingId}`}</span>
+                  <span className="headline">
+                    {loaderBusy
+                      ? t('res.versions.installingNow')
+                      : t('res.versions.installingName', { name: installingId ?? '' })}
+                  </span>
                   {download && <span className="caption">{download.percent}%</span>}
                 </div>
                 {download && <ProgressBar percent={download.percent} />}
@@ -528,7 +556,7 @@ export function VersionsPage({ presetSearch }: { presetSearch?: string }): JSX.E
 
             <div className="flex flex-wrap items-center justify-end gap-3">
               <Button size="lg" className="min-w-[112px]" onClick={() => setLoaderTarget(null)} disabled={loaderBusy}>
-                取消
+                {t('res.cancel')}
               </Button>
               <Button
                 variant="primary"
@@ -542,7 +570,7 @@ export function VersionsPage({ presetSearch }: { presetSearch?: string }): JSX.E
                 }
                 onClick={() => void confirmLoader()}
               >
-                {loaderBusy ? '安装中…' : loaderLoading ? '获取版本中…' : '立即安装'}
+                {loaderBusy ? t('res.installing') : loaderLoading ? t('res.versions.fetchingVersions') : t('res.versions.installNow')}
               </Button>
             </div>
           </div>

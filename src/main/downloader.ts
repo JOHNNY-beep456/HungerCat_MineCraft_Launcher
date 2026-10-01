@@ -136,7 +136,9 @@ async function downloadFile(
 function sha1File(path: string): Promise<string> {
   return new Promise((resolve, reject) => {
     const hash = createHash('sha1')
-    const stream = createReadStream(path)
+    // 1 MB 分块：默认 64 KB 会让大文件（client.jar、资源包）产生数万次 data 事件，
+    // 校验阶段耗时明显偏高。
+    const stream = createReadStream(path, { highWaterMark: 1024 * 1024 })
     stream.on('data', (d) => hash.update(d))
     stream.on('end', () => resolve(hash.digest('hex')))
     stream.on('error', reject)
@@ -208,7 +210,25 @@ async function collectTasks(json: VersionJson, gameDir: string, kind: MirrorKind
     phase: 'assets'
   })
 
-  for (const lib of json.libraries ?? []) {
+  // Profile libraries（Fabric / Quilt 等）不带 sha1，需要逐个拉取 `.sha1` sidecar。
+  // 原实现把 await 放在 for 循环内，十几个库就是十几次串行 HTTP，是「随版本安装
+  // Fabric / Fabric API 时特别慢」的主因；这里先并行取回全部 sidecar，再构造任务。
+  const allLibs = json.libraries ?? []
+  await Promise.all(
+    allLibs
+      .filter((lib) => libraryAllowed(lib) && !lib.downloads?.artifact && !lib.sha1)
+      .map(async (lib) => {
+        const { prefix, base } = libraryPaths(lib.name)
+        const repo = (lib.url ?? '').replace(/\/+$/, '')
+        const officialUrl = repo
+          ? `${repo}/${prefix}/${base}.jar`
+          : OFFICIAL.libraryUrl(`${prefix}/${base}.jar`)
+        const sha1 = await fetchSha1Sidecar(urlsFor(officialUrl, kind).url)
+        if (sha1) lib.sha1 = sha1
+      })
+  )
+
+  for (const lib of allLibs) {
     if (!libraryAllowed(lib)) continue
     const { prefix, base } = libraryPaths(lib.name)
     const repo = (lib.url ?? '').replace(/\/+$/, '')
@@ -226,14 +246,9 @@ async function collectTasks(json: VersionJson, gameDir: string, kind: MirrorKind
     } else {
       const officialUrl = repo ? `${repo}/${prefix}/${base}.jar` : OFFICIAL.libraryUrl(`${prefix}/${base}.jar`)
       const pair = urlsFor(officialUrl, kind)
-      // Profile libraries (Fabric/Quilt) ship no sha1/size. Fetch the .sha1
-      // sidecar once and persist it on the library so later launches can
-      // verify and skip without re-fetching.
-      let sha1 = lib.sha1
-      if (!sha1) {
-        sha1 = await fetchSha1Sidecar(pair.url)
-        if (sha1) lib.sha1 = sha1
-      }
+      // sha1 已在上面的并行阶段取回并写回 lib；这里直接使用即可。
+      // 并行阶段失败（sidecar 拿不到）时保持 undefined，改由 size 判断是否需重下。
+      const sha1 = lib.sha1
       tasks.push({
         ...pair,
         dest: join(gameDir, 'libraries', prefix, `${base}.jar`),

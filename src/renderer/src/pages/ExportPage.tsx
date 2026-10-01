@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { motion } from 'motion/react'
 import type { ExportItem, ModpackExportInventory, ModpackFormat } from '@shared/types'
 import { Button, Checkbox, Icon, Segmented } from '../components/ui'
+import { useApp } from '../store'
 
 function formatSize(n: number): string {
   if (n <= 0) return ''
@@ -25,6 +26,7 @@ function FileTreeSection({
   selected: string[]
   onChange: (next: string[]) => void
 }): JSX.Element {
+  const { t } = useApp()
   const all = items.length > 0 && selected.length === items.length
   const some = selected.length > 0 && !all
   const toggleAll = (): void => onChange(all ? [] : items.map((i) => i.name))
@@ -36,8 +38,8 @@ function FileTreeSection({
       <div className="flex items-center gap-2">
         <Checkbox checked={all} indeterminate={some} onChange={toggleAll} />
         <span className="text-[14px] font-semibold">{title}</span>
-        <span className="text-[12px] opacity-50">{items.length} 项</span>
-        <span className="ml-auto text-[12px] opacity-40">全选</span>
+        <span className="text-[12px] opacity-50">{t('ins.itemsCount', { n: items.length })}</span>
+        <span className="ml-auto text-[12px] opacity-40">{t('ins.selectAll')}</span>
       </div>
       <div className="mt-2 border-l pl-3" style={{ borderColor: 'var(--divider)' }}>
         <div className="flex items-center gap-1.5 py-1 text-[12px] opacity-60">
@@ -45,7 +47,7 @@ function FileTreeSection({
           <span className="font-mono">{folder}</span>
         </div>
         {items.length === 0 ? (
-          <div className="py-1.5 text-[13px] opacity-45">（无）</div>
+          <div className="py-1.5 text-[13px] opacity-45">{t('ins.none')}</div>
         ) : (
           items.map((it) => (
             <div key={it.name} className="flex items-center gap-2 py-1">
@@ -85,13 +87,8 @@ function CheckRow({
   )
 }
 
-const FORMATS: Array<{ value: ModpackFormat; label: string }> = [
-  { value: 'modrinth', label: 'Modrinth' },
-  { value: 'mcbbs', label: 'BBSMC' },
-  { value: 'native', label: '自带格式' }
-]
-
 export function ExportPage({ versionId, onClose }: { versionId: string; onClose: () => void }): JSX.Element {
+  const { t } = useApp()
   const [inventory, setInventory] = useState<ModpackExportInventory | null>(null)
   const [loading, setLoading] = useState(true)
 
@@ -147,13 +144,19 @@ export function ExportPage({ versionId, onClose }: { versionId: string; onClose:
         includeDisabledMods: disabledMods,
         schematics
       })
-      setDone(`已导出：${out}`)
+      setDone(t('ins.exported', { path: out }))
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
     } finally {
       setExporting(false)
     }
   }
+
+  const formats: Array<{ value: ModpackFormat; label: string }> = [
+    { value: 'modrinth', label: 'Modrinth' },
+    { value: 'mcbbs', label: 'BBSMC' },
+    { value: 'native', label: t('ins.formatNative') }
+  ]
 
   return (
     <motion.div
@@ -173,8 +176,8 @@ export function ExportPage({ versionId, onClose }: { versionId: string; onClose:
       >
         <div className="flex items-center gap-3 border-b px-5 py-4" style={{ borderColor: 'var(--divider)' }}>
           <div>
-            <div className="text-[16px] font-semibold">导出整合包</div>
-            <div className="text-[12px] opacity-55">为「{versionId}」选择要打包的内容</div>
+            <div className="text-[16px] font-semibold">{t('ins.exportModpack')}</div>
+            <div className="text-[12px] opacity-55">{t('ins.exportFor', { name: versionId })}</div>
           </div>
           <button className="no-drag ml-auto rounded-lg p-1.5 hover:bg-black/5" onClick={onClose}>
             <Icon name="xmark" size={18} />
@@ -183,34 +186,34 @@ export function ExportPage({ versionId, onClose }: { versionId: string; onClose:
 
         <div className="flex-1 space-y-4 overflow-y-auto px-5 py-4">
           {loading ? (
-            <div className="py-10 text-center text-[13px] opacity-55">正在扫描实例内容…</div>
+            <div className="py-10 text-center text-[13px] opacity-55">{t('ins.scanning')}</div>
           ) : inventory ? (
             <>
-              <div className="text-[13px] font-semibold opacity-75">基础设置</div>
+              <div className="text-[13px] font-semibold opacity-75">{t('ins.basicSettings')}</div>
               <CheckRow
                 checked={gameSettings}
                 onChange={setGameSettings}
                 disabled={!inventory.hasGameSettings}
-                label="游戏设置"
-                hint={inventory.hasGameSettings ? '' : '（无 options.txt）'}
+                label={t('ins.gameSettings')}
+                hint={inventory.hasGameSettings ? '' : t('ins.noOptions')}
               />
               <CheckRow
                 checked={modConfigs}
                 onChange={setModConfigs}
                 disabled={!inventory.hasModConfigs}
-                label="模组设置（config 目录）"
-                hint={inventory.hasModConfigs ? '' : '（无 config 目录）'}
+                label={t('ins.modConfigs')}
+                hint={inventory.hasModConfigs ? '' : t('ins.noConfigDir')}
               />
               <CheckRow
                 checked={serversList}
                 onChange={setServersList}
                 disabled={!inventory.hasServersList}
-                label="多人服务器列表"
-                hint={inventory.hasServersList ? '' : '（无 servers.dat）'}
+                label={t('ins.serversList')}
+                hint={inventory.hasServersList ? '' : t('ins.noServersDat')}
               />
 
               <FileTreeSection
-                title="单人存档"
+                title={t('ins.worlds')}
                 folder="saves/"
                 items={inventory.worlds}
                 selected={worlds}
@@ -218,7 +221,7 @@ export function ExportPage({ versionId, onClose }: { versionId: string; onClose:
               />
 
               <FileTreeSection
-                title="资源包"
+                title={t('ins.resourcepacks')}
                 folder="resourcepacks/"
                 items={inventory.resourcePacks}
                 selected={resourcePacks}
@@ -226,12 +229,12 @@ export function ExportPage({ versionId, onClose }: { versionId: string; onClose:
               />
 
               {inventory.hasJei && (
-                <CheckRow checked={jei} onChange={setJei} label="JEI 个人信息" hint="bookmarks / 收藏等" />
+                <CheckRow checked={jei} onChange={setJei} label={t('ins.jeiInfo')} hint={t('ins.jeiHint')} />
               )}
 
               {inventory.gunPacks.length > 0 && (
                 <FileTreeSection
-                  title="枪包"
+                  title={t('ins.gunPacks')}
                   folder="tacz/"
                   items={inventory.gunPacks}
                   selected={gunPacks}
@@ -243,14 +246,14 @@ export function ExportPage({ versionId, onClose }: { versionId: string; onClose:
                 <CheckRow
                   checked={disabledMods}
                   onChange={setDisabledMods}
-                  label="导出已禁用的模组"
-                  hint={`${inventory.disabledMods.length} 个（未禁用模组始终导出）`}
+                  label={t('ins.exportDisabledMods')}
+                  hint={t('ins.disabledModsHint', { n: inventory.disabledMods.length })}
                 />
               )}
 
               {inventory.schematics.length > 0 && (
                 <FileTreeSection
-                  title="投影原理图"
+                  title={t('ins.schematics')}
                   folder="schematics/"
                   items={inventory.schematics}
                   selected={schematics}
@@ -258,12 +261,10 @@ export function ExportPage({ versionId, onClose }: { versionId: string; onClose:
                 />
               )}
 
-              <div className="text-[13px] font-semibold opacity-75">导出格式</div>
-              <Segmented options={FORMATS} value={format} onChange={setFormat} />
+              <div className="text-[13px] font-semibold opacity-75">{t('ins.exportFormat')}</div>
+              <Segmented options={formats} value={format} onChange={setFormat} />
 
-              <p className="text-[12px] leading-relaxed opacity-50">
-                模组会始终打包（禁用的模组除外）。游戏设置、模组设置、服务器列表可单独开关；存档、资源包、枪包、原理图可挑选或全部导出。
-              </p>
+              <p className="text-[12px] leading-relaxed opacity-50">{t('ins.exportNotice')}</p>
             </>
           ) : null}
 
@@ -279,16 +280,16 @@ export function ExportPage({ versionId, onClose }: { versionId: string; onClose:
 
         <div className="flex items-center gap-2 border-t px-5 py-4" style={{ borderColor: 'var(--divider)' }}>
           {error ? (
-            <Button onClick={() => setError(null)}>返回修改</Button>
+            <Button onClick={() => setError(null)}>{t('ins.backToEdit')}</Button>
           ) : done ? (
             <Button variant="primary" onClick={onClose}>
-              完成
+              {t('ins.done')}
             </Button>
           ) : (
             <>
-              <Button onClick={onClose}>取消</Button>
+              <Button onClick={onClose}>{t('ins.cancel')}</Button>
               <Button variant="primary" icon="box" disabled={exporting || loading || !inventory} onClick={() => void doExport()}>
-                {exporting ? '导出中…' : '导出'}
+                {exporting ? t('ins.exporting') : t('ins.export')}
               </Button>
             </>
           )}

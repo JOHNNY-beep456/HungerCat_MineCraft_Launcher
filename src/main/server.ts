@@ -35,17 +35,57 @@ export function fetchUpdateInfo(): Promise<UpdateInfo> {
   return apiGet<UpdateInfo>('update')
 }
 
-/** 简单语义化版本比较：返回 a-b 的正负。 */
+/**
+ * 解析语义化版本：`1.2.3`、`1.2.3-beta1`、`1.2.3-rc2`、`1.2.3-dev10`。
+ * @returns 主版本数字段 + 预发布信息（无预发布时为 null）。
+ */
+function parseVersion(v: string): { nums: number[]; pre: { tag: string; num: number } | null } {
+  const s = v.trim().replace(/^v/i, '')
+  const dashAt = s.indexOf('-')
+  const core = dashAt >= 0 ? s.slice(0, dashAt) : s
+  const nums = core.split('.').map((x) => parseInt(x, 10) || 0)
+  if (dashAt < 0) return { nums, pre: null }
+  const preRaw = s.slice(dashAt + 1).trim()
+  if (!preRaw) return { nums, pre: null }
+  // 形如 beta1 / rc2 / dev10：拆出标签与编号；无编号时按 0 处理。
+  const m = preRaw.match(/^([A-Za-z]*)[-._]?(\d+)$/)
+  return {
+    nums,
+    pre: { tag: (m?.[1] || preRaw).toLowerCase(), num: m ? parseInt(m[2], 10) : 0 }
+  }
+}
+
+/**
+ * 语义化版本比较：返回 a-b 的正负（a 新于 b 时为正）。
+ *
+ * 规则（对齐 semver 的预发布语义）：
+ *   1. 先比较主版本段（缺位补 0）；
+ *   2. 主版本相同时，正式版 > 预发布版（1.0.0 > 1.0.0-rc1）；
+ *   3. 同为预发布时，先比标签、再比编号
+ *      （0.5.0-beta3 > 0.5.0-beta2、0.5.0-beta10 > 0.5.0-beta9）。
+ *
+ * 第 3 条是本次修复的关键：旧实现把 `beta2` 解析成 0，
+ * 导致 `0.5.0-beta2` 与 `0.5.0-beta3` 被判为相等、检查更新时永远「无更新」。
+ */
 export function compareVersions(a: string, b: string): number {
-  const pa = a.split(/[.+-]/).map((s) => parseInt(s, 10) || 0)
-  const pb = b.split(/[.+-]/).map((s) => parseInt(s, 10) || 0)
-  const len = Math.max(pa.length, pb.length)
+  const pa = parseVersion(a)
+  const pb = parseVersion(b)
+  const len = Math.max(pa.nums.length, pb.nums.length)
   for (let i = 0; i < len; i++) {
-    const x = pa[i] ?? 0
-    const y = pb[i] ?? 0
+    const x = pa.nums[i] ?? 0
+    const y = pb.nums[i] ?? 0
     if (x !== y) return x - y
   }
-  return 0
+  if (!pa.pre && !pb.pre) return 0
+  if (!pa.pre) return 1
+  if (!pb.pre) return -1
+  if (pa.pre.tag !== pb.pre.tag) return pa.pre.tag > pb.pre.tag ? 1 : -1
+  return pa.pre.num - pb.pre.num
+}
+
+/** 判断版本号是否为预发布（测试）版：主版本后带 `-`，如 0.5.0-dev1、0.5.0-beta12。 */
+export function isPrerelease(version: string): boolean {
+  return /^\s*v?\d+(?:\.\d+)*-\S/.test(version.trim())
 }
 
 function filenameFrom(info: UpdateInfo): string {

@@ -69,8 +69,10 @@ export const HOMEPAGE_BLOCK_RULES: HomepageBlockRule[] = [
     re: /\b(?:Set-Content|Add-Content|Out-File|New-Item|Move-Item|Copy-Item|Rename-Item|Set-ItemProperty|Clear-Content)\b/i,
     reason: '包含修改本地文件的 PowerShell 命令'
   },
+  // 命令名前不得是 `-` 或单词字符：否则会把 JVM 的 `-cp "C:\…"`（classpath 参数）
+  // 误认成 Unix 的 cp 命令——启动命令 / 调试日志里普遍带 `-cp`，会造成大量误报（F-16）。
   {
-    re: /\b(?:mv|cp|move|copy|xcopy|robocopy)\s+["']?[a-z]:[\\/]/i,
+    re: /(?<![-\w])(?:mv|cp|move|copy|xcopy|robocopy)\s+["']?[a-z]:[\\/]/i,
     reason: '包含移动 / 复制本地文件的命令'
   },
   {
@@ -163,11 +165,46 @@ export interface HomepageScanOptions {
 }
 
 /**
- * 用统一规则表扫描一段文本，返回命中的中文原因（去重）。
+ * 按 maxLength 截断源文本（0 = 不截断）。
+ * 静态检测传 0：脚本落地时已有体积上限（2MB），截断反而给了「把载荷放在上限之后」的绕过空间（F-01）。
+ */
+function boundSource(source: string, options?: HomepageScanOptions): string {
+  const limit = options?.maxLength ?? MAX_SCAN_LENGTH
+  return limit > 0 && source.length > limit ? source.slice(0, limit) : source
+}
+
+/**
+ * 生成要扫描的文本变体。
  *
- * 纯函数、同步执行：主进程的静态检测与渲染层的运行时检测共用，保证两处判定一致。
+ * code / library 会额外扫一份「合并相邻字面量」后的文本，用于还原 `'r' + 'm'` 这类拆字绕过；
+ * payload（指令参数等任意数据）只扫原文，避免启发式规则误判正常数据。
+ */
+function scanVariants(bounded: string, scope: HomepageScanScope): string[] {
+  return scope === 'payload'
+    ? [bounded]
+    : [collapseInlineBase64(bounded), collapseInlineBase64(mergeAdjacentLiterals(bounded))]
+}
+
+/**
+ * 按 scope 过滤出真正要跑的规则。
+ * 同步 / 异步两个扫描器共用，保证「该跳过的规则」两边完全一致、不会漂移出漏检。
+ */
+function* activeRules(scope: HomepageScanScope): Generator<HomepageBlockRule> {
+  for (const rule of HOMEPAGE_BLOCK_RULES) {
+    if (scope === 'library' && rule.skipInLibrary) continue
+    if (scope === 'payload' && rule.skipInPayload) continue
+    yield rule
+  }
+}
+
+/**
+ * 用统一规则表同步扫描一段文本，返回命中的中文原因（去重）。
  *
+ * 纯函数：主进程的静态检测与渲染层的运行时检测共用，保证两处判定一致。
  * code 范围会扫「原文」与「合并相邻字面量后的文本」两份，用于还原拆字躲避。
+ *
+ * 同步版适合短文本（指令参数、单条日志等）。长文本请用 scanHomepageCodeAsync，
+ * 否则会在扫描期间占满主线程 / 渲染线程。
  */
 export function scanHomepageCode(
   source: string,
@@ -175,17 +212,67 @@ export function scanHomepageCode(
   options?: HomepageScanOptions
 ): string[] {
   if (!source) return []
-  const limit = options?.maxLength ?? MAX_SCAN_LENGTH
-  const bounded = limit > 0 && source.length > limit ? source.slice(0, limit) : source
-  const variants =
-    scope === 'payload'
-      ? [bounded]
-      : [collapseInlineBase64(bounded), collapseInlineBase64(mergeAdjacentLiterals(bounded))]
+  const variants = scanVariants(boundSource(source, options), scope)
   const blocks: string[] = []
-  for (const rule of HOMEPAGE_BLOCK_RULES) {
-    if (scope === 'library' && rule.skipInLibrary) continue
-    if (scope === 'payload' && rule.skipInPayload) continue
+  for (const rule of activeRules(scope)) {
     if (variants.some((v) => rule.re.test(v)) && !blocks.includes(rule.reason)) blocks.push(rule.reason)
+  }
+  return blocks
+}
+
+/** 单调时钟：用于控制每片扫描占用主线程的时长。 */
+function now(): number {
+  return typeof performance !== 'undefined' && typeof performance.now === 'function'
+    ? performance.now()
+    : Date.now()
+}
+
+/**
+ * 让出一次事件循环，让界面 / IPC 有机会处理其它任务。
+ * 优先用原生调度器 scheduler.yield（Chromium 新版本），否则退化到 setImmediate（主进程）/ setTimeout。
+ */
+function yieldToEventLoop(): Promise<void> {
+  const g = globalThis as unknown as {
+    scheduler?: { yield?: () => Promise<void> }
+    setImmediate?: (cb: () => void) => void
+  }
+  if (typeof g.scheduler?.yield === 'function') return g.scheduler.yield()
+  return new Promise<void>((resolve) => {
+    if (typeof g.setImmediate === 'function') g.setImmediate(resolve)
+    else setTimeout(resolve, 0)
+  })
+}
+
+/** 每片扫描最多占用主线程的毫秒数：超过即让出事件循环，避免长任务造成界面卡顿。 */
+const SCAN_SLICE_MS = 8
+
+/**
+ * scanHomepageCode 的异步版：**判定完全一致**（同一份规则表、同一份变体生成、同一套去重），
+ * 只是把「连续扫完所有规则」拆成若干片，每片最多占用 SCAN_SLICE_MS 毫秒就 `await` 让出事件循环。
+ *
+ * 因此异步化只改变「何时给出结论」，不改变「给出什么结论」——不会因为让出事件循环而漏检：
+ *   - 规则、变体、截断策略与同步版逐字一致（共用 activeRules / scanVariants）；
+ *   - 每个变体都是完整字符串，`rule.re.test()` 是整串匹配，不存在被切片切断而漏掉的关键字；
+ *   - 让出点只在「两条规则之间」，任何时候被中断都只是暂停，恢复后从下一条继续。
+ *
+ * 用于两处重活：主进程的静态检测（安装 / 读取时扫整份脚本）与渲染层的运行时探针
+ * （逐元素扫描动态写入的源码）。
+ */
+export async function scanHomepageCodeAsync(
+  source: string,
+  scope: HomepageScanScope = 'code',
+  options?: HomepageScanOptions
+): Promise<string[]> {
+  if (!source) return []
+  const variants = scanVariants(boundSource(source, options), scope)
+  const blocks: string[] = []
+  let sliceStart = now()
+  for (const rule of activeRules(scope)) {
+    if (variants.some((v) => rule.re.test(v)) && !blocks.includes(rule.reason)) blocks.push(rule.reason)
+    if (now() - sliceStart >= SCAN_SLICE_MS) {
+      sliceStart = now()
+      await yieldToEventLoop()
+    }
   }
   return blocks
 }

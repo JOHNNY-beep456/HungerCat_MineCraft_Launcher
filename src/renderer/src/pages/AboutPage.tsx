@@ -1,9 +1,11 @@
 import { useEffect, useState } from 'react'
 import { AnimatePresence, motion } from 'motion/react'
 import type { AboutGroup, AboutPerson } from '@shared/types'
+import { useApp } from '../store'
 import { Button, Icon, LoadingState } from '../components/ui'
 
 export function AboutPage(): JSX.Element {
+  const { t } = useApp()
   const [groups, setGroups] = useState<AboutGroup[] | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [linkPerson, setLinkPerson] = useState<AboutPerson | null>(null)
@@ -29,26 +31,26 @@ export function AboutPage(): JSX.Element {
     <div className="flex h-full flex-col gap-5">
       <div className="flex items-end justify-between">
         <div>
-          <h1 className="display">关于</h1>
-          <p className="caption mt-1">Hunger Cat 启动器 · 制作团队与相关链接</p>
+          <h1 className="display">{t('about.title')}</h1>
+          <p className="caption mt-1">{t('about.subtitle')}</p>
         </div>
         <Button icon="refresh" onClick={() => void load()}>
-          刷新
+          {t('about.refresh')}
         </Button>
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto pr-1">
         {error && (
           <div className="glass mb-4 rounded-2xl p-4 text-[13px]" style={{ color: 'var(--fill-danger)' }}>
-            获取关于信息失败：{error}
+            {t('about.loadError', { msg: error })}
           </div>
         )}
 
         {groups === null && !error ? (
-          <LoadingState text="正在获取关于信息…" />
+          <LoadingState text={t('about.loading')} />
         ) : !Array.isArray(groups) || groups.length === 0 ? (
           <div className="glass rounded-[24px] p-8 text-center text-[13px] opacity-60">
-            暂无关于信息
+            {t('about.empty')}
           </div>
         ) : (
           <div className="space-y-6 pb-4">
@@ -103,7 +105,7 @@ export function AboutPage(): JSX.Element {
                   <Icon name="xmark" size={18} />
                 </button>
               </div>
-              <p className="caption mb-4">选择一个链接前往：</p>
+              <p className="caption mb-4">{t('about.chooseLink')}</p>
               <div className="space-y-2">
                 {linkPerson.links.map((link) => (
                   <button
@@ -136,6 +138,7 @@ function PersonCard({
   onMore: () => void
   onOpen: (url: string) => void
 }): JSX.Element {
+  const { t } = useApp()
   const links = Array.isArray(person.links) ? person.links : []
   const single = links.length === 1
   const multiple = links.length > 1
@@ -154,7 +157,7 @@ function PersonCard({
         )}
         {multiple && (
           <Button size="sm" icon="link" onClick={onMore}>
-            更多…
+            {t('about.more')}
           </Button>
         )}
       </div>

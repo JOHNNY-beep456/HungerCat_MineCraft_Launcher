@@ -2,7 +2,7 @@
 // installMod/downloadTo 的下载核心经 streamDownload 走网络进程，此处仅做目标目录编排。
 import { promises as fsp } from 'fs'
 import { join } from 'path'
-import type { ModrinthProject, ModrinthSearchResult, ModrinthType, ModrinthVersion } from '@shared/types'
+import type { ModrinthProject, ModrinthProjectDetail, ModrinthSearchResult, ModrinthType, ModrinthVersion } from '@shared/types'
 import { netRequest } from './broker'
 import { streamDownload } from './stream-download'
 
@@ -26,6 +26,11 @@ export async function searchMods(
     { query, limit, type, category, gameVersion, loader, offset },
     { signal }
   )
+}
+
+/** 获取单个 Modrinth 项目的完整信息（含 body 完整介绍），用于「完整介绍」弹窗。 */
+export async function fetchProject(id: string, signal?: AbortSignal): Promise<ModrinthProjectDetail> {
+  return netRequest<ModrinthProjectDetail>('modrinth:project', { id }, { signal })
 }
 
 /**
@@ -153,7 +158,9 @@ export async function installMod(
   isolated: boolean,
   type: ModrinthType = 'mod',
   onProgress?: (received: number, total: number) => void,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  /** 已知文件大小：可跳过下载前的 HEAD 探测（CurseForge 这类重定向 CDN 上能省约 1s/文件）。 */
+  sizeHint?: number
 ): Promise<string> {
   const runDir = isolated ? join(gameDir, 'versions', versionId) : gameDir
   const targetDir = join(runDir, folderFor(type))
@@ -163,9 +170,10 @@ export async function installMod(
   const dest = join(targetDir, safeName)
 
   let received = 0
-  let total = 0
+  let total = sizeHint && sizeHint > 0 ? sizeHint : 0
   await streamDownload(fileUrl, dest, {
     signal,
+    sizeHint,
     onBytes: (n) => {
       received += n
       onProgress?.(received, total)
@@ -183,12 +191,14 @@ export async function downloadTo(
   fileUrl: string,
   destPath: string,
   onProgress?: (received: number, total: number) => void,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  sizeHint?: number
 ): Promise<string> {
   let received = 0
-  let total = 0
+  let total = sizeHint && sizeHint > 0 ? sizeHint : 0
   await streamDownload(fileUrl, destPath, {
     signal,
+    sizeHint,
     onBytes: (n) => {
       received += n
       onProgress?.(received, total)

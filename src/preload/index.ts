@@ -12,11 +12,21 @@ import type {
   ModEntry,
   ModrinthType,
   ModpackExportOptions,
+  ModSource,
   ResourceKind,
   ResourceUpdated,
+  ResourceUpdateEvent,
+  ResourceUpdateInfo,
+  SourceFilter,
   UpdateInfo,
   VersionDirKind,
-  DebugLogEntry
+  DebugLogEntry,
+  DevModeStatus,
+  ModrinthProjectDetail,
+  ExternalVersion,
+  ConflictPolicy,
+  JavaRuntime,
+  YggdrasilLoginOutcome
 } from '@shared/types'
 
 function subscribe<T>(channel: string): (cb: (payload: T) => void) => () => void {
@@ -49,17 +59,35 @@ const api: LauncherApi = {
     remove: (id: string) => ipcRenderer.invoke('accounts:remove', id),
     select: (id: string) => ipcRenderer.invoke('accounts:select', id),
     addOffline: (name: string) => ipcRenderer.invoke('accounts:addOffline', name),
-    addYggdrasil: (server: string, email: string, password: string) =>
-      ipcRenderer.invoke('accounts:addYggdrasil', server, email, password)
+    addYggdrasil: (server: string, email: string, password: string): Promise<YggdrasilLoginOutcome> =>
+      ipcRenderer.invoke('accounts:addYggdrasil', server, email, password),
+    addYggdrasilProfiles: (ids: string[]): Promise<MinecraftAccount[]> =>
+      ipcRenderer.invoke('accounts:addYggdrasilProfiles', ids)
   },
   versions: {
     list: () => ipcRenderer.invoke('versions:list'),
     get: (id: string) => ipcRenderer.invoke('versions:get', id),
     createVanilla: (baseVersion: string, customName: string) =>
-      ipcRenderer.invoke('versions:createVanilla', baseVersion, customName)
+      ipcRenderer.invoke('versions:createVanilla', baseVersion, customName),
+    scanExternal: (mcDir: string): Promise<ExternalVersion[]> =>
+      ipcRenderer.invoke('versions:scanExternal', mcDir),
+    importExternal: (
+      mcDir: string,
+      versionId: string,
+      onConflict: ConflictPolicy
+    ): Promise<{ id: string; action: 'imported' | 'renamed' | 'skipped' }> =>
+      ipcRenderer.invoke('versions:importExternal', mcDir, versionId, onConflict)
   },
   installed: {
     list: () => ipcRenderer.invoke('installed:list')
+  },
+  versionDirs: {
+    list: () => ipcRenderer.invoke('versionDirs:list'),
+    add: (input: { path: string; alias?: string }) => ipcRenderer.invoke('versionDirs:add', input),
+    update: (id: string, patch: { alias?: string; path?: string }) =>
+      ipcRenderer.invoke('versionDirs:update', id, patch),
+    remove: (id: string) => ipcRenderer.invoke('versionDirs:remove', id),
+    select: (id: string) => ipcRenderer.invoke('versionDirs:select', id)
   },
   loaders: {
     versions: (kind: LoaderKind, mcVersion: string) => ipcRenderer.invoke('loaders:versions', kind, mcVersion),
@@ -76,28 +104,43 @@ const api: LauncherApi = {
     list: (versionId: string, kind: ResourceKind) => ipcRenderer.invoke('resources:list', versionId, kind),
     remove: (path: string) => ipcRenderer.invoke('resources:remove', path),
     open: (versionId: string, kind: ResourceKind) => ipcRenderer.invoke('resources:open', versionId, kind),
-    onUpdated: subscribe<ResourceUpdated>('resources:updated')
+    onUpdated: subscribe<ResourceUpdated>('resources:updated'),
+    checkUpdates: (versionId: string) => ipcRenderer.invoke('resources:checkUpdates', versionId),
+    onUpdateChecked: subscribe<ResourceUpdateEvent>('resources:update-checked'),
+    applyUpdate: (versionId: string, update: ResourceUpdateInfo, enabled: boolean) =>
+      ipcRenderer.invoke('resources:applyUpdate', versionId, update, enabled)
   },
   download: {
     install: (id: string) => ipcRenderer.invoke('download:install', id),
-    cancel: () => ipcRenderer.invoke('download:cancel'),
+    cancel: (taskId?: string) => ipcRenderer.invoke('download:cancel', taskId),
     onProgress: subscribe<DownloadProgress>('download:progress')
   },
   mods: {
-    search: (query: string, type?: ModrinthType, category?: string, gameVersion?: string, loader?: string, offset?: number) =>
-      ipcRenderer.invoke('mods:search', query, type, category, gameVersion, loader, offset),
-    versions: (slug: string, loaders: string[], gameVersions: string[]) =>
-      ipcRenderer.invoke('mods:versions', slug, loaders, gameVersions),
-    install: (fileUrl: string, filename: string, versionId: string, type?: ModrinthType) =>
-      ipcRenderer.invoke('mods:install', fileUrl, filename, versionId, type),
-    downloadTo: (fileUrl: string, destPath: string) => ipcRenderer.invoke('mods:downloadTo', fileUrl, destPath),
+    search: (
+      query: string,
+      type?: ModrinthType,
+      category?: string,
+      gameVersion?: string,
+      loader?: string,
+      offset?: number,
+      source?: SourceFilter
+    ) => ipcRenderer.invoke('mods:search', query, type, category, gameVersion, loader, offset, source),
+    project: (id: string, type?: ModrinthType): Promise<ModrinthProjectDetail> =>
+      ipcRenderer.invoke('mods:project', id, type),
+    versions: (slug: string, loaders: string[], gameVersions: string[], source?: ModSource, type?: ModrinthType) =>
+      ipcRenderer.invoke('mods:versions', slug, loaders, gameVersions, source, type),
+    install: (fileUrl: string, filename: string, versionId: string, type?: ModrinthType, sizeHint?: number) =>
+      ipcRenderer.invoke('mods:install', fileUrl, filename, versionId, type, sizeHint),
+    downloadTo: (fileUrl: string, destPath: string, sizeHint?: number) =>
+      ipcRenderer.invoke('mods:downloadTo', fileUrl, destPath, sizeHint),
     installFabricApi: (mcVersion: string, versionId: string) =>
       ipcRenderer.invoke('mods:installFabricApi', mcVersion, versionId)
   },
   java: {
     detect: () => ipcRenderer.invoke('java:detect'),
     check: (versionId: string) => ipcRenderer.invoke('java:check', versionId),
-    install: (major: number) => ipcRenderer.invoke('java:install', major)
+    install: (major: number) => ipcRenderer.invoke('java:install', major),
+    pick: (): Promise<JavaRuntime | null> => ipcRenderer.invoke('java:pick')
   },
   manage: {
     mods: (versionId: string) => ipcRenderer.invoke('manage:mods', versionId),
@@ -127,7 +170,8 @@ const api: LauncherApi = {
     wallpaperData: () => ipcRenderer.invoke('settings:wallpaperData')
   },
   system: {
-    memory: () => ipcRenderer.invoke('system:memory')
+    memory: () => ipcRenderer.invoke('system:memory'),
+    hardware: () => ipcRenderer.invoke('system:hardware')
   },
   homepage: {
     list: () => ipcRenderer.invoke('homepage:list'),
@@ -141,6 +185,8 @@ const api: LauncherApi = {
     block: (id: string, reason: string) => ipcRenderer.invoke('homepage:block', id, reason),
     openDir: () => ipcRenderer.invoke('homepage:openDir'),
     market: () => ipcRenderer.invoke('homepage:market'),
+    checkUpdates: () => ipcRenderer.invoke('homepage:checkUpdates'),
+    update: (update) => ipcRenderer.invoke('homepage:update', update),
     submit: (payload) => ipcRenderer.invoke('homepage:submit', payload),
     sendEmailCode: (email: string) => ipcRenderer.invoke('homepage:send-email-code', email),
     installNumbered: (input) => ipcRenderer.invoke('homepage:installNumbered', input),
@@ -148,6 +194,19 @@ const api: LauncherApi = {
       void ipcRenderer.invoke('homepage:log', level, message)
     },
     onNavBlocked: subscribe<string>('homepage:nav-blocked')
+  },
+  devMode: {
+    status: () => ipcRenderer.invoke('devmode:status'),
+    sendCode: (email: string) => ipcRenderer.invoke('devmode:sendCode', email),
+    verify: (email: string, code: string) => ipcRenderer.invoke('devmode:verify', email, code),
+    setEnabled: (enabled: boolean) => ipcRenderer.invoke('devmode:setEnabled', enabled),
+    revoke: () => ipcRenderer.invoke('devmode:revoke'),
+    setSecurityMode: (mode: 'full' | 'warn' | 'off') => ipcRenderer.invoke('devmode:setSecurityMode', mode),
+    openTools: () => ipcRenderer.invoke('devmode:openTools'),
+    closeTools: () => ipcRenderer.invoke('devmode:closeTools'),
+    openDevTools: () => ipcRenderer.invoke('devmode:openDevTools'),
+    closeDevTools: () => ipcRenderer.invoke('devmode:closeDevTools'),
+    onChanged: subscribe<DevModeStatus>('devmode:changed')
   },
   files: {
     places: () => ipcRenderer.invoke('files:places'),
@@ -179,6 +238,11 @@ const api: LauncherApi = {
     downloadAndRun: (info: UpdateInfo) => ipcRenderer.invoke('update:downloadAndRun', info),
     onProgress: subscribe<DownloadProgress>('update:progress')
   },
+  translate: {
+    texts: (texts: string[], target: string) => ipcRenderer.invoke('translate:texts', texts, target),
+    setKey: (key: string) => ipcRenderer.invoke('translate:setKey', key),
+    clearKey: () => ipcRenderer.invoke('translate:clearKey')
+  },
   window: {
     minimize: () => ipcRenderer.invoke('window:minimize'),
     maximize: () => ipcRenderer.invoke('window:maximize'),
@@ -186,18 +250,11 @@ const api: LauncherApi = {
     isMaximized: () => ipcRenderer.invoke('window:isMaximized'),
     setFullscreen: (on: boolean) => ipcRenderer.invoke('window:setFullscreen', on),
     setAlwaysOnTop: (on: boolean) => ipcRenderer.invoke('window:setAlwaysOnTop', on),
+    setDesktopMode: (on: boolean) => ipcRenderer.invoke('window:setDesktopMode', on),
     securityFullscreen: (on: boolean) => ipcRenderer.invoke('window:securityFullscreen', on)
   },
-  desktop: {
-    supported: () => ipcRenderer.invoke('desktop:supported'),
-    list: () => ipcRenderer.invoke('desktop:list'),
-    place: (id: string, rect: unknown, raise?: boolean) =>
-      ipcRenderer.invoke('desktop:place', id, rect, raise),
-    setVisible: (id: string, visible: boolean) => ipcRenderer.invoke('desktop:setVisible', id, visible),
-    release: (id: string) => ipcRenderer.invoke('desktop:release', id),
-    releaseAll: () => ipcRenderer.invoke('desktop:releaseAll'),
-    resync: () => ipcRenderer.invoke('desktop:resync'),
-    focus: (id: string) => ipcRenderer.invoke('desktop:focus', id)
+  display: {
+    primary: () => ipcRenderer.invoke('display:primary')
   },
   shell: {
     openExternal: (url: string) => ipcRenderer.invoke('shell:openExternal', url),

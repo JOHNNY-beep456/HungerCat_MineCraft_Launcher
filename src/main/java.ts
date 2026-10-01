@@ -1,5 +1,5 @@
 import { execFile } from 'child_process'
-import { existsSync, readdirSync, statSync, promises as fsp } from 'fs'
+import { promises as fsp } from 'fs'
 import { homedir } from 'os'
 import { join } from 'path'
 import type { DownloadPhase, JavaRuntime } from '@shared/types'
@@ -8,6 +8,51 @@ import { netRequest } from './broker'
 import { streamDownload } from './stream-download'
 
 const JAVA_BIN = process.platform === 'win32' ? 'java.exe' : 'java'
+
+/**
+ * 探测并发上限。每次探测都要真正启动一个 java 进程，一次性放开几十个会在低配机上
+ * 造成明显的 CPU / 内存尖峰（看起来就像启动器卡死），故限制在少量并行。
+ */
+const PROBE_CONCURRENCY = 4
+
+/** 以受控并发映射处理列表（保持输入顺序）。 */
+async function mapLimit<T, R>(items: T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
+  const out = new Array<R>(items.length)
+  let cursor = 0
+  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (cursor < items.length) {
+      const i = cursor++
+      out[i] = await fn(items[i])
+    }
+  })
+  await Promise.all(workers)
+  return out
+}
+
+/** 路径是否存在（异步，不阻塞主进程事件循环）。 */
+async function pathExists(p: string): Promise<boolean> {
+  try {
+    await fsp.access(p)
+    return true
+  } catch {
+    return false
+  }
+}
+
+/** 从候选路径里挑出真实存在的（并发判断）。 */
+async function existingPaths(paths: string[]): Promise<string[]> {
+  const flags = await Promise.all(
+    paths.map(async (p) => {
+      try {
+        await fsp.access(p)
+        return true
+      } catch {
+        return false
+      }
+    })
+  )
+  return paths.filter((_, i) => flags[i])
+}
 
 function runJavaVersion(javaPath: string): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -80,39 +125,44 @@ function* candidateDirs(): Generator<string> {
   }
 }
 
-function findJavaExecutables(): string[] {
-  const found: string[] = []
-  const seen = new Set<string>()
-
-  const add = (p: string): void => {
-    if (seen.has(p)) return
-    seen.add(p)
-    found.push(p)
-  }
+/**
+ * 收集候选的 java 可执行文件路径。
+ *
+ * 全程异步：这条路径在「进入设置页」与「每次启动游戏」都会走一遍，原先用
+ * readdirSync / existsSync / statSync 同步扫 PATH 与各个 JDK 安装目录，会把主进程
+ * 完整卡住（界面表现为「未响应」）。
+ */
+async function findJavaExecutables(): Promise<string[]> {
+  const candidates: string[] = []
 
   // JAVA_HOME
   const javaHome = process.env['JAVA_HOME']
-  if (javaHome) add(join(javaHome, 'bin', JAVA_BIN))
+  if (javaHome) candidates.push(join(javaHome, 'bin', JAVA_BIN))
 
+  // PATH：手动解压 / 便携版 / 包管理器安装的 JDK 往往只加进了 PATH，并不在标准安装目录下。
+  // 不扫 PATH 是「找不到 Java」最常见的原因之一。
+  const pathEnv = process.env['PATH'] ?? process.env['Path'] ?? ''
+  for (const dir of pathEnv.split(process.platform === 'win32' ? ';' : ':')) {
+    const p = dir.trim().replace(/^"|"$/g, '')
+    if (p) candidates.push(join(p, JAVA_BIN))
+  }
+
+  // 常见安装根目录下的 <root>/<jdk>/bin/java
   for (const dir of candidateDirs()) {
-    if (!existsSync(dir)) continue
     let entries: string[]
     try {
-      entries = readdirSync(dir)
+      entries = await fsp.readdir(dir)
     } catch {
+      // 目录不存在 / 无权限：readdir 抛错即等价于原先的 existsSync 判断，省掉一次系统调用
       continue
     }
-    for (const entry of entries) {
-      const bin = join(dir, entry, 'bin', JAVA_BIN)
-      if (existsSync(bin)) add(bin)
-    }
+    for (const entry of entries) candidates.push(join(dir, entry, 'bin', JAVA_BIN))
   }
 
   // Common macOS Homebrew openjdk symlinks
   if (process.platform === 'darwin') {
     for (const ver of ['21', '17', '11', '8']) {
-      const p = join('/opt/homebrew/opt', `openjdk@${ver}`, 'bin', 'java')
-      if (existsSync(p)) add(p)
+      candidates.push(join('/opt/homebrew/opt', `openjdk@${ver}`, 'bin', 'java'))
     }
   }
 
@@ -123,58 +173,83 @@ function findJavaExecutables(): string[] {
     join('AppData', 'Local', 'Packages', 'Microsoft.4297127D64EC6_8wekyb3d8bbwe', 'LocalCache', 'Local', 'runtime')
   ]) {
     const dir = join(home, rel)
-    if (!existsSync(dir)) continue
+    let entries: string[]
     try {
-      for (const entry of readdirSync(dir)) {
-        const bin = join(dir, entry, 'bin', JAVA_BIN)
-        if (existsSync(bin)) add(bin)
-      }
+      entries = await fsp.readdir(dir)
     } catch {
-      /* ignore */
+      continue
     }
+    for (const entry of entries) candidates.push(join(dir, entry, 'bin', JAVA_BIN))
   }
 
-  return found
+  return [...new Set(await existingPaths(candidates))]
 }
 
 /** 递归收集启动器自动安装于 `<gameDir>/java/<major>/` 下的 Java 可执行文件。 */
-function findBundledJavaExecutables(gameDir: string): string[] {
+async function findBundledJavaExecutables(gameDir: string): Promise<string[]> {
   const root = join(gameDir, 'java')
-  if (!existsSync(root)) return []
-  const found: string[] = []
   let majors: string[]
   try {
-    majors = readdirSync(root)
+    majors = await fsp.readdir(root)
   } catch {
-    return found
+    return []
   }
+  const found: string[] = []
   for (const major of majors) {
     const majorDir = join(root, major)
     const direct = join(majorDir, 'bin', JAVA_BIN)
-    if (existsSync(direct)) {
+    if (await pathExists(direct)) {
       found.push(direct)
       continue
     }
     // 解压出的顶层目录名不确定，递归查找第一个 java 可执行文件
-    const rec = findJavaBinRecursive(majorDir)
+    const rec = await findJavaBinRecursive(majorDir)
     if (rec) found.push(rec)
   }
   return found
 }
 
-export async function detectJava(gameDir?: string): Promise<JavaRuntime[]> {
-  const executables = findJavaExecutables()
+/**
+ * 检测结果缓存。扫描系统 Java 要读几十个目录、逐条判断可执行文件，还要为每个候选
+ * 真正启动一次 `java -version` —— 这条路径每次进设置页、每次启动游戏都会走一遍。
+ * 安装 / 手动指定 Java 后由调用方调 invalidateJavaCache() 主动失效。
+ */
+const JAVA_CACHE_TTL = 30_000
+let javaCache: { key: string; at: number; list: JavaRuntime[] } | null = null
+
+/** 让 Java 检测缓存失效（装完 / 手动指定 Java 后调用）。 */
+export function invalidateJavaCache(): void {
+  javaCache = null
+}
+
+/**
+ * 检测可用 Java。
+ * @param gameDirs 启动器自动安装 Java 的根目录（`<dir>/java/<major>/`）。
+ *   可传多个：启动器可能在不同「版本目录」下都装过 Java，若只扫当前选中的目录，
+ *   切换版本目录后此前装好的 Java 就会「凭空消失」。因此这里接受目录列表，
+ *   把所有版本目录下的 Java 一并纳入。
+ */
+export async function detectJava(gameDirs?: string | string[]): Promise<JavaRuntime[]> {
+  const dirs = Array.isArray(gameDirs) ? gameDirs : gameDirs ? [gameDirs] : []
+  const cacheKey = dirs.join('\n')
+  if (javaCache && javaCache.key === cacheKey && Date.now() - javaCache.at < JAVA_CACHE_TTL) {
+    return javaCache.list
+  }
+
+  const executables = await findJavaExecutables()
   // 额外纳入启动器自动安装的 Java（位于 <gameDir>/java/ 下，系统扫描会遗漏）
-  if (gameDir) {
-    for (const bin of findBundledJavaExecutables(gameDir)) {
+  for (const dir of dirs) {
+    for (const bin of await findBundledJavaExecutables(dir)) {
       if (!executables.includes(bin)) executables.push(bin)
     }
   }
-  const results = await Promise.all(executables.map((p) => probe(p)))
+  const results = await mapLimit(executables, PROBE_CONCURRENCY, (p) => probe(p))
   const list = results.filter((r): r is JavaRuntime => r !== null)
   list.sort((a, b) => b.major - a.major)
   // Dedupe by path
-  return list.filter((r, i) => list.findIndex((x) => x.path === r.path) === i)
+  const deduped = list.filter((r, i) => list.findIndex((x) => x.path === r.path) === i)
+  javaCache = { key: cacheKey, at: Date.now(), list: deduped }
+  return deduped
 }
 
 export async function javaVersionAt(path: string): Promise<JavaRuntime | null> {
@@ -204,49 +279,49 @@ export function requiredJavaForMc(mcVersion: string): number {
  * itself downloaded.
  */
 export async function pickInstallerJava(
-  gameDir: string,
+  gameDirs: string | string[],
   configuredPath: string | undefined,
   requiredMajor = 17
 ): Promise<JavaRuntime | null> {
+  const dirs = Array.isArray(gameDirs) ? gameDirs : [gameDirs]
   // 1. Configured Java.
   if (configuredPath) {
     const jr = await probe(configuredPath)
     if (jr) return jr
   }
-  // 2. Launcher-bundled Java under <gameDir>/java/.
-  const bundledDir = join(gameDir, 'java')
-  if (existsSync(bundledDir)) {
-    const bin = findJavaBinRecursive(bundledDir)
-    if (bin) {
-      const jr = await probe(bin)
-      if (jr && jr.major >= requiredMajor) return jr
-    }
+  // 2. Launcher-bundled Java under <gameDir>/java/。
+  //    遍历所有版本目录：Java 可能装在别的版本目录下，只看安装目标目录会漏掉。
+  for (const dir of dirs) {
+    const bundledDir = join(dir, 'java')
+    if (!(await pathExists(bundledDir))) continue
+    const bin = await findJavaBinRecursive(bundledDir)
+    if (!bin) continue
+    const jr = await probe(bin)
+    if (jr && jr.major >= requiredMajor) return jr
   }
-  // 3. System Java.
-  const runtimes = await detectJava()
+  // 3. System Java（把所有版本目录下的 bundled Java 一并纳入，避免系统扫描遗漏）。
+  const runtimes = await detectJava(dirs)
   return pickJava(runtimes, requiredMajor) ?? runtimes[0] ?? null
 }
 
-function findJavaBinRecursive(root: string): string | null {
+/**
+ * 广度优先查找第一个 java 可执行文件。
+ * 用 readdir(withFileTypes) 拿到类型，省掉原先「每个条目一次 statSync」的同步调用；
+ * 解压出的 JDK 目录层级不深，但条目不少，同步遍历是启动卡顿的常见来源。
+ */
+async function findJavaBinRecursive(root: string): Promise<string | null> {
   const stack = [root]
   while (stack.length) {
     const dir = stack.pop() as string
-    let entries: string[]
+    let entries
     try {
-      entries = readdirSync(dir)
+      entries = await fsp.readdir(dir, { withFileTypes: true })
     } catch {
       continue
     }
     for (const e of entries) {
-      const p = join(dir, e)
-      let st
-      try {
-        st = statSync(p)
-      } catch {
-        continue
-      }
-      if (st.isDirectory()) stack.push(p)
-      else if (e === JAVA_BIN) return p
+      if (e.isDirectory()) stack.push(join(dir, e.name))
+      else if (e.name === JAVA_BIN) return join(dir, e.name)
     }
   }
   return null
@@ -274,18 +349,24 @@ async function jreDownloadUrls(
   arch: string,
   signal?: AbortSignal
 ): Promise<{ filename: string; urls: string[] }> {
+  // 必须带查询参数：不带时 Adoptium 返回「所有平台 + jdk/jre」的完整列表，响应体可达数 MB，
+  // 叠加网络进程 10s 默认超时便常常取不到（表现为「无法获取 Java 下载地址」）。精确过滤后只有几 KB。
+  const query = new URLSearchParams({ os, architecture: arch, image_type: 'jre' })
   const data = await netRequest(
     'net:fetchJson',
     {
-      url: `https://api.adoptium.net/v3/assets/latest/${major}/hotspot`,
-      headers: { 'User-Agent': 'HungerCatLauncher/0.1' }
+      url: `https://api.adoptium.net/v3/assets/latest/${major}/hotspot?${query.toString()}`,
+      headers: { 'User-Agent': 'HungerCatLauncher/0.1' },
+      timeoutMs: 30_000
     },
     { signal }
   )
   const assets = data as JreAsset[]
-  const asset = assets.find(
-    (a) => a.binary.os === os && a.binary.architecture === arch && a.binary.image_type === 'jre'
-  )
+  // 仍做一次本地过滤兜底（接口可能忽略个别查询参数）。
+  const asset =
+    assets.find(
+      (a) => a.binary.os === os && a.binary.architecture === arch && a.binary.image_type === 'jre'
+    ) ?? assets[0]
   if (!asset) throw new Error(`Adoptium 未提供 Java ${major} 的 ${os}/${arch} JRE`)
   const filename = asset.binary.package.name
   // 清华镜像：/Adoptium/{major}/jre/{arch}/{os}/{filename}；GitHub 官方作为回退。
@@ -365,7 +446,7 @@ export async function installJava(
   await extractArchive(archive, root)
   await fsp.rm(archive, { force: true })
 
-  const bin = findJavaBinRecursive(root)
+  const bin = await findJavaBinRecursive(root)
   if (!bin) throw new Error('解压后未找到 java 可执行文件')
   onProgress(100, `Java ${major} 安装完成`, total, total, 'done')
   return bin

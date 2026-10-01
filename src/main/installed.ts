@@ -7,36 +7,65 @@ function runDir(gameDir: string, versionId: string, isolated: boolean): string {
   return isolated ? join(gameDir, 'versions', versionId) : gameDir
 }
 
+/**
+ * 并行度上限。目录扫描是 IO 密集型，条目可能很多（几十个版本 × 若干存档）：
+ * 全串行会让「切换版本目录」明显卡顿；并发开太大反而更慢 —— Node 的 fs 操作跑在
+ * 默认只有 4 个线程的 libuv 线程池上，超额并发只会排队。实测 8 是稳定的折中点。
+ */
+const IO_CONCURRENCY = 8
+
+/** 以受控并发映射处理列表（保持输入顺序）。 */
+async function mapLimit<T, R>(items: T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
+  const out = new Array<R>(items.length)
+  let cursor = 0
+  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (cursor < items.length) {
+      const i = cursor++
+      out[i] = await fn(items[i])
+    }
+  })
+  await Promise.all(workers)
+  return out
+}
+
+/**
+ * 从目录条目名里筛出「目标文件确实存在」的那些（保持顺序）。
+ *
+ * 这里刻意保留同步的 existsSync：单次判断只是一个微秒级的系统调用，几十个加起来也不足 1ms；
+ * 换成异步 fsp.access 反而更慢 —— 每个调用都要经 libuv 线程池（默认仅 4 线程）派发与回传，
+ * 开销远大于 syscall 本身，扫描量大时会互相排队。
+ *
+ * 真正会造成「未响应」的是解析几百 KB 的 version JSON（见 readVersionMeta），那部分已改为
+ * 按 mtime 缓存 + 并发处理。
+ */
+function keepExisting(names: string[], pathOf: (name: string) => string): string[] {
+  return names.filter((n) => existsSync(pathOf(n)))
+}
+
 /** List installed version ids (dirs under versions/ with a matching <id>.json). */
 export async function installedVersions(gameDir: string): Promise<string[]> {
   const versionsDir = join(gameDir, 'versions')
+  let entries
   try {
-    const entries = await fsp.readdir(versionsDir, { withFileTypes: true })
-    const ids: string[] = []
-    for (const e of entries) {
-      if (!e.isDirectory()) continue
-      if (existsSync(join(versionsDir, e.name, `${e.name}.json`))) ids.push(e.name)
-    }
-    return ids.sort()
+    entries = await fsp.readdir(versionsDir, { withFileTypes: true })
   } catch {
     return []
   }
+  const names = entries.filter((e) => e.isDirectory()).map((e) => e.name)
+  return keepExisting(names, (n) => join(versionsDir, n, `${n}.json`)).sort()
 }
 
 /** List single-player worlds (dirs under saves/ containing a level.dat). */
 export async function versionWorlds(gameDir: string, versionId: string, isolated: boolean): Promise<string[]> {
   const savesDir = join(runDir(gameDir, versionId, isolated), 'saves')
+  let entries
   try {
-    const entries = await fsp.readdir(savesDir, { withFileTypes: true })
-    const worlds: string[] = []
-    for (const e of entries) {
-      if (!e.isDirectory()) continue
-      if (existsSync(join(savesDir, e.name, 'level.dat'))) worlds.push(e.name)
-    }
-    return worlds.sort()
+    entries = await fsp.readdir(savesDir, { withFileTypes: true })
   } catch {
     return []
   }
+  const names = entries.filter((e) => e.isDirectory()).map((e) => e.name)
+  return keepExisting(names, (n) => join(savesDir, n, 'level.dat')).sort()
 }
 
 /** List servers from servers.dat (NBT, possibly gzip-compressed). */
@@ -88,10 +117,40 @@ function deriveMcFromLibraries(libraries: Array<{ name?: string }>): string | nu
   return null
 }
 
+/**
+ * 版本元数据缓存：key = 版本 JSON 的绝对路径。
+ *
+ * 模组包的 version JSON 动辄几百 KB，而解析它只为了拿 mcVersion / loader —— 这两个值在文件
+ * 没变时也不会变。首次扫描后按「mtime + size」判定是否失效，重复扫描（切目录、刷新、启动游戏）
+ * 就只剩一次 stat，不必再读几 MB 的 JSON 重新解析。
+ */
+interface MetaCacheEntry {
+  mtimeMs: number
+  size: number
+  meta: { mcVersion: string; loader: string | null }
+}
+
+const META_CACHE_MAX = 512
+const metaCache = new Map<string, MetaCacheEntry>()
+
+function rememberMeta(path: string, mtimeMs: number, size: number, meta: MetaCacheEntry['meta']): void {
+  metaCache.delete(path)
+  metaCache.set(path, { mtimeMs, size, meta })
+  // 简单上限：超了就丢最早写入的那些（用户不会同时拥有几百个版本）。
+  while (metaCache.size > META_CACHE_MAX) {
+    const oldest = metaCache.keys().next().value
+    if (oldest === undefined) break
+    metaCache.delete(oldest)
+  }
+}
+
 /** Read version metadata (base MC version + mod loader) for an installed version id. */
 async function readVersionMeta(gameDir: string, id: string): Promise<{ mcVersion: string; loader: string | null }> {
+  const p = join(gameDir, 'versions', id, `${id}.json`)
   try {
-    const p = join(gameDir, 'versions', id, `${id}.json`)
+    const st = await fsp.stat(p)
+    const hit = metaCache.get(p)
+    if (hit && hit.mtimeMs === st.mtimeMs && hit.size === st.size) return hit.meta
     const json = JSON.parse(await fsp.readFile(p, 'utf-8')) as {
       id?: string
       clientVersion?: string
@@ -105,7 +164,9 @@ async function readVersionMeta(gameDir: string, id: string): Promise<{ mcVersion
       json.clientVersion ??
       extractMcVersion(json.id ?? id)
     const loader = detectLoader(json.mainClass ?? '', json.id ?? id, json.libraries ?? [])
-    return { mcVersion, loader }
+    const meta = { mcVersion, loader }
+    rememberMeta(p, st.mtimeMs, st.size, meta)
+    return meta
   } catch {
     return { mcVersion: extractMcVersion(id), loader: null }
   }
@@ -136,24 +197,29 @@ function detectLoader(
   return null
 }
 
-/** Full installed-version tree for the versions page. */
+/**
+ * Full installed-version tree for the versions page.
+ *
+ * 每个版本要读「存档列表 + 服务器列表 + 版本元数据」，原先是一条 for + await 串行跑完，
+ * 几十个版本就是几百次串行 IO —— 这正是「切换版本目录很卡」的直接原因。改成受控并发后，
+ * 耗时基本只取决于最慢的那一个版本。
+ */
 export async function listInstalled(
   gameDir: string,
   isolated: boolean,
   isolatedVersions: string[] = []
 ): Promise<InstalledVersion[]> {
   const ids = await installedVersions(gameDir)
-  const out: InstalledVersion[] = []
-  for (const id of ids) {
-    const isIso = isolated || isolatedVersions.includes(id)
+  const isolatedSet = new Set(isolatedVersions)
+  return mapLimit(ids, IO_CONCURRENCY, async (id) => {
+    const isIso = isolated || isolatedSet.has(id)
     const [worlds, servers, meta] = await Promise.all([
       versionWorlds(gameDir, id, isIso),
       versionServers(gameDir, id, isIso),
       readVersionMeta(gameDir, id)
     ])
-    out.push({ id, mcVersion: meta.mcVersion, loader: meta.loader, worlds, servers })
-  }
-  return out
+    return { id, mcVersion: meta.mcVersion, loader: meta.loader, worlds, servers }
+  })
 }
 
 /* ------------------------------------------------------------------ */

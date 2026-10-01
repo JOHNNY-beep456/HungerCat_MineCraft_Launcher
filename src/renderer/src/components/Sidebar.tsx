@@ -13,7 +13,8 @@ export type PageId =
   | 'settings'
   | 'about'
 
-/** 侧栏条目；实验性 Win10 桌面也用它生成桌面图标与开始菜单。 */
+/** 侧栏条目；实验性 Win10 桌面也用它生成桌面图标与开始菜单。
+ *  label 仅作兜底，界面显示统一走 `t(\`nav.${id}\`)`。 */
 export const NAV: Array<{ id: PageId; label: string; icon: string }> = [
   { id: 'home', label: '启动游戏', icon: 'home' },
   { id: 'homepage', label: '主页', icon: 'palette' },
@@ -32,7 +33,7 @@ export function Sidebar({
   active: PageId
   onNavigate: (p: PageId) => void
 }): JSX.Element {
-  const { accounts, selectedAccount, settings } = useApp()
+  const { accounts, selectedAccount, settings, homepageUpdates, t } = useApp()
   const { downloads } = useRuntime()
   const nav = settings.mode === 'local' ? NAV.filter((n) => n.id !== 'resources' && n.id !== 'downloads' && n.id !== 'about') : NAV
 
@@ -60,13 +61,21 @@ export function Sidebar({
                 <span className="relative z-10">
                   <Icon name={item.icon} size={19} />
                 </span>
-                <span className="relative z-10 text-[14px] font-medium">{item.label}</span>
+                <span className="relative z-10 text-[14px] font-medium">{t(`nav.${item.id}`)}</span>
                 {item.id === 'downloads' && downloads.length > 0 && (
                   <span
                     className="relative z-10 ml-auto flex h-5 min-w-5 items-center justify-center rounded-full px-1 text-[11px] font-bold text-white"
                     style={{ background: 'var(--fill-primary)' }}
                   >
                     {downloads.length}
+                  </span>
+                )}
+                {item.id === 'homepage' && homepageUpdates.length > 0 && (
+                  <span
+                    className="relative z-10 ml-auto flex h-5 min-w-5 items-center justify-center rounded-full px-1 text-[11px] font-bold text-white"
+                    style={{ background: 'var(--fill-primary)' }}
+                  >
+                    {homepageUpdates.length}
                   </span>
                 )}
               </button>
@@ -79,7 +88,7 @@ export function Sidebar({
         <div className="glass-soft flex items-center gap-2 rounded-xl px-3 py-2">
           <Icon name="info" size={14} className="opacity-60" />
           <span className="text-[12px] font-medium opacity-80">
-            {settings.mode === 'local' ? '本地模式' : '极简模式'}
+            {settings.mode === 'local' ? t('sidebar.localMode') : t('sidebar.minimalMode')}
           </span>
         </div>
       )}
@@ -88,12 +97,12 @@ export function Sidebar({
         onClick={() => onNavigate('accounts')}
         className="glass-strong flex items-center gap-2.5 rounded-[22px] p-2.5 no-drag transition-transform active:scale-[0.97]"
       >
-        <Avatar name={selectedAccount?.name} uuid={selectedAccount?.id} skinUrl={selectedAccount?.skinUrl} authType={selectedAccount?.authType} yggdrasilServer={selectedAccount?.yggdrasilServer} size={38} />
+        <Avatar name={selectedAccount?.name} uuid={selectedAccount?.id} skinUrl={selectedAccount?.skinUrl} authType={selectedAccount?.authType} yggdrasilServer={selectedAccount?.yggdrasilServer} offline={selectedAccount?.offline} size={38} />
         <div className="min-w-0 flex-1 text-left">
           <div className="truncate text-[13px] font-semibold leading-tight">
-            {selectedAccount?.name ?? '未登录'}
+            {selectedAccount?.name ?? t('sidebar.notLoggedIn')}
           </div>
-          <div className="caption">{accounts.length} 个账号</div>
+          <div className="caption">{t('sidebar.accountCount', { n: accounts.length })}</div>
         </div>
       </button>
     </aside>

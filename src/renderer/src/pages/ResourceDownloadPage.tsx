@@ -1,19 +1,23 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { AnimatePresence, motion } from 'motion/react'
-import type { InstalledVersion, ModEntry, ModpackProbe, ModrinthProject, ModrinthType, ModrinthVersion, VersionManifest } from '@shared/types'
+import type { InstalledVersion, ModEntry, ModpackProbe, ModrinthProject, ModrinthProjectDetail, ModrinthType, ModrinthVersion, SourceFilter, VersionManifest } from '@shared/types'
 import { useRuntimeActions } from '../runtime'
-import { Button, Icon, LoadingState, Segmented, Select, Spinner } from '../components/ui'
+import { Button, Icon, LoadingState, Markdown, Segmented, Select, Spinner } from '../components/ui'
 import { VersionsPage } from './VersionsPage'
+import { useAutoTranslate } from '../translate'
+import { useApp } from '../store'
+import type { TFunction } from '../i18n'
 
 export type Tab = 'mod' | 'resourcepack' | 'shader' | 'modpack' | 'versions'
 type BrowseTab = Exclude<Tab, 'versions'>
 
-const TABS: Array<{ value: Tab; label: string }> = [
-  { value: 'mod', label: '模组' },
-  { value: 'resourcepack', label: '资源包' },
-  { value: 'shader', label: '光影' },
-  { value: 'modpack', label: '整合包' },
-  { value: 'versions', label: '版本' }
+const TABS: Array<{ value: Tab; labelKey: string }> = [
+  { value: 'mod', labelKey: 'res.tab.mod' },
+  { value: 'resourcepack', labelKey: 'res.tab.resourcepack' },
+  { value: 'shader', labelKey: 'res.tab.shader' },
+  { value: 'modpack', labelKey: 'res.tab.modpack' },
+  { value: 'versions', labelKey: 'res.tab.versions' }
 ]
 
 const LOADERS: Record<BrowseTab, string[]> = {
@@ -23,21 +27,21 @@ const LOADERS: Record<BrowseTab, string[]> = {
   modpack: ['fabric', 'quilt', 'forge', 'neoforge']
 }
 
-const CATEGORIES: Array<{ value: string; label: string }> = [
-  { value: 'all', label: '全部类别' },
-  { value: 'adventure', label: '冒险' },
-  { value: 'technology', label: '科技' },
-  { value: 'magic', label: '魔法' },
-  { value: 'decoration', label: '装饰' },
-  { value: 'optimization', label: '优化' },
-  { value: 'utility', label: '工具' },
-  { value: 'worldgen', label: '世界' },
-  { value: 'equipment', label: '装备' },
-  { value: 'library', label: '前置库' }
+const CATEGORIES: Array<{ value: string; labelKey: string }> = [
+  { value: 'all', labelKey: 'res.cat.all' },
+  { value: 'adventure', labelKey: 'res.cat.adventure' },
+  { value: 'technology', labelKey: 'res.cat.technology' },
+  { value: 'magic', labelKey: 'res.cat.magic' },
+  { value: 'decoration', labelKey: 'res.cat.decoration' },
+  { value: 'optimization', labelKey: 'res.cat.optimization' },
+  { value: 'utility', labelKey: 'res.cat.utility' },
+  { value: 'worldgen', labelKey: 'res.cat.worldgen' },
+  { value: 'equipment', labelKey: 'res.cat.equipment' },
+  { value: 'library', labelKey: 'res.cat.library' }
 ]
 
-function loaderLabel(l: string | null): string {
-  if (!l) return '原版'
+function loaderLabel(l: string | null, t: TFunction): string {
+  if (!l) return t('res.loader.vanilla')
   const map: Record<string, string> = { iris: 'Iris', optifine: 'OptiFine' }
   return map[l] ?? l.charAt(0).toUpperCase() + l.slice(1)
 }
@@ -47,6 +51,9 @@ const RUNTIME_LOADER_PATTERNS: Record<string, RegExp> = {
   iris: /^iris[-_]/i,
   optifine: /optifine/i
 }
+
+/** 版本分组的内部 key：资源未声明 MC 版本时归入此组（不面向用户展示）。 */
+const GENERIC_MC_KEY = '通用'
 
 function sortMc(list: string[]): string[] {
   return [...list].sort((a, b) => {
@@ -69,15 +76,16 @@ export function ResourceDownloadPage({
   presetSearch?: string
 }): JSX.Element {
   const [tab, setTab] = useState<Tab>(initialTab ?? 'mod')
+  const { t } = useApp()
 
   return (
     <div className="flex h-full flex-col gap-5">
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
-          <h1 className="display">资源下载</h1>
-          <p className="caption mt-1">浏览并下载模组、资源包、光影、整合包与游戏版本</p>
+          <h1 className="display">{t('res.title')}</h1>
+          <p className="caption mt-1">{t('res.subtitle')}</p>
         </div>
-        <Segmented value={tab} onChange={setTab} options={TABS} />
+        <Segmented value={tab} onChange={setTab} options={TABS.map((x) => ({ value: x.value, label: t(x.labelKey) }))} />
       </div>
 
       <div className="min-h-0 flex-1">
@@ -100,6 +108,7 @@ export function ResourceDownloadPage({
 
 function Browser({ type }: { type: BrowseTab }): JSX.Element {
   const modrinthType: ModrinthType = type
+  const { t, settings } = useApp()
 
   const [manifest, setManifest] = useState<VersionManifest | null>(null)
   const [installed, setInstalled] = useState<InstalledVersion[]>([])
@@ -107,12 +116,19 @@ function Browser({ type }: { type: BrowseTab }): JSX.Element {
   const [loader, setLoader] = useState('all')
   const [category, setCategory] = useState('all')
   const [query, setQuery] = useState('')
+  /** 来源筛选：全部（Modrinth + CurseForge 合并）/ 仅 Modrinth / 仅 CurseForge。 */
+  const [source, setSource] = useState<SourceFilter>('all')
   const [results, setResults] = useState<ModrinthProject[]>([])
   const [totalHits, setTotalHits] = useState(0)
   const [searching, setSearching] = useState(false)
   const [loadingMore, setLoadingMore] = useState(false)
   const [message, setMessage] = useState<string | null>(null)
   const [detail, setDetail] = useState<ModrinthProject | null>(null)
+  // 实验性：资源名 / 简介自动翻译（仅当设置开启时才联网）。
+  // 关闭「翻译资源名」时把标题传空串：hook 会跳过空文本，效果即只翻译简介。
+  const tr = useAutoTranslate(
+    results.flatMap((p) => [settings.translateResourceNames ? p.title : '', p.description])
+  )
 
   const loaders = LOADERS[type]
   // 分页与请求竞态守卫：requestSeq 在每次重新搜索时递增，使过期页结果失效；
@@ -143,7 +159,7 @@ function Browser({ type }: { type: BrowseTab }): JSX.Element {
     setMessage(null)
     try {
       const cat = type === 'mod' ? category : undefined
-      const r = await window.api.mods.search(q, modrinthType, cat, mcVersion || undefined, loader, 0)
+      const r = await window.api.mods.search(q, modrinthType, cat, mcVersion || undefined, loader, 0, source)
       if (seq !== requestSeq.current) return
       setResults(r.hits)
       setTotalHits(r.totalHits)
@@ -162,12 +178,13 @@ function Browser({ type }: { type: BrowseTab }): JSX.Element {
     setLoadingMore(true)
     try {
       const cat = type === 'mod' ? category : undefined
-      const r = await window.api.mods.search(query, modrinthType, cat, mcVersion || undefined, loader, results.length)
+      const r = await window.api.mods.search(query, modrinthType, cat, mcVersion || undefined, loader, results.length, source)
       if (seq !== requestSeq.current) return
       setTotalHits(r.totalHits)
       setResults((prev) => {
-        const seen = new Set(prev.map((p) => p.slug))
-        return [...prev, ...r.hits.filter((p) => !seen.has(p.slug))]
+        // 按「来源 + slug」去重：两个源的 slug 空间不同，只用 slug 会误合并
+        const seen = new Set(prev.map((p) => `${p.source ?? 'modrinth'}:${p.slug}`))
+        return [...prev, ...r.hits.filter((p) => !seen.has(`${p.source ?? 'modrinth'}:${p.slug}`))]
       })
     } catch (err) {
       if (seq !== requestSeq.current) return
@@ -185,10 +202,10 @@ function Browser({ type }: { type: BrowseTab }): JSX.Element {
 
   // 自动加载推荐（未搜索时）与筛选结果
   useEffect(() => {
-    const t = setTimeout(() => void doSearch(query), 300)
-    return () => clearTimeout(t)
+    const timer = setTimeout(() => void doSearch(query), 300)
+    return () => clearTimeout(timer)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [query, type, category, mcVersion, loader])
+  }, [query, type, category, mcVersion, loader, source])
 
   return (
     // 结果列表 ⇄ 项目详情：按 key 切换做淡入入场。同样只做入场、不用 mode="wait" 退场，
@@ -224,28 +241,33 @@ function Browser({ type }: { type: BrowseTab }): JSX.Element {
           <input
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder={query.trim() ? '搜索…' : '热门推荐（输入关键词搜索）'}
+            placeholder={query.trim() ? t('res.search.placeholder') : t('res.search.hotPlaceholder')}
             className="input w-full pl-9"
           />
         </form>
 
-        <FilterSelect label="版本" value={mcVersion} onChange={setMcVersion} options={(manifest?.versions ?? []).filter((v) => v.type === 'release').slice(0, 60).map((v) => v.id)} />
+        <FilterSelect label={t('res.filter.source')} value={source} onChange={(v) => setSource(v as SourceFilter)} options={['all', 'modrinth', 'curseforge']} render={(s) => t(`res.source.${s}`)} />
+
+        <FilterSelect label={t('res.filter.version')} value={mcVersion} onChange={setMcVersion} options={(manifest?.versions ?? []).filter((v) => v.type === 'release').slice(0, 60).map((v) => v.id)} />
         {loaders.length > 0 && (
           <FilterSelect
-            label="加载器"
+            label={t('res.filter.loader')}
             value={loader}
             onChange={setLoader}
             options={['all', ...loaders]}
-            render={(l) => (l === 'all' ? '全部' : loaderLabel(l))}
+            render={(l) => (l === 'all' ? t('res.filter.all') : loaderLabel(l, t))}
           />
         )}
         {type === 'mod' && (
           <FilterSelect
-            label="类别"
+            label={t('res.filter.category')}
             value={category}
             onChange={setCategory}
             options={CATEGORIES.map((c) => c.value)}
-            render={(c) => CATEGORIES.find((x) => x.value === c)?.label ?? c}
+            render={(c) => {
+              const cat = CATEGORIES.find((x) => x.value === c)
+              return cat ? t(cat.labelKey) : c
+            }}
           />
         )}
       </div>
@@ -254,7 +276,7 @@ function Browser({ type }: { type: BrowseTab }): JSX.Element {
 
       <div ref={scrollRef} onScroll={onScroll} className="min-h-0 flex-1 overflow-y-auto pr-1">
         {searching ? (
-          <LoadingState text="正在加载…" />
+          <LoadingState text={t('res.loading')} />
         ) : results.length === 0 ? (
           <EmptyState type={type} />
         ) : (
@@ -262,7 +284,7 @@ function Browser({ type }: { type: BrowseTab }): JSX.Element {
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3">
               {results.map((p, i) => (
                 <motion.button
-                  key={p.slug}
+                  key={`${p.source ?? 'modrinth'}:${p.slug}`}
                   initial={{ opacity: 0, y: 8 }}
                   animate={{ opacity: 1, y: 0 }}
                   transition={{ delay: Math.min(i * 0.02, 0.3) }}
@@ -271,10 +293,15 @@ function Browser({ type }: { type: BrowseTab }): JSX.Element {
                 >
                   <ModIcon url={p.icon_url} />
                   <div className="min-w-0 flex-1">
-                    <div className="truncate text-[14px] font-semibold">{p.title}</div>
-                    <p className="caption mt-0.5 line-clamp-2">{p.description}</p>
+                    <div className="truncate text-[14px] font-semibold">{settings.translateResourceNames ? tr(p.title) : p.title}</div>
+                    <p className="caption mt-0.5 line-clamp-2">{tr(p.description)}</p>
                     <div className="mt-2 flex items-center gap-2">
-                      <span className="chip">{formatCount(p.downloads)} 下载</span>
+                      <span className="chip">{t('res.downloadsCount', { n: formatCount(p.downloads) })}</span>
+                      {source === 'all' && (
+                        <span className="chip" title={p.source === 'curseforge' ? 'CurseForge' : 'Modrinth'}>
+                          {t(`res.source.${p.source ?? 'modrinth'}`)}
+                        </span>
+                      )}
                       {p.categories.slice(0, 2).map((c) => (
                         <span key={c} className="chip">
                           {c}
@@ -288,7 +315,7 @@ function Browser({ type }: { type: BrowseTab }): JSX.Element {
             {loadingMore && (
               <div className="flex items-center justify-center gap-2 py-4">
                 <Spinner size={18} />
-                <span className="caption">加载更多…</span>
+                <span className="caption">{t('res.loadMore')}</span>
               </div>
             )}
           </>
@@ -318,21 +345,27 @@ function ProjectDetail({
   const [versions, setVersions] = useState<ModrinthVersion[]>([])
   const [loading, setLoading] = useState(true)
   const [mcTab, setMcTab] = useState('')
+  const { t, settings } = useApp()
+  // 实验性：详情页资源名 / 简介自动翻译。
+  const trDetail = useAutoTranslate([
+    settings.translateResourceNames ? project.title : '',
+    project.description
+  ])
 
   useEffect(() => {
     setLoading(true)
-    void window.api.mods.versions(project.slug, [], []).then((vs) => {
+    void window.api.mods.versions(project.slug, [], [], project.source, type).then((vs) => {
       setVersions(vs)
       // 优先选中筛选器锁定的 MC 版本
       const allGv = vs.flatMap((v) => v.game_versions)
       setMcTab(filterMcVersion && allGv.includes(filterMcVersion) ? filterMcVersion : vs[0]?.game_versions[0] ?? '')
       setLoading(false)
     })
-  }, [project.slug, filterMcVersion])
+  }, [project.slug, project.source, type, filterMcVersion])
 
   const mcGroups = useMemo(() => groupVersions(versions), [versions])
-  const mcTabs = sortMc([...mcGroups.keys()].filter((k) => k !== '通用'))
-  const activeMc = mcGroups.has(mcTab) ? mcTab : mcTabs[0] ?? '通用'
+  const mcTabs = sortMc([...mcGroups.keys()].filter((k) => k !== GENERIC_MC_KEY))
+  const activeMc = mcGroups.has(mcTab) ? mcTab : mcTabs[0] ?? GENERIC_MC_KEY
   const loaderGroups = mcGroups.get(activeMc) ?? new Map<string, ModrinthVersion[]>()
   const preferredLoader = filterLoader !== 'all' ? filterLoader : ''
 
@@ -341,6 +374,8 @@ function ProjectDetail({
   const [modpackRename, setModpackRename] = useState('')
   const [modpackBusy, setModpackBusy] = useState(false)
   const [notice, setNotice] = useState<string | null>(null)
+  // 「完整介绍」弹窗开关
+  const [introOpen, setIntroOpen] = useState(false)
 
   // 光影（及部分模组）声明的加载器 iris / optifine 是运行时模组，需要知道各实例装了哪些模组才能判断可用性
   const needsRuntimeCheck = useMemo(
@@ -377,7 +412,7 @@ function ProjectDetail({
       setModpackPending({ temp, probe })
       setModpackRename(uniqueInstanceName(probe.name, probe.mcVersion))
     } catch (err) {
-      setNotice(`安装失败：${err instanceof Error ? err.message : String(err)}`)
+      setNotice(t('res.installFailed', { msg: err instanceof Error ? err.message : String(err) }))
     } finally {
       setModpackBusy(false)
     }
@@ -401,7 +436,7 @@ function ProjectDetail({
     const name = modpackRename.trim()
     if (!name) return
     if (installed.some((ins) => ins.id === name)) {
-      setNotice(`实例名「${name}」已存在，请更换`)
+      setNotice(t('res.nameExists', { name }))
       return
     }
     const { temp } = modpackPending
@@ -410,9 +445,9 @@ function ProjectDetail({
     setNotice(null)
     try {
       await window.api.modpack.import(temp, name)
-      setNotice(`已安装整合包「${name}」，请到「实例」页查看`)
+      setNotice(t('res.modpackInstalled', { name }))
     } catch (err) {
-      setNotice(`安装失败：${err instanceof Error ? err.message : String(err)}`)
+      setNotice(t('res.installFailed', { msg: err instanceof Error ? err.message : String(err) }))
     } finally {
       setModpackBusy(false)
     }
@@ -422,17 +457,17 @@ function ProjectDetail({
     <div className="flex h-full flex-col gap-4">
       <button onClick={onBack} className="flex items-center gap-1 text-[13px] opacity-70 hover:opacity-100 no-drag">
         <Icon name="chevronRight" size={15} className="rotate-180" />
-        返回
+        {t('res.back')}
       </button>
 
       {/* 顶部：图标 + 名称 + 简介 */}
       <div className="glass flex items-start gap-4 rounded-[24px] p-5">
         <ModIcon url={project.icon_url} size={72} />
         <div className="min-w-0 flex-1">
-          <h2 className="title">{project.title}</h2>
-          <p className="caption mt-1 line-clamp-3 selectable">{project.description}</p>
+          <h2 className="title">{settings.translateResourceNames ? trDetail(project.title) : project.title}</h2>
+          <p className="caption mt-1 line-clamp-3 selectable">{trDetail(project.description)}</p>
           <div className="mt-2 flex items-center gap-2">
-            <span className="chip">{formatCount(project.downloads)} 下载</span>
+            <span className="chip">{t('res.downloadsCount', { n: formatCount(project.downloads) })}</span>
             {project.categories.slice(0, 3).map((c) => (
               <span key={c} className="chip">
                 {c}
@@ -442,10 +477,10 @@ function ProjectDetail({
         </div>
         <div className="flex shrink-0 items-center gap-2">
           <button
-            onClick={() => void window.api.shell.openExternal(`https://modrinth.com/${project.project_type}/${project.slug}`)}
+            onClick={() => setIntroOpen(true)}
             className="mica no-drag shrink-0 rounded-lg px-2 py-1 text-[12px] font-medium"
           >
-            更多信息..
+            {t('res.moreInfo')}
           </button>
         </div>
       </div>
@@ -463,7 +498,7 @@ function ProjectDetail({
         {loading ? (
           <div className="flex flex-col items-center gap-2 p-6">
             <Spinner size={22} />
-            <span className="caption">加载版本中…</span>
+            <span className="caption">{t('res.loadingVersions')}</span>
           </div>
         ) : (
           <div className="space-y-2">
@@ -511,34 +546,167 @@ function ProjectDetail({
               exit={{ scale: 0.94, opacity: 0, y: 12 }}
               transition={{ type: 'spring', bounce: 0.18, duration: 0.4 }}
             >
-              <h2 className="title mb-1">设置实例名</h2>
-              <p className="caption mb-4">整合包「{modpackPending.probe.name}」，请输入实例名（不能与已有实例重名）：</p>
+              <h2 className="title mb-1">{t('res.modpack.title')}</h2>
+              <p className="caption mb-4">{t('res.modpack.desc', { name: modpackPending.probe.name })}</p>
               <input
                 autoFocus
                 value={modpackRename}
                 onChange={(e) => setModpackRename(e.target.value)}
                 onKeyDown={(e) => e.key === 'Enter' && modpackRename.trim() && !modpackNameTaken && void confirmModpackImport()}
-                placeholder="实例名"
+                placeholder={t('res.modpack.namePlaceholder')}
                 className="input mb-5 w-full"
               />
               {modpackNameTaken && (
                 <p className="mb-4 -mt-3 text-[12px]" style={{ color: 'var(--fill-danger)' }}>
-                  实例名「{modpackRename.trim()}」已存在
+                  {t('res.modpack.nameTaken', { name: modpackRename.trim() })}
                 </p>
               )}
               <div className="flex gap-2">
                 <Button className="flex-1" onClick={() => setModpackPending(null)}>
-                  取消
+                  {t('res.cancel')}
                 </Button>
                 <Button variant="primary" className="flex-1" disabled={!modpackRename.trim() || modpackNameTaken} onClick={() => void confirmModpackImport()}>
-                  安装
+                  {t('res.install')}
                 </Button>
               </div>
             </motion.div>
           </motion.div>
         )}
       </AnimatePresence>
+
+      {/* 完整介绍弹窗 */}
+      <AnimatePresence>
+        {introOpen && <ProjectIntroModal project={project} onClose={() => setIntroOpen(false)} />}
+      </AnimatePresence>
     </div>
+  )
+}
+
+/** 「完整介绍」正文按空行切段，并标记哪些段落需要翻译（代码块段落跳过）。 */
+function splitIntro(body: string): Array<{ text: string; translate: boolean }> {
+  if (!body.trim()) return []
+  const out: Array<{ text: string; translate: boolean }> = []
+  let inCode = false
+  for (const raw of body.split(/\n{2,}/)) {
+    const text = raw.trim()
+    if (!text) continue
+    const fences = (text.match(/```/g) ?? []).length
+    const inside = inCode
+    if (fences % 2 === 1) inCode = !inCode
+    out.push({ text, translate: !inside && fences === 0 })
+  }
+  return out
+}
+
+/** 资源「完整介绍」弹窗：打开时拉取 Modrinth 详情，按段落翻译后渲染 Markdown。 */
+function ProjectIntroModal({ project, onClose }: { project: ModrinthProject; onClose: () => void }): JSX.Element {
+  const { t, settings } = useApp()
+  const [detail, setDetail] = useState<ModrinthProjectDetail | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+  const [attempt, setAttempt] = useState(0)
+
+  useEffect(() => {
+    let cancelled = false
+    setLoading(true)
+    setError(null)
+    void window.api.mods
+      .project(project.slug, project.source === 'curseforge' ? 'mod' : undefined)
+      .then((d) => {
+        if (cancelled) return
+        setDetail(d)
+        setLoading(false)
+      })
+      .catch((err) => {
+        if (cancelled) return
+        setError(err instanceof Error ? err.message : String(err))
+        setLoading(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [project.slug, attempt])
+
+  // 逐段翻译：标题与简介一并交给同一 hook，代码块段落跳过。
+  // 关闭「翻译资源名」时标题传空串（hook 会跳过），只翻译简介与正文。
+  const segments = useMemo(() => splitIntro(detail?.body ?? ''), [detail?.body])
+  const translatables = useMemo(
+    () => [
+      settings.translateResourceNames ? project.title : '',
+      project.description,
+      ...segments.filter((s) => s.translate).map((s) => s.text)
+    ],
+    [segments, project.title, project.description, settings.translateResourceNames]
+  )
+  const tr = useAutoTranslate(translatables)
+
+  const body = (detail?.body ?? '').trim()
+  // Markdown 的渲染与清理交给共享的 Markdown 组件；这里只负责把段落翻译结果拼成原文。
+  const mdText = body ? segments.map((s) => (s.translate ? tr(s.text) : s.text)).join('\n\n') : ''
+
+  return (
+    <motion.div
+      className="absolute inset-0 z-50 flex items-center justify-center p-6"
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+    >
+      <motion.div className="absolute inset-0" style={{ background: 'var(--scrim)' }} onClick={onClose} />
+      <motion.div
+        role="dialog"
+        aria-label={t('res.detail.title')}
+        className="glass-strong relative z-10 flex w-full max-w-2xl flex-col rounded-[28px] p-6"
+        initial={{ scale: 0.94, opacity: 0, y: 12 }}
+        animate={{ scale: 1, opacity: 1, y: 0 }}
+        exit={{ scale: 0.94, opacity: 0, y: 12 }}
+        transition={{ type: 'spring', bounce: 0.18, duration: 0.4 }}
+      >
+        {/* 顶部：图标 + 标题 + 简介 */}
+        <div className="mb-4 flex items-start gap-3">
+          <ModIcon url={project.icon_url} size={56} />
+          <div className="min-w-0 flex-1">
+            <h2 className="title truncate">{settings.translateResourceNames ? tr(project.title) : project.title}</h2>
+            <p className="caption mt-0.5 line-clamp-2">{tr(project.description)}</p>
+          </div>
+          <button
+            onClick={onClose}
+            title={t('res.detail.close')}
+            aria-label={t('res.detail.close')}
+            className="no-drag shrink-0 opacity-60 hover:opacity-100"
+          >
+            <Icon name="xmark" size={18} />
+          </button>
+        </div>
+
+        {loading ? (
+          <LoadingState text={t('res.detail.loading')} />
+        ) : error ? (
+          <div className="flex flex-col items-center gap-3 py-8">
+            <p className="caption text-center">{t('res.detail.error', { msg: error })}</p>
+            <Button onClick={() => setAttempt((n) => n + 1)}>{t('res.detail.retry')}</Button>
+          </div>
+        ) : !body ? (
+          <p className="caption py-8 text-center">{t('res.detail.empty')}</p>
+        ) : (
+          <Markdown
+            text={mdText}
+            className="max-h-[70vh] overflow-y-auto pr-2 text-[13px] leading-relaxed"
+          />
+        )}
+
+        <div className="mt-4 flex justify-end gap-2">
+          <Button onClick={onClose}>{t('res.detail.close')}</Button>
+          <Button
+            variant="primary"
+            onClick={() =>
+              void window.api.shell.openExternal(`https://modrinth.com/${detail?.project_type || project.project_type}/${project.slug}`)
+            }
+          >
+            {t('res.detail.openModrinth')}
+          </Button>
+        </div>
+      </motion.div>
+    </motion.div>
   )
 }
 
@@ -563,6 +731,7 @@ function LoaderDrawer({
   onInstallModpack?: (v: ModrinthVersion) => void
   modpackBusy?: boolean
 }): JSX.Element {
+  const { t } = useApp()
   const hasLoader = loader !== ''
   // 优先展开筛选器锁定的加载器
   const isPreferred = hasLoader && !!preferredLoader && loader.split(' / ').some((l) => l.toLowerCase() === preferredLoader.toLowerCase())
@@ -574,7 +743,7 @@ function LoaderDrawer({
         onClick={() => setOpen((x) => !x)}
         className="flex w-full items-center gap-2 px-4 py-3 no-drag"
       >
-        <span className="text-[14px] font-medium">{hasLoader ? loader.split(' / ').map(loaderLabel).join(' / ') : '通用（无需加载器）'}</span>
+        <span className="text-[14px] font-medium">{hasLoader ? loader.split(' / ').map((l) => loaderLabel(l, t)).join(' / ') : t('res.loader.generic')}</span>
         <span className="chip">{versions.length}</span>
         <span className="ml-auto opacity-50">
           <Icon name="chevronRight" size={16} className={`transition-transform ${open ? 'rotate-90' : ''}`} />
@@ -600,6 +769,82 @@ function LoaderDrawer({
   )
 }
 
+/** 安装到实例时发现的缺失前置。 */
+interface DepMissing {
+  projectId: string
+  title: string
+  version: ModrinthVersion
+}
+
+/** 依赖确认弹窗要用的上下文（缺哪个前置、装到哪个实例）。 */
+interface DepPrompt {
+  target: InstalledVersion
+  missing: DepMissing[]
+}
+
+/**
+ * 找出该版本「必需、但目标实例中尚未安装」的前置模组。
+ *
+ * 判据（两者任一命中即视为已装，避免重复下载）：
+ *   1. 实例中已装模组的 Modrinth slug 与依赖项目 slug 相同（最准，但需已富化）；
+ *   2. 依赖版本的主文件名与实例 mods 目录中的文件名相同（兜底）。
+ * 读不到实例模组列表时直接返回空数组——宁可放行安装，也不误报「缺前置」阻断用户。
+ * 资源包 / 光影没有前置概念，直接跳过。
+ */
+async function findMissingDependencies(
+  version: ModrinthVersion,
+  target: InstalledVersion,
+  type: ModrinthType
+): Promise<DepMissing[]> {
+  if (type !== 'mod' && type !== 'modpack') return []
+  const deps = (version.dependencies ?? []).filter((d) => d.dependency_type === 'required' && d.project_id)
+  if (deps.length === 0) return []
+
+  let names = new Set<string>()
+  let slugs = new Set<string>()
+  try {
+    const mods = await window.api.manage.mods(target.id)
+    names = new Set(mods.map((m) => m.name.toLowerCase()))
+    slugs = new Set(
+      mods
+        .map((m) => m.slug)
+        .filter((s): s is string => typeof s === 'string' && s.length > 0)
+        .map((s) => s.toLowerCase())
+    )
+  } catch {
+    return []
+  }
+
+  const missing: DepMissing[] = []
+  for (const d of deps) {
+    const pid = d.project_id
+    if (!pid) continue
+    let proj: ModrinthProjectDetail | null = null
+    try {
+      proj = await window.api.mods.project(pid)
+    } catch {
+      /* 取不到项目信息时用 id 兜底展示 */
+    }
+    const slug = proj?.slug?.toLowerCase() ?? ''
+    if (slug && slugs.has(slug)) continue
+
+    // 取适配当前实例（MC 版本 + 加载器）的依赖版本。
+    let pick: ModrinthVersion | null = null
+    try {
+      const vs = await window.api.mods.versions(pid, target.loader ? [target.loader] : [], [target.mcVersion])
+      pick = vs[0] ?? null
+    } catch {
+      /* 查询失败：无法判断，跳过该项而不误报 */
+    }
+    if (!pick) continue
+    const f = pick.files.find((x) => x.primary) ?? pick.files[0]
+    if (f && names.has(f.filename.toLowerCase())) continue
+
+    missing.push({ projectId: pid, title: proj?.title || pid, version: pick })
+  }
+  return missing
+}
+
 function VersionEntry({
   v,
   type,
@@ -618,8 +863,16 @@ function VersionEntry({
   modpackBusy?: boolean
 }): JSX.Element {
   const { triggerFly } = useRuntimeActions()
+  const { t } = useApp()
   const [expanded, setExpanded] = useState(false)
   const [busy, setBusy] = useState(false)
+  /** 安装 / 下载失败的提示（非空即展示）；成功或重试时清空。 */
+  const [error, setError] = useState<string | null>(null)
+  /** 非空表示：安装到实例时检测到缺失前置，正等用户确认是否一并下载。 */
+  const [depPrompt, setDepPrompt] = useState<DepPrompt | null>(null)
+
+  /** 必需前置数量（用于在版本条目上提前提示）。 */
+  const requiredDeps = (v.dependencies ?? []).filter((d) => d.dependency_type === 'required').length
 
   const compatible = installed.filter((ins) => {
     // 资源包不限制加载器，只看游戏版本
@@ -643,17 +896,56 @@ function VersionEntry({
   const fire = async (e: React.MouseEvent, target: InstalledVersion | null): Promise<void> => {
     const r = (e.currentTarget as HTMLElement).getBoundingClientRect()
     triggerFly(r.left + r.width / 2, r.top + r.height / 2)
+    // CurseForge 上「禁止第三方分发」的资源拿不到下载地址：只能去官网下，
+    // 这里直接把项目文件页在系统浏览器里打开。
+    if (v.downloadable === false) {
+      const url = v.pageUrl
+      if (url) await window.api.shell.openExternal(url)
+      return
+    }
     const file = v.files.find((f) => f.primary) ?? v.files[0]
     if (!file) return
     setBusy(true)
+    setError(null)
     try {
       if (target) {
-        await window.api.mods.install(file.url, file.filename, target.id, type)
+        // 安装到实例前先检查必需前置；缺失则弹窗征求是否一并下载。
+        const missing = await findMissingDependencies(v, target, type)
+        if (missing.length > 0) {
+          setDepPrompt({ target, missing })
+          return
+        }
+        await window.api.mods.install(file.url, file.filename, target.id, type, file.size)
       } else {
         const dest = await window.api.shell.saveFile(file.filename)
-        if (dest) await window.api.mods.downloadTo(file.url, dest)
+        if (dest) await window.api.mods.downloadTo(file.url, dest, file.size)
       }
       setExpanded(false)
+    } catch (err) {
+      // 以前这里静默失败：用户只看到面板收回去、以为「点了没反应」。
+      setError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  /** 用户确认后：先装缺失的前置，再装本体（顺序执行，避免并发写同一 mods 目录）。 */
+  const installWithDependencies = async (): Promise<void> => {
+    const p = depPrompt
+    const file = v.files.find((f) => f.primary) ?? v.files[0]
+    setDepPrompt(null)
+    if (!p || !file) return
+    setBusy(true)
+    setError(null)
+    try {
+      for (const m of p.missing) {
+        const f = m.version.files.find((x) => x.primary) ?? m.version.files[0]
+        if (f) await window.api.mods.install(f.url, f.filename, p.target.id, 'mod', f.size)
+      }
+      await window.api.mods.install(file.url, file.filename, p.target.id, type, file.size)
+      setExpanded(false)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
     } finally {
       setBusy(false)
     }
@@ -664,22 +956,35 @@ function VersionEntry({
       <div className="flex items-center gap-3">
         <div className="min-w-0 flex-1">
           <div className="truncate text-[13px] font-medium">{v.version_number}</div>
-          <div className="caption">{formatCount(v.downloads)} 下载 · {formatDate(v.date_published)}</div>
+          <div className="caption">
+            {t('res.downloadsDate', { n: formatCount(v.downloads), date: formatDate(v.date_published) })}
+            {requiredDeps > 0 && ` · ${t('res.depCount', { n: requiredDeps })}`}
+          </div>
         </div>
         <Button
           size="sm"
           variant={isModpack ? 'primary' : expanded ? 'secondary' : 'primary'}
           disabled={busy || modpackBusy}
-          onClick={() => (isModpack ? onInstallModpack?.(v) : setExpanded((x) => !x))}
+          onClick={(e) => (v.downloadable === false && !isModpack ? void fire(e, null) : isModpack ? onInstallModpack?.(v) : setExpanded((x) => !x))}
         >
-          {isModpack ? (modpackBusy ? '安装中…' : '安装整合包') : busy ? '下载中' : expanded ? '收起' : '安装'}
+          {v.downloadable === false && !isModpack
+            ? t('res.openOnCurseforge')
+            : isModpack
+              ? modpackBusy
+                ? t('res.installing')
+                : t('res.installModpack')
+              : busy
+                ? t('res.downloading')
+                : expanded
+                  ? t('res.collapse')
+                  : t('res.install')}
         </Button>
       </div>
 
       {expanded && (
         <div className="mt-2 space-y-1.5 border-t pt-2" style={{ borderColor: 'var(--divider)' }}>
-          <div className="caption">安装到可匹配实例：</div>
-          {compatible.length === 0 && <div className="caption opacity-60">没有匹配的实例（版本与加载器需匹配）</div>}
+          <div className="caption">{t('res.installToMatch')}</div>
+          {compatible.length === 0 && <div className="caption opacity-60">{t('res.noMatch')}</div>}
           {compatible.map((ins) => (
             <button
               key={ins.id}
@@ -689,7 +994,7 @@ function VersionEntry({
             >
               <span className="truncate">{ins.id}</span>
               <span className="caption shrink-0">
-                {ins.mcVersion} · {loaderLabel(ins.loader)}
+                {ins.mcVersion} · {loaderLabel(ins.loader, t)}
               </span>
             </button>
           ))}
@@ -699,10 +1004,61 @@ function VersionEntry({
             style={{ background: 'var(--chip-bg)' }}
           >
             <Icon name="download" size={14} />
-            下载至任意位置
+            {t('res.downloadAnywhere')}
           </button>
         </div>
       )}
+
+      {error && (
+        <div
+          className="mt-2 flex items-start gap-2 rounded-lg px-3 py-2 text-[12px]"
+          style={{ background: 'var(--chip-bg)', color: 'var(--fill-danger)' }}
+        >
+          <Icon name="info" size={14} className="mt-0.5 shrink-0" />
+          <span className="min-w-0 flex-1 break-words">{t('res.installFailed', { msg: error })}</span>
+          <button className="no-drag shrink-0 opacity-60 hover:opacity-100" onClick={() => setError(null)}>
+            <Icon name="xmark" size={13} />
+          </button>
+        </div>
+      )}
+
+      {/* 缺前置确认：列出缺失的必需前置，由用户决定是否一并下载。
+          必须 portal 到 body：本组件位于带 transform 的入场动画容器内，
+          那种祖先会让 fixed 定位改为相对该容器解析，遮罩会盖住整个结果区（看起来「变黑」）。 */}
+      {depPrompt &&
+        createPortal(
+          <div className="fixed inset-0 z-[130] flex items-center justify-center p-6">
+            <div className="absolute inset-0" style={{ background: 'var(--scrim)' }} onClick={() => setDepPrompt(null)} />
+            <div className="glass-strong relative z-10 w-full max-w-md rounded-[28px] p-6">
+              <div className="mb-2 flex items-center gap-2">
+                <Icon name="info" size={20} style={{ color: 'var(--fill-primary)' }} />
+                <span className="title">{t('res.dep.title')}</span>
+              </div>
+              <p className="caption mt-2">{t('res.dep.desc', { target: depPrompt.target.id })}</p>
+              <ul className="mt-3 max-h-56 space-y-1 overflow-y-auto">
+                {depPrompt.missing.map((m) => (
+                  <li
+                    key={m.projectId}
+                    className="truncate rounded-lg px-3 py-1.5 text-[13px]"
+                    style={{ background: 'var(--chip-bg)' }}
+                    title={m.title}
+                  >
+                    {m.title}
+                  </li>
+                ))}
+              </ul>
+              <div className="mt-5 flex gap-2">
+                <Button className="flex-1" onClick={() => setDepPrompt(null)}>
+                  {t('res.dep.cancel')}
+                </Button>
+                <Button variant="primary" className="flex-1" icon="download" onClick={() => void installWithDependencies()}>
+                  {t('res.dep.confirm')}
+                </Button>
+              </div>
+            </div>
+          </div>,
+          document.body
+        )}
     </div>
   )
 }
@@ -710,7 +1066,7 @@ function VersionEntry({
 function groupVersions(versions: ModrinthVersion[]): Map<string, Map<string, ModrinthVersion[]>> {
   const mc = new Map<string, Map<string, ModrinthVersion[]>>()
   for (const v of versions) {
-    const gvs = v.game_versions.length > 0 ? v.game_versions : ['通用']
+    const gvs = v.game_versions.length > 0 ? v.game_versions : [GENERIC_MC_KEY]
     for (const gv of gvs) {
       if (!mc.has(gv)) mc.set(gv, new Map())
       const loaderKey = v.loaders.length > 0 ? v.loaders.join(' / ') : ''
@@ -759,21 +1115,22 @@ function ModIcon({ url, size = 44 }: { url?: string; size?: number }): JSX.Eleme
 }
 
 function EmptyState({ type }: { type: string }): JSX.Element {
-  const label =
+  const { t } = useApp()
+  const labelKey =
     type === 'mod'
-      ? '模组'
+      ? 'res.tab.mod'
       : type === 'resourcepack'
-        ? '资源包'
+        ? 'res.tab.resourcepack'
         : type === 'shader'
-          ? '光影'
-          : '整合包'
+          ? 'res.tab.shader'
+          : 'res.tab.modpack'
   return (
     <div className="glass flex flex-col items-center justify-center gap-3 rounded-[28px] p-12 text-center">
       <div className="flex h-16 w-16 items-center justify-center rounded-2xl" style={{ background: 'var(--fill-secondary)' }}>
         <Icon name="box" size={30} className="opacity-60" />
       </div>
-      <div className="title">没有找到相关{label}</div>
-      <p className="caption max-w-sm">可尝试更换关键词、版本或加载器筛选条件</p>
+      <div className="title">{t('res.empty.title', { label: t(labelKey) })}</div>
+      <p className="caption max-w-sm">{t('res.empty.desc')}</p>
     </div>
   )
 }

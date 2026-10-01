@@ -1,42 +1,106 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { AnimatePresence, motion } from 'motion/react'
-import type { InstalledVersion, SystemMemoryInfo } from '@shared/types'
-import { useApp } from '../store'
+import type { InstalledVersion, SystemMemoryInfo, VersionDir } from '@shared/types'
+import type { TFunction } from '../i18n'
+import { activeGameDir, useAdaptivePolling, useApp, versionDirLabel } from '../store'
 import { useRuntime } from '../runtime'
-import { Avatar, Button, Icon, ProgressBar } from '../components/ui'
+import { Avatar, Button, Icon, ProgressBar, Select } from '../components/ui'
 
 export function HomePage(): JSX.Element {
-  const { settings, selectedAccount, updateSettings } = useApp()
-  const { download, launchState, launchLog, busy, launch, stopLaunch } = useRuntime()
+  const { settings, selectedAccount, updateSettings, reloadSettings, t } = useApp()
+  const { download, launchState, launchLog, launchReport, dismissLaunchReport, busy, launch, stopLaunch } =
+    useRuntime()
 
   const [installed, setInstalled] = useState<InstalledVersion[]>([])
-  const [versionId, setVersionId] = useState<string>('')
+  const [dirs, setDirs] = useState<VersionDir[]>([])
   const [memory, setMemory] = useState(settings.memoryMb)
   const [memInfo, setMemInfo] = useState<SystemMemoryInfo | null>(null)
   const [pickerOpen, setPickerOpen] = useState(false)
   const [search, setSearch] = useState('')
   const logRef = useRef<HTMLDivElement>(null)
 
+  const activeDirId = settings.selectedVersionDirId || 'default'
+
   const refreshMemory = (): void => {
     void window.api.system.memory().then(setMemInfo).catch(() => setMemInfo(null))
   }
 
+  // 已安装版本随「当前版本目录」收敛：切换目录后重新拉取。
+  //
+  // 首次挂载刻意延后到首帧之后：installed:list 要全量扫描版本目录（几十个版本 ×
+  // 存档 / 服务器 / 版本 JSON），若在挂载时立即发起，会和首屏渲染抢主进程 IO 与主线程，
+  // 表现为「启动后界面要点一下才动 / 首屏卡顿」。延后到空闲时执行，首屏先出骨架。
+  const installedFirstRun = useRef(true)
   useEffect(() => {
-    void (async () => {
-      try {
-        const list = await window.api.installed.list()
-        setInstalled(list)
-        // 默认选中第一个已下载的版本（启动页只能启动已下载版本）
-        setVersionId((prev) => (prev && list.some((v) => v.id === prev) ? prev : list[0]?.id ?? ''))
-      } catch {
-        /* installed:list 偶发失败时保持上次状态，不做阻塞 */
-      }
-    })()
-    refreshMemory()
-    // 已用内存每 30 秒更新一次
-    const timer = setInterval(refreshMemory, 30000)
-    return () => clearInterval(timer)
+    let cancelled = false
+    let idleId: number | undefined
+    let timerId: ReturnType<typeof setTimeout> | undefined
+    const run = (): void => {
+      void (async () => {
+        try {
+          const list = await window.api.installed.list()
+          if (!cancelled) setInstalled(list)
+        } catch {
+          /* installed:list 偶发失败时保持上次状态，不做阻塞 */
+        }
+      })()
+    }
+    if (installedFirstRun.current) {
+      installedFirstRun.current = false
+      // 优先 requestIdleCallback（浏览器空闲）；不支持时退化为 setTimeout 宏任务，
+      // 两者都在首帧提交之后执行，不再阻塞启动。
+      const ric = (window as unknown as { requestIdleCallback?: (cb: () => void) => number }).requestIdleCallback
+      if (typeof ric === 'function') idleId = ric(run)
+      else timerId = setTimeout(run, 0)
+    } else {
+      run()
+    }
+    return () => {
+      cancelled = true
+      const cic = (window as unknown as { cancelIdleCallback?: (id: number) => void }).cancelIdleCallback
+      if (idleId !== undefined && typeof cic === 'function') cic(idleId)
+      if (timerId !== undefined) clearTimeout(timerId)
+    }
+  }, [activeDirId])
+
+  /**
+   * 选中的游戏版本由设置持久化（与自定义主页共用同一个 selectedVersionId 字段）：
+   * 关闭启动器后再打开仍保留上次选择。若该版本已被删除、或不在当前版本目录，
+   * 则回落到首个已装版本。
+   */
+  const versionId = useMemo(() => {
+    const saved = settings.selectedVersionId
+    if (saved && installed.some((v) => v.id === saved)) return saved
+    return installed[0]?.id ?? ''
+  }, [settings.selectedVersionId, installed])
+
+  // 回落后把结果写回设置，避免每次都重新计算（也保持两处界面选择一致）。
+  useEffect(() => {
+    if (versionId && versionId !== settings.selectedVersionId) {
+      void updateSettings({ selectedVersionId: versionId })
+    }
+  }, [versionId, settings.selectedVersionId, updateSettings])
+
+  const setVersionId = (id: string): void => {
+    void updateSettings({ selectedVersionId: id })
+  }
+
+  useEffect(() => {
+    void window.api.versionDirs.list().then(setDirs).catch(() => undefined)
   }, [])
+
+  useEffect(() => {
+    refreshMemory()
+  }, [])
+  // 已用内存轮询：常规 30s；超低占用模式下放宽周期并在窗口不可见时暂停。
+  useAdaptivePolling(refreshMemory, 30000, settings.lowUsageMode)
+
+  // 切换版本目录：主进程持久化选中项并失效缓存，installed 副作用随之重新拉取。
+  const selectDir = async (id: string): Promise<void> => {
+    if (id === activeDirId) return
+    await window.api.versionDirs.select(id)
+    await reloadSettings()
+  }
 
   useEffect(() => setMemory(settings.memoryMb), [settings.memoryMb])
 
@@ -83,7 +147,7 @@ export function HomePage(): JSX.Element {
     void launch({
       versionId,
       accountId: selectedAccount.id,
-      gameDir: settings.gameDir,
+      gameDir: activeGameDir(settings),
       memoryMb: memory,
       javaPath: settings.javaPath || undefined
     })
@@ -93,17 +157,17 @@ export function HomePage(): JSX.Element {
     <div className="flex h-full flex-col gap-5">
       <div className="flex items-end justify-between">
         <div>
-          <h1 className="display">启动游戏</h1>
-          <p className="caption mt-1">选择一个版本，一键进入方块世界</p>
+          <h1 className="display">{t('home.title')}</h1>
+          <p className="caption mt-1">{t('home.subtitle')}</p>
         </div>
         <div className="flex items-center gap-2">
           {selectedAccount ? (
             <div className="glass-soft flex items-center gap-2 rounded-2xl px-3 py-1.5">
-              <Avatar name={selectedAccount.name} uuid={selectedAccount.id} skinUrl={selectedAccount.skinUrl} authType={selectedAccount.authType} yggdrasilServer={selectedAccount.yggdrasilServer} size={26} />
+              <Avatar name={selectedAccount.name} uuid={selectedAccount.id} skinUrl={selectedAccount.skinUrl} authType={selectedAccount.authType} yggdrasilServer={selectedAccount.yggdrasilServer} offline={selectedAccount.offline} size={26} />
               <span className="text-[13px] font-medium">{selectedAccount.name}</span>
             </div>
           ) : (
-            <span className="chip">未登录账号</span>
+            <span className="chip">{t('home.notLoggedIn')}</span>
           )}
         </div>
       </div>
@@ -111,16 +175,30 @@ export function HomePage(): JSX.Element {
       <div className={`grid flex-1 grid-cols-1 gap-5 overflow-hidden ${settings.debugMode ? 'lg:grid-cols-[1.1fr_1fr]' : ''}`}>
         {/* Left: controls */}
         <div className="glass flex flex-col gap-5 rounded-[28px] p-6">
+          {/* 版本目录：版本列表与启动落点都以当前选中的版本目录为准 */}
+          <div className="glass-soft flex items-center gap-3 rounded-2xl px-3 py-2">
+            <Icon name="folder" size={15} className="shrink-0 opacity-60" />
+            <span className="caption shrink-0">{t('home.versionDir')}</span>
+            <Select
+              className="min-w-0 flex-1"
+              value={activeDirId}
+              onChange={(v) => void selectDir(v)}
+              options={dirs.map((d) => ({ value: d.id, label: versionDirLabel(d) }))}
+            />
+          </div>
+
           <div className="flex items-center justify-between">
             <div>
-              <div className="headline">游戏版本</div>
+              <div className="headline">{t('home.gameVersion')}</div>
               <div className="caption">
-                {current ? `${loaderLabel(current.loader)} · MC ${current.mcVersion}` : '未选择版本'}
+                {current
+                  ? t('home.versionSummary', { loader: loaderLabel(current.loader, t), mc: current.mcVersion })
+                  : t('home.noVersion')}
               </div>
             </div>
             <div className="relative">
               <Button icon="cube" onClick={() => setPickerOpen((v) => !v)}>
-                {versionId || '选择版本'}
+                {versionId || t('home.selectVersion')}
                 <Icon name="chevronRight" size={15} className="rotate-90" />
               </Button>
               <AnimatePresence>
@@ -138,14 +216,14 @@ export function HomePage(): JSX.Element {
                         autoFocus
                         value={search}
                         onChange={(e) => setSearch(e.target.value)}
-                        placeholder="搜索版本…"
+                        placeholder={t('home.searchPlaceholder')}
                         className="input w-full pl-9"
                       />
                     </div>
                     <div className="max-h-80 overflow-y-auto">
                       {filtered.length === 0 ? (
                         <div className="px-3 py-4 text-center text-[13px] opacity-60">
-                          还没有已下载的版本，请先到「版本」页安装
+                          {t('home.emptyInstalled')}
                         </div>
                       ) : (
                         filtered.map((v) => (
@@ -170,12 +248,12 @@ export function HomePage(): JSX.Element {
 
           <div>
             <div className="mb-2 flex items-center justify-between">
-              <span className="headline">分配内存</span>
+              <span className="headline">{t('home.memoryAlloc')}</span>
               <div className="flex items-center gap-2">
                 <span className="chip">{gb(memory)} GB</span>
                 {memInfo && (
                   <Button size="sm" onClick={autoMemory}>
-                    自动
+                    {t('home.auto')}
                   </Button>
                 )}
               </div>
@@ -203,9 +281,9 @@ export function HomePage(): JSX.Element {
                 </div>
                 <div className="mt-1 flex justify-between text-[11px] opacity-50">
                   <span>
-                    已用 {gb(memInfo.used)} GB / 共 {gb(memInfo.total)} GB
+                    {t('home.memUsedTotal', { used: gb(memInfo.used), total: gb(memInfo.total) })}
                   </span>
-                  <span>预留 {gb(memory)} GB</span>
+                  <span>{t('home.memReserved', { n: gb(memory) })}</span>
                 </div>
               </div>
             )}
@@ -226,7 +304,7 @@ export function HomePage(): JSX.Element {
             {busy && (
               <div className="mb-4">
                 <div className="mb-2 flex items-center justify-between">
-                  <span className="headline">{launchStage(launchState)}</span>
+                  <span className="headline">{launchStage(t, launchState)}</span>
                   <span className="chip">{launchState === 'starting' ? '…' : `${progressPercent}%`}</span>
                 </div>
                 <ProgressBar percent={progressPercent} />
@@ -238,12 +316,12 @@ export function HomePage(): JSX.Element {
             {!selectedAccount && (
               <div className="glass-soft mb-3 flex items-center gap-2 rounded-2xl px-3 py-2.5 text-[13px]">
                 <Icon name="user" size={16} />
-                请先在「账号」页登录账号
+                {t('home.loginFirst')}
               </div>
             )}
             {running ? (
               <Button variant="danger" icon="stop" size="lg" className="w-full rounded-2xl" onClick={stopLaunch}>
-                停止游戏
+                {t('home.stopGame')}
               </Button>
             ) : (
               <Button
@@ -254,7 +332,7 @@ export function HomePage(): JSX.Element {
                 disabled={!selectedAccount || !versionId}
                 onClick={handleLaunch}
               >
-                启动 Minecraft
+                {t('home.launchMinecraft')}
               </Button>
             )}
           </div>
@@ -264,7 +342,7 @@ export function HomePage(): JSX.Element {
         {settings.debugMode && (
         <div className="glass flex min-h-0 flex-col rounded-[28px] p-5">
           <div className="mb-3 flex items-center justify-between">
-            <span className="headline">运行日志</span>
+            <span className="headline">{t('home.launchLog')}</span>
             <div className="flex items-center gap-2">
               <span
                 className="inline-flex h-2 w-2 rounded-full"
@@ -277,7 +355,7 @@ export function HomePage(): JSX.Element {
                         : 'var(--text-tertiary)'
                 }}
               />
-              <span className="caption">{statusLabel(launchState)}</span>
+              <span className="caption">{statusLabel(t, launchState)}</span>
             </div>
           </div>
           <div
@@ -286,7 +364,7 @@ export function HomePage(): JSX.Element {
             style={{ background: 'rgba(0,0,0,0.28)', color: 'rgba(255,255,255,0.82)' }}
           >
             {launchLog.length === 0 ? (
-              <div className="opacity-40">启动游戏后，控制台输出将显示在这里。</div>
+              <div className="opacity-40">{t('home.consoleEmpty')}</div>
             ) : (
               launchLog.map((line, i) => <div key={i} className="whitespace-pre-wrap break-all">{line}</div>)
             )}
@@ -303,46 +381,84 @@ export function HomePage(): JSX.Element {
         </div>
         )}
       </div>
+
+      {/* 启动异常报告：按关键词给出结论与建议；识别不出时原样展示错误内容。 */}
+      {launchReport && (
+        <div className="fixed inset-0 z-[130] flex items-center justify-center p-6">
+          <div className="absolute inset-0" style={{ background: 'var(--scrim)' }} onClick={dismissLaunchReport} />
+          <div className="glass-strong relative z-10 flex max-h-[80vh] w-full max-w-lg flex-col rounded-[28px] p-6">
+            <div className="mb-3 flex items-center gap-3">
+              <div
+                className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl text-white"
+                style={{ background: 'var(--fill-danger)' }}
+              >
+                <Icon name="xmark" size={22} />
+              </div>
+              <div className="min-w-0">
+                <h2 className="title">{t('home.report.title')}</h2>
+                <p className="caption">{launchReport.summary}</p>
+              </div>
+            </div>
+            {launchReport.advice && (
+              <p className="caption mb-3 rounded-xl px-3 py-2" style={{ background: 'var(--chip-bg)' }}>
+                {launchReport.advice}
+              </p>
+            )}
+            <div className="mb-1.5 text-[13px] font-semibold">{t('home.report.detail')}</div>
+            <pre
+              className="selectable min-h-0 flex-1 overflow-auto whitespace-pre-wrap break-all rounded-2xl p-3 font-mono text-[12px] leading-relaxed"
+              style={{ background: 'rgba(0,0,0,0.28)', color: 'rgba(255,255,255,0.82)' }}
+            >
+              {launchReport.raw}
+            </pre>
+            <div className="mt-4 flex gap-2">
+              <Button className="flex-1" onClick={dismissLaunchReport}>
+                {t('home.report.close')}
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
 
-function statusLabel(s: string | null): string {
+function statusLabel(t: TFunction, s: string | null): string {
   switch (s) {
     case 'starting':
-      return '准备中'
+      return t('home.status.starting')
     case 'downloading':
-      return '下载中'
+      return t('home.status.downloading')
     case 'launching':
-      return '启动中'
+      return t('home.status.launching')
     case 'running':
-      return '运行中'
+      return t('home.status.running')
     case 'exited':
-      return '已退出'
+      return t('home.status.exited')
     case 'error':
-      return '出错'
+      return t('home.status.error')
     default:
-      return '空闲'
+      return t('home.status.idle')
   }
 }
 
 /** PCL 风格启动进度的阶段标题。 */
-function launchStage(s: string | null): string {
+function launchStage(t: TFunction, s: string | null): string {
   switch (s) {
     case 'starting':
-      return '正在准备'
+      return t('home.stage.starting')
     case 'downloading':
-      return '正在下载资源'
+      return t('home.stage.downloading')
     case 'launching':
-      return '正在启动'
+      return t('home.stage.launching')
     case 'running':
-      return '游戏运行中'
+      return t('home.stage.running')
     case 'exited':
-      return '已退出'
+      return t('home.stage.exited')
     case 'error':
-      return '启动失败'
+      return t('home.stage.error')
     default:
-      return '正在启动'
+      return t('home.stage.default')
   }
 }
 
@@ -355,6 +471,7 @@ function VersionOption({
   active: boolean
   onSelect: () => void
 }): JSX.Element {
+  const { t } = useApp()
   return (
     <button
       onClick={onSelect}
@@ -368,13 +485,13 @@ function VersionOption({
       }}
     >
       <span className="truncate text-[13px] font-medium">{v.id}</span>
-      <span className="chip">{loaderLabel(v.loader)}</span>
+      <span className="chip">{loaderLabel(v.loader, t)}</span>
     </button>
   )
 }
 
-function loaderLabel(loader: string | null): string {
-  if (!loader) return '原版'
+function loaderLabel(loader: string | null, t: TFunction): string {
+  if (!loader) return t('home.vanilla')
   return loader.charAt(0).toUpperCase() + loader.slice(1)
 }
 

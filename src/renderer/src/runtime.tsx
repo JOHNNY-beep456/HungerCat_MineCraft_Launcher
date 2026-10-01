@@ -9,6 +9,7 @@ import {
   type ReactNode
 } from 'react'
 import type { DownloadProgress, LaunchEvent, LaunchOptions, LaunchState } from '@shared/types'
+import { diagnoseLaunch, type LaunchReport } from './launch-diagnosis'
 
 interface RuntimeState {
   download: DownloadProgress | null
@@ -17,6 +18,8 @@ interface RuntimeState {
   launchState: LaunchState | null
   launchLog: string[]
   launchPid: number | null
+  /** 启动异常诊断报告：非空时界面弹窗展示（可关闭）。 */
+  launchReport: LaunchReport | null
   busy: boolean
   installingId: string | null
   /** Non-null when a Java version mismatch is waiting for the user's decision. */
@@ -26,11 +29,15 @@ interface RuntimeState {
   triggerFly: (x: number, y: number) => void
   installVersion: (id: string) => Promise<void>
   cancelDownload: () => void
+  /** 只取消单个下载任务（按 taskId），不影响其它并行任务。 */
+  cancelTask: (taskId: string) => void
   launch: (opts: LaunchOptions) => Promise<void>
   stopLaunch: () => void
   clearLog: () => void
   installJavaAndLaunch: () => Promise<void>
   cancelJavaPrompt: () => void
+  /** 关闭启动异常报告弹窗。 */
+  dismissLaunchReport: () => void
 }
 
 const RuntimeContext = createContext<RuntimeState | null>(null)
@@ -44,11 +51,15 @@ interface RuntimeActions {
   triggerFly: (x: number, y: number) => void
   installVersion: (id: string) => Promise<void>
   cancelDownload: () => void
+  /** 只取消单个下载任务（按 taskId），不影响其它并行任务。 */
+  cancelTask: (taskId: string) => void
   launch: (opts: LaunchOptions) => Promise<void>
   stopLaunch: () => void
   clearLog: () => void
   installJavaAndLaunch: () => Promise<void>
   cancelJavaPrompt: () => void
+  /** 关闭启动异常报告弹窗。 */
+  dismissLaunchReport: () => void
 }
 
 const RuntimeActionsContext = createContext<RuntimeActions | null>(null)
@@ -58,6 +69,9 @@ export function RuntimeProvider({ children }: { children: ReactNode }): JSX.Elem
   const [launchState, setLaunchState] = useState<LaunchState | null>(null)
   const [launchLog, setLaunchLog] = useState<string[]>([])
   const [launchPid, setLaunchPid] = useState<number | null>(null)
+  const [launchReport, setLaunchReport] = useState<LaunchReport | null>(null)
+  /** 启动日志的最新快照：onEvent 闭包内需读取最新值做诊断，故用 ref 而非 state。 */
+  const launchLogRef = useRef<string[]>([])
   const [busy, setBusy] = useState(false)
   const [installingId, setInstallingId] = useState<string | null>(null)
   const [javaPrompt, setJavaPrompt] = useState<{ required: number } | null>(null)
@@ -112,11 +126,17 @@ export function RuntimeProvider({ children }: { children: ReactNode }): JSX.Elem
       }
       const log = e.log
       if (log) {
-        setLaunchLog((prev) => [...prev, log])
+        launchLogRef.current = [...launchLogRef.current, log]
+        setLaunchLog(launchLogRef.current)
       }
       if (e.state === 'exited' || e.state === 'error') {
         setBusy(false)
         setLaunchPid(null)
+        // 启动失败 / 非正常退出：按关键词分析日志生成可读报告；
+        // 未能识别时报告里仍保留原始错误内容，直接输出给用户。
+        if (e.state === 'error' || (e.exitCode !== undefined && e.exitCode !== 0)) {
+          setLaunchReport(diagnoseLaunch(launchLogRef.current, e.error, e.exitCode))
+        }
       }
     })
     return () => {
@@ -148,8 +168,17 @@ export function RuntimeProvider({ children }: { children: ReactNode }): JSX.Elem
     void window.api.download.cancel()
   }, [])
 
+  /** 只取消单个下载任务（按 taskId），不影响其它并行任务。 */
+  const cancelTask = useCallback((taskId: string) => {
+    void window.api.download.cancel(taskId)
+    // 先在 UI 上即时移除；主进程随后也会补一条 done，两者幂等。
+    setDownloads((prev) => prev.filter((t) => (t.taskId ?? 'main') !== taskId))
+  }, [])
+
   const doLaunch = useCallback(async (opts: LaunchOptions) => {
     setBusy(true)
+    launchLogRef.current = []
+    setLaunchReport(null)
     setLaunchLog([])
     setLaunchState('starting')
     setLaunchPid(null)
@@ -192,6 +221,8 @@ export function RuntimeProvider({ children }: { children: ReactNode }): JSX.Elem
     setJavaPrompt(null)
     pendingLaunchRef.current = null
     setBusy(true)
+    launchLogRef.current = []
+    setLaunchReport(null)
     setLaunchLog([])
     setLaunchState('starting')
     try {
@@ -214,6 +245,7 @@ export function RuntimeProvider({ children }: { children: ReactNode }): JSX.Elem
   }, [])
 
   const clearLog = useCallback(() => setLaunchLog([]), [])
+  const dismissLaunchReport = useCallback(() => setLaunchReport(null), [])
 
   const triggerFly = useCallback((x: number, y: number) => {
     setFlyFrom({ x, y, key: Date.now() })
@@ -224,13 +256,15 @@ export function RuntimeProvider({ children }: { children: ReactNode }): JSX.Elem
       triggerFly,
       installVersion,
       cancelDownload,
+      cancelTask,
       launch,
       stopLaunch,
       clearLog,
       installJavaAndLaunch,
-      cancelJavaPrompt
+      cancelJavaPrompt,
+      dismissLaunchReport
     }),
-    [triggerFly, installVersion, cancelDownload, launch, stopLaunch, clearLog, installJavaAndLaunch, cancelJavaPrompt]
+    [triggerFly, installVersion, cancelDownload, cancelTask, launch, stopLaunch, clearLog, installJavaAndLaunch, cancelJavaPrompt, dismissLaunchReport]
   )
 
   const value = useMemo<RuntimeState>(
@@ -240,13 +274,14 @@ export function RuntimeProvider({ children }: { children: ReactNode }): JSX.Elem
       launchState,
       launchLog,
       launchPid,
+      launchReport,
       busy,
       installingId,
       javaPrompt,
       flyFrom,
       ...actions
     }),
-    [download, downloads, launchState, launchLog, launchPid, busy, installingId, javaPrompt, flyFrom, actions]
+    [download, downloads, launchState, launchLog, launchPid, launchReport, busy, installingId, javaPrompt, flyFrom, actions]
   )
 
   return (

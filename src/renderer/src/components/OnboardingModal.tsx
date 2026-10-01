@@ -22,43 +22,43 @@ const STEPS: GuideStep[] = [
     icon: 'home',
     target: 'nav-home',
     page: 'home',
-    title: '启动游戏',
-    body: '这是启动器首页。从下拉菜单选择已安装的版本、调整内存后，点击「启动」即可进入游戏。首次启动会自动下载所需文件。'
+    title: 'cmp.onboarding.step1.title',
+    body: 'cmp.onboarding.step1.body'
   },
   {
     icon: 'cube',
     target: 'nav-resources',
     page: 'resources',
-    title: '资源下载 · 模组',
-    body: '这里是下载中心，分为「模组 / 资源包 / 光影 / 整合包 / 版本」。以模组为例：它们为游戏添加新内容或改变玩法。大多数模组依赖一个「加载器」才能运行。'
+    title: 'cmp.onboarding.step2.title',
+    body: 'cmp.onboarding.step2.body'
   },
   {
     icon: 'box',
     target: 'nav-instances',
     page: 'instances',
-    title: '实例与加载器',
-    body: '每个「实例」就是一份独立的游戏安装（包含原版 + 加载器 + 模组）。加载器（如 Fabric、Forge、Quilt、NeoForge）是模组运行的基础框架。安装实例时可选择对应加载器；选择 Fabric 时还可勾选一并安装 Fabric API。'
+    title: 'cmp.onboarding.step3.title',
+    body: 'cmp.onboarding.step3.body'
   },
   {
     icon: 'user',
     target: 'nav-accounts',
     page: 'accounts',
-    title: '账号',
-    body: '点击这里登录微软正版或第三方（如 LittleSkin / 馋猫认证中心）账号，即可正常联机；不登录也可作为离线账号游玩。'
+    title: 'cmp.onboarding.step4.title',
+    body: 'cmp.onboarding.step4.body'
   },
   {
     icon: 'download',
     target: null,
     page: null,
-    title: '安装 26.2 原版',
-    body: '下面带你安装一个新实例。点击「去安装」，我们会在「资源下载 → 版本」中帮你预填版本号 26.2；在其中点选该版本并按「安装」即可（选择 Fabric 时可勾选 Fabric API）。'
+    title: 'cmp.onboarding.step5.title',
+    body: 'cmp.onboarding.step5.body'
   },
   {
     icon: 'info',
     target: null,
     page: null,
-    title: '再次查看本引导',
-    body: '引导到此结束。之后想再次查看，随时双击顶部左上角的「Hunger Cat 图标」，即可重新打开这份新手引导。'
+    title: 'cmp.onboarding.step6.title',
+    body: 'cmp.onboarding.step6.body'
   }
 ]
 
@@ -75,7 +75,7 @@ export function OnboardingModal({
   onInstallVanilla: () => void
   onFinish: () => void
 }): JSX.Element {
-  const { updateSettings } = useApp()
+  const { t, updateSettings } = useApp()
   const [index, setIndex] = useState(0)
   // 回调用 ref 持有，避免在 useEffect 依赖里反复触发导航
   const onNavigateRef = useRef(onNavigate)
@@ -188,13 +188,13 @@ export function OnboardingModal({
                 <Icon name={step.icon} size={22} />
               </div>
               <div className="min-w-0">
-                <h2 className="title leading-tight">{step.title}</h2>
+                <h2 className="title leading-tight">{t(step.title)}</h2>
                 <span className="caption">
                   {index + 1} / {STEPS.length}
                 </span>
               </div>
             </div>
-            <p className="caption mb-5 leading-relaxed">{step.body}</p>
+            <p className="caption mb-5 leading-relaxed">{t(step.body)}</p>
 
             <div className="mb-5 flex items-center gap-1.5">
               {STEPS.map((_, i) => (
@@ -208,7 +208,7 @@ export function OnboardingModal({
 
             <div className="flex items-center gap-2">
               <Button disabled={index === 0} onClick={prev} className="w-24">
-                上一步
+                {t('cmp.onboarding.prev')}
               </Button>
               {isInstall ? (
                 <Button
@@ -221,11 +221,11 @@ export function OnboardingModal({
                     setIndex(0)
                   }}
                 >
-                  去安装 26.2 原版
+                  {t('cmp.onboarding.installVanilla')}
                 </Button>
               ) : (
                 <Button variant="primary" className="flex-1" onClick={next}>
-                  {last ? '完成' : '下一步'}
+                  {last ? t('cmp.onboarding.finish') : t('cmp.onboarding.next')}
                 </Button>
               )}
             </div>

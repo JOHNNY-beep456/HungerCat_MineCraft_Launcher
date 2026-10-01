@@ -1,8 +1,10 @@
 import { AnimatePresence, motion } from 'motion/react'
 import { useRuntime } from '../runtime'
+import { useApp } from '../store'
 import { Button, Icon, ProgressBar } from './ui'
 
 export function JavaPrompt(): JSX.Element {
+  const { t } = useApp()
   const { javaPrompt, busy, download, installJavaAndLaunch, cancelJavaPrompt } = useRuntime()
 
   return (
@@ -37,14 +39,13 @@ export function JavaPrompt(): JSX.Element {
                 <Icon name="settings" size={22} />
               </div>
               <div>
-                <h2 className="title">Java 版本不匹配</h2>
-                <p className="caption">该版本需要 Java {javaPrompt.required} 或更高版本</p>
+                <h2 className="title">{t('cmp.javaPrompt.title')}</h2>
+                <p className="caption">{t('cmp.javaPrompt.subtitle', { n: javaPrompt.required })}</p>
               </div>
             </div>
 
             <p className="mb-5 text-[13px] opacity-80">
-              未检测到兼容的 Java 运行时。你可以自动下载并安装 Java {javaPrompt.required}（Adoptium
-              Temurin），或取消本次启动。
+              {t('cmp.javaPrompt.body', { n: javaPrompt.required })}
             </p>
 
             {busy && download && (
@@ -59,7 +60,7 @@ export function JavaPrompt(): JSX.Element {
 
             <div className="flex gap-2">
               <Button className="flex-1" disabled={busy} onClick={cancelJavaPrompt}>
-                取消启动
+                {t('cmp.javaPrompt.cancel')}
               </Button>
               <Button
                 variant="primary"
@@ -67,7 +68,7 @@ export function JavaPrompt(): JSX.Element {
                 disabled={busy}
                 onClick={() => void installJavaAndLaunch()}
               >
-                {busy ? '安装中…' : `自动安装 Java ${javaPrompt.required}`}
+                {busy ? t('cmp.javaPrompt.installing') : t('cmp.javaPrompt.install', { n: javaPrompt.required })}
               </Button>
             </div>
           </motion.div>

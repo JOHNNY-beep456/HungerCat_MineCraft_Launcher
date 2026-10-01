@@ -1,11 +1,12 @@
-import { useCallback, useEffect, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
 import { AnimatePresence, motion } from 'motion/react'
-import type { HomepageEntry, HomepageSubmitResult, MarketScript } from '@shared/types'
+import type { HomepageEntry, HomepageSubmitResult, HomepageUpdate, MarketScript } from '@shared/types'
+import type { TFunction } from '../i18n'
 import { useApp } from '../store'
 import { Button, Icon, LoadingState, Segmented } from '../components/ui'
 import { HomepageGate } from '../components/HomepageGate'
 
-type Tab = 'installed' | 'market' | 'submit'
+type Tab = 'installed' | 'updates' | 'market' | 'submit'
 
 /** 把脚本原文编码为 base64（UTF-8 安全）。 */
 function toBase64(text: string): string {
@@ -15,22 +16,22 @@ function toBase64(text: string): string {
   return btoa(bin)
 }
 
-function riskBadge(level: HomepageEntry['risk']['level']): { text: string; color: string } {
-  if (level === 'reject') return { text: '危险', color: 'var(--fill-danger)' }
-  if (level === 'warn') return { text: '含外链', color: '#ff9f0a' }
-  return { text: '安全', color: 'var(--fill-success)' }
+function riskBadge(level: HomepageEntry['risk']['level'], t: TFunction): { text: string; color: string } {
+  if (level === 'reject') return { text: t('hp.risk.reject'), color: 'var(--fill-danger)' }
+  if (level === 'warn') return { text: t('hp.risk.warn'), color: '#ff9f0a' }
+  return { text: t('hp.risk.safe'), color: 'var(--fill-success)' }
 }
 
-function verifyBadge(v: HomepageEntry['verify']): string {
+function verifyBadge(v: HomepageEntry['verify'], t: TFunction): string {
   switch (v) {
     case 'verified':
-      return '已联网校验'
+      return t('hp.verify.verified')
     case 'mismatch':
-      return '校验不一致'
+      return t('hp.verify.mismatch')
     case 'local':
-      return '无编号 · 本地'
+      return t('hp.verify.local')
     default:
-      return '未校验'
+      return t('hp.verify.none')
   }
 }
 
@@ -38,13 +39,29 @@ function sizeText(bytes: number): string {
   return bytes >= 1024 ? `${(bytes / 1024).toFixed(1)} KB` : `${bytes} B`
 }
 
+/** 由市场条目 + 本地已安装条目构造「更新」所需的 HomepageUpdate（字段含义与主进程一致）。 */
+function marketUpdate(m: MarketScript, local: HomepageEntry): HomepageUpdate {
+  return {
+    localId: local.id,
+    id: m.id,
+    name: m.name || local.meta.name || m.id,
+    author: m.author || local.meta.author,
+    localVersion: local.meta.version,
+    latestVersion: m.version,
+    latestSha256: m.sha256,
+    url: m.url,
+    updatedAt: m.updatedAt
+  }
+}
+
 export function HomepagePage(): JSX.Element {
-  const { settings, reloadSettings, openFileManager } = useApp()
+  const { t, settings, reloadSettings, openFileManager, homepageUpdates, refreshHomepageUpdates } = useApp()
   const [tab, setTab] = useState<Tab>('installed')
   const [entries, setEntries] = useState<HomepageEntry[]>([])
   const [loading, setLoading] = useState(true)
   const [market, setMarket] = useState<MarketScript[] | null>(null)
   const [busyId, setBusyId] = useState<string | null>(null)
+  const [checking, setChecking] = useState(false)
   const [notice, setNotice] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null)
   /** 待过闸门的脚本 id：通过后才设为当前主页。 */
   const [gateId, setGateId] = useState<string | null>(null)
@@ -70,13 +87,21 @@ export function HomepagePage(): JSX.Element {
       setMarket(await window.api.homepage.market())
     } catch (err) {
       setMarket([])
-      setNotice({ kind: 'err', text: `主页市场加载失败：${err instanceof Error ? err.message : String(err)}` })
+      setNotice({ kind: 'err', text: t('hp.notice.marketFailed', { msg: err instanceof Error ? err.message : String(err) }) })
     }
-  }, [])
+  }, [t])
 
   useEffect(() => {
     if (tab === 'market') void loadMarket()
   }, [tab, loadMarket])
+
+  // 市场脚本 ↔ 本地已安装脚本：两者以「服务端编号」（市场 m.id / 本地 meta.id）对应，
+  // 本地文件标识（id）含时间戳后缀，不能直接拿来比对。
+  const localByServerId = useMemo(() => {
+    const map = new Map<string, HomepageEntry>()
+    for (const e of entries) if (e.meta.id) map.set(e.meta.id, e)
+    return map
+  }, [entries])
 
   // 切到本地模式时，联网相关的标签页自动退回「已安装」。
   useEffect(() => {
@@ -91,7 +116,7 @@ export function HomepagePage(): JSX.Element {
       const entry = await window.api.homepage.importFile()
       if (!entry) return
       await refresh()
-      setNotice({ kind: 'ok', text: `已导入脚本「${entry.meta.name || entry.id}」，点击「启用」前会先做安全检查` })
+      setNotice({ kind: 'ok', text: t('hp.notice.imported', { name: entry.meta.name || entry.id }) })
     } catch (err) {
       fail(err)
     }
@@ -116,7 +141,7 @@ export function HomepagePage(): JSX.Element {
       await window.api.homepage.remove(entry.id)
       await refresh()
       await reloadSettings()
-      setNotice({ kind: 'ok', text: `已删除「${entry.meta.name || entry.id}」` })
+      setNotice({ kind: 'ok', text: t('hp.notice.removed', { name: entry.meta.name || entry.id }) })
     } catch (err) {
       fail(err)
     } finally {
@@ -129,7 +154,7 @@ export function HomepagePage(): JSX.Element {
       await window.api.homepage.setActive('')
       await refresh()
       await reloadSettings()
-      setNotice({ kind: 'ok', text: '已切回内置「启动游戏」界面' })
+      setNotice({ kind: 'ok', text: t('hp.notice.deactivated') })
     } catch (err) {
       fail(err)
     }
@@ -142,7 +167,7 @@ export function HomepagePage(): JSX.Element {
       await refresh()
       await reloadSettings()
       setGateId(null)
-      setNotice({ kind: 'ok', text: '已启用自定义主页，「启动游戏」界面已由该脚本接管' })
+      setNotice({ kind: 'ok', text: t('hp.notice.activated') })
     } catch (err) {
       fail(err)
     }
@@ -150,13 +175,47 @@ export function HomepagePage(): JSX.Element {
 
   // 本地模式不联网：主页市场与投稿不可用。
   const isLocal = settings.mode === 'local'
+
+  /** 手动重新检查主页更新。 */
+  const checkUpdates = async (): Promise<void> => {
+    setChecking(true)
+    try {
+      await refreshHomepageUpdates()
+    } finally {
+      setChecking(false)
+    }
+  }
+
+  /** 更新某个脚本：下载最新版本覆盖安装，再刷新本地列表与可更新列表。 */
+  const update = async (u: HomepageUpdate): Promise<void> => {
+    setBusyId(u.localId)
+    try {
+      await window.api.homepage.update(u)
+      await refresh()
+      await refreshHomepageUpdates()
+      setNotice({
+        kind: 'ok',
+        text: t('hp.notice.updated', { name: u.name || u.id, version: u.latestVersion || t('hp.latestVersion') })
+      })
+    } catch (err) {
+      fail(err)
+    } finally {
+      setBusyId(null)
+    }
+  }
+
   const tabOptions: Array<{ value: Tab; label: string }> = [
-    { value: 'installed', label: `已安装 (${entries.length})` },
+    { value: 'installed', label: t('hp.tab.installed', { n: entries.length }) },
     ...(isLocal
       ? []
       : ([
-          { value: 'market', label: '主页市场' },
-          { value: 'submit', label: '投稿' }
+          {
+            value: 'updates',
+            label:
+              homepageUpdates.length > 0 ? t('hp.tab.updates', { n: homepageUpdates.length }) : t('hp.tab.updatesNone')
+          },
+          { value: 'market', label: t('hp.tab.market') },
+          { value: 'submit', label: t('hp.tab.submit') }
         ] as Array<{ value: Tab; label: string }>))
   ]
 
@@ -164,15 +223,15 @@ export function HomepagePage(): JSX.Element {
     <div className="flex h-full flex-col gap-5">
       <div className="flex items-end justify-between gap-4">
         <div>
-          <h1 className="display">主页</h1>
-          <p className="caption mt-1">用单文件 HTML 脚本替换「启动游戏」界面，或从主页市场安装</p>
+          <h1 className="display">{t('hp.title')}</h1>
+          <p className="caption mt-1">{t('hp.subtitle')}</p>
         </div>
         <div className="flex items-center gap-2">
           <Button icon="folder" onClick={() => void window.api.homepage.openDir().then(openFileManager)}>
-            脚本目录
+            {t('hp.openDir')}
           </Button>
           <Button icon="plus" onClick={() => void importLocal()}>
-            导入脚本
+            {t('hp.import')}
           </Button>
         </div>
       </div>
@@ -190,7 +249,7 @@ export function HomepagePage(): JSX.Element {
           >
             <Icon name={notice.kind === 'err' ? 'xmark' : 'info'} size={15} className="mt-0.5 shrink-0" />
             <span className="min-w-0 flex-1 break-all">{notice.text}</span>
-            <button className="shrink-0 opacity-60 no-drag" onClick={() => setNotice(null)} aria-label="关闭提示">
+            <button className="shrink-0 opacity-60 no-drag" onClick={() => setNotice(null)} aria-label={t('hp.noticeClose')}>
               <Icon name="xmark" size={14} />
             </button>
           </motion.div>
@@ -200,13 +259,13 @@ export function HomepagePage(): JSX.Element {
       <div className="min-h-0 flex-1 overflow-y-auto pb-2">
         {tab === 'installed' && (
           loading ? (
-            <LoadingState text="正在读取本地脚本…" />
+            <LoadingState text={t('hp.loading')} />
           ) : entries.length === 0 ? (
-            <Empty text="还没有安装任何主页脚本，可以导入本地 HTML 或到主页市场看看" />
+            <Empty text={t('hp.empty')} />
           ) : (
             <div className="grid grid-cols-1 gap-3 xl:grid-cols-2">
               {entries.map((e, i) => {
-                const rb = riskBadge(e.risk.level)
+                const rb = riskBadge(e.risk.level, t)
                 const active = settings.homepageId === e.id
                 return (
                   <motion.div
@@ -222,26 +281,32 @@ export function HomepagePage(): JSX.Element {
                           <span className="truncate text-[15px] font-semibold">{e.meta.name || e.id}</span>
                           {active && (
                             <span className="chip shrink-0" style={{ color: 'var(--fill-primary)' }}>
-                              使用中
+                              {t('hp.inUse')}
                             </span>
                           )}
                         </div>
                         <div className="caption mt-0.5 truncate">
-                          {e.meta.author || '未知作者'}
+                          {e.meta.author || t('hp.unknownAuthor')}
                           {e.meta.version ? ` · v${e.meta.version}` : ''}
-                          {e.meta.id ? ` · ${e.meta.id}` : ' · 无编号'}
+                          {e.meta.id ? ` · ${e.meta.id}` : ` · ${t('hp.noNumber')}`}
                         </div>
                       </div>
                       <div className="flex shrink-0 flex-col items-end gap-1">
                         {e.blocked && (
                           <span className="chip" style={{ color: 'var(--fill-danger)' }}>
-                            已封锁
+                            {t('hp.blocked')}
                           </span>
                         )}
                         <span className="chip" style={{ color: rb.color }}>
                           {rb.text}
                         </span>
-                        <span className="caption">{verifyBadge(e.verify)}</span>
+                        <span className="caption">
+                          {/* 有线上新版本时优先显示「可更新」：哈希不一致多半只是本地过期，
+                              不宜直接标为「不一致」吓到用户（与运行前闸门的判定保持一致）。 */}
+                          {homepageUpdates.some((u) => u.localId === e.id)
+                            ? t('hp.verify.outdated')
+                            : verifyBadge(e.verify, t)}
+                        </span>
                       </div>
                     </div>
 
@@ -256,7 +321,7 @@ export function HomepagePage(): JSX.Element {
                       </div>
                     )}
                     {e.risk.level === 'warn' && e.risk.externals.length > 0 && (
-                      <div className="caption">含 {e.risk.externals.length} 个外部地址，运行前会逐条列出</div>
+                      <div className="caption">{t('hp.externalCount', { n: e.risk.externals.length })}</div>
                     )}
 
                     <div className="mt-auto flex items-center justify-between gap-2">
@@ -266,7 +331,7 @@ export function HomepagePage(): JSX.Element {
                       <div className="flex items-center gap-2">
                         {active ? (
                           <Button size="sm" onClick={() => void deactivate()}>
-                            停用
+                            {t('hp.disable')}
                           </Button>
                         ) : (
                           <Button
@@ -275,11 +340,11 @@ export function HomepagePage(): JSX.Element {
                             disabled={e.risk.level === 'reject' || busyId === e.id}
                             onClick={() => setGateId(e.id)}
                           >
-                            启用
+                            {t('hp.enable')}
                           </Button>
                         )}
                         <Button size="sm" variant="danger" icon="trash" disabled={busyId === e.id} onClick={() => void remove(e)}>
-                          删除
+                          {t('hp.remove')}
                         </Button>
                       </div>
                     </div>
@@ -290,44 +355,138 @@ export function HomepagePage(): JSX.Element {
           )
         )}
 
-        {tab === 'market' && (
-          market === null ? (
-            <LoadingState text="正在拉取主页市场…" />
-          ) : market.length === 0 ? (
-            <Empty text="主页市场暂时没有可安装的脚本" />
-          ) : (
-            <div className="grid grid-cols-1 gap-3 xl:grid-cols-2">
-              {market.map((m, i) => (
-                <motion.div
-                  key={m.id}
-                  initial={{ opacity: 0, y: 10 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  transition={{ delay: Math.min(i * 0.03, 0.2), type: 'spring', bounce: 0, duration: 0.35 }}
-                  className="glass flex flex-col gap-2 rounded-[24px] p-4"
-                >
-                  <div className="flex items-start justify-between gap-3">
-                    <div className="min-w-0">
-                      <div className="truncate text-[15px] font-semibold">{m.name || m.id}</div>
-                      <div className="caption mt-0.5 truncate">
-                        {m.author || '未知作者'}
-                        {m.version ? ` · v${m.version}` : ''} · {m.id}
+        {tab === 'updates' && (
+          <div className="flex flex-col gap-3">
+            <div className="flex items-center justify-between gap-3">
+              <p className="caption">
+                {t('hp.updates.hint')}
+              </p>
+              <Button size="sm" icon="refresh" disabled={checking} onClick={() => void checkUpdates()}>
+                {checking ? t('hp.updates.checking') : t('hp.updates.check')}
+              </Button>
+            </div>
+            {homepageUpdates.length === 0 ? (
+              <Empty
+                text={
+                  checking
+                    ? t('hp.updates.checkingList')
+                    : settings.autoCheckHomepageUpdate
+                      ? t('hp.updates.upToDate')
+                      : t('hp.updates.autoOff')
+                }
+              />
+            ) : (
+              <div className="grid grid-cols-1 gap-3 xl:grid-cols-2">
+                {homepageUpdates.map((u, i) => (
+                  <motion.div
+                    key={u.localId}
+                    initial={{ opacity: 0, y: 10 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ delay: Math.min(i * 0.03, 0.2), type: 'spring', bounce: 0, duration: 0.35 }}
+                    className="glass flex flex-col gap-3 rounded-[24px] p-4"
+                  >
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-2">
+                          <span className="truncate text-[15px] font-semibold">{u.name || u.id}</span>
+                          <span className="chip shrink-0" style={{ color: 'var(--fill-primary)' }}>
+                            {t('hp.updates.badge')}
+                          </span>
+                        </div>
+                        <div className="caption mt-0.5 truncate">
+                          {u.author || t('hp.unknownAuthor')} · {u.id}
+                        </div>
+                      </div>
+                      <div className="flex shrink-0 flex-col items-end gap-1">
+                        <span className="caption">
+                          v{u.localVersion || '?'} → v{u.latestVersion || '?'}
+                        </span>
+                        {u.updatedAt > 0 && (
+                          <span className="caption">{new Date(u.updatedAt).toLocaleDateString()}</span>
+                        )}
                       </div>
                     </div>
-                    <span className="chip shrink-0">{m.downloads} 次下载</span>
-                  </div>
-                  {m.description && <p className="caption line-clamp-2">{m.description}</p>}
-                  <Button
-                    size="sm"
-                    variant="primary"
-                    icon="download"
-                    className="mt-auto self-start"
-                    disabled={busyId === m.id}
-                    onClick={() => void installFromMarket(m)}
+                    <div className="mt-auto flex items-center justify-end gap-2">
+                      <Button
+                        size="sm"
+                        variant="primary"
+                        icon="download"
+                        disabled={busyId === u.localId}
+                        onClick={() => void update(u)}
+                      >
+                        {busyId === u.localId ? t('hp.updates.updating') : t('hp.updates.update')}
+                      </Button>
+                    </div>
+                  </motion.div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
+        {tab === 'market' && (
+          market === null ? (
+            <LoadingState text={t('hp.market.loading')} />
+          ) : market.length === 0 ? (
+            <Empty text={t('hp.market.empty')} />
+          ) : (
+            <div className="grid grid-cols-1 gap-3 xl:grid-cols-2">
+              {market.map((m, i) => {
+                // 三态：未装 → 安装；已装且非最新 → 更新；已装且最新 → 已安装。
+                // 「最新」判据与主进程 checkHomepageUpdates 一致：服务端 SHA256 与本地相同。
+                const local = localByServerId.get(m.id)
+                const upToDate = !!local && !!m.sha256 && m.sha256.toLowerCase() === local.sha256.toLowerCase()
+                const hasUpdate = !!local && !local.blocked && !upToDate
+                const busy = busyId === m.id || (!!local && busyId === local.id)
+                return (
+                  <motion.div
+                    key={m.id}
+                    initial={{ opacity: 0, y: 10 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ delay: Math.min(i * 0.03, 0.2), type: 'spring', bounce: 0, duration: 0.35 }}
+                    className="glass flex flex-col gap-2 rounded-[24px] p-4"
                   >
-                    安装
-                  </Button>
-                </motion.div>
-              ))}
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <div className="truncate text-[15px] font-semibold">{m.name || m.id}</div>
+                        <div className="caption mt-0.5 truncate">
+                          {m.author || t('hp.unknownAuthor')}
+                          {m.version ? ` · v${m.version}` : ''} · {m.id}
+                        </div>
+                      </div>
+                      <span className="chip shrink-0">{t('hp.market.downloads', { n: m.downloads })}</span>
+                    </div>
+                    {m.description && <p className="caption line-clamp-2">{m.description}</p>}
+                    {local && !hasUpdate ? (
+                      <Button size="sm" icon="check" className="mt-auto self-start" disabled>
+                        {t('hp.market.installed')}
+                      </Button>
+                    ) : hasUpdate ? (
+                      <Button
+                        size="sm"
+                        variant="primary"
+                        icon="refresh"
+                        className="mt-auto self-start"
+                        disabled={busy}
+                        onClick={() => local && void update(marketUpdate(m, local))}
+                      >
+                        {t('hp.updates.update')}
+                      </Button>
+                    ) : (
+                      <Button
+                        size="sm"
+                        variant="primary"
+                        icon="download"
+                        className="mt-auto self-start"
+                        disabled={busy}
+                        onClick={() => void installFromMarket(m)}
+                      >
+                        {t('hp.market.install')}
+                      </Button>
+                    )}
+                  </motion.div>
+                )
+              })}
             </div>
           )
         )}
@@ -357,6 +516,7 @@ function Empty({ text }: { text: string }): JSX.Element {
 
 /** 投稿：选脚本 → 填信息 → 提交（服务端分配编号并回传已编号脚本）。 */
 function SubmitPane({ onDone }: { onDone: () => void }): JSX.Element {
+  const { t } = useApp()
   const [draft, setDraft] = useState<{
     entryId: string
     filename: string
@@ -385,7 +545,7 @@ function SubmitPane({ onDone }: { onDone: () => void }): JSX.Element {
   const sendCode = async (): Promise<void> => {
     const to = email.trim()
     if (!to) {
-      setCodeHint('请先填写开发者邮箱')
+      setCodeHint(t('hp.submit.needEmail'))
       return
     }
     setSending(true)
@@ -393,7 +553,7 @@ function SubmitPane({ onDone }: { onDone: () => void }): JSX.Element {
     try {
       const res = await window.api.homepage.sendEmailCode(to)
       setCooldown(res.cooldown > 0 ? res.cooldown : 60)
-      setCodeHint(`验证码已发送，${Math.round(res.ttl / 60) || 10} 分钟内有效，请查收邮件（含垃圾箱）`)
+      setCodeHint(t('hp.submit.codeSent', { n: Math.round(res.ttl / 60) || 10 }))
     } catch (err) {
       setCodeHint(err instanceof Error ? err.message : String(err))
     } finally {
@@ -428,7 +588,7 @@ function SubmitPane({ onDone }: { onDone: () => void }): JSX.Element {
       const src = await window.api.homepage.read(draft.entryId)
       // 服务端要把编号注入元信息块，缺块无法分配编号。
       if (!/<!--\s*@hcpage/i.test(src.content)) {
-        throw new Error('脚本缺少元信息块 <!--@hcpage { … } -->，服务端无法注入编号，请补全后再投稿')
+        throw new Error(t('hp.submit.missingMeta'))
       }
       const res = await window.api.homepage.submit({
         filename: draft.filename,
@@ -460,24 +620,25 @@ function SubmitPane({ onDone }: { onDone: () => void }): JSX.Element {
   return (
     <div className="glass flex flex-col gap-4 rounded-[24px] p-5">
       <div>
-        <div className="headline">自助投稿</div>
+        <div className="headline">{t('hp.submit.headline')}</div>
         <p className="caption mt-1">
-          提交后由服务端分配编号（HC-XXXXXX）并计算 SHA256，同时把编号注入脚本。公开投稿将长期保留在服务端；
-          私密投稿审核通过后服务端会删除文件，脚本只保存在你的本地。
-          投稿前需绑定开发者邮箱并通过邮件验证码验证，审核结果会发到该邮箱，通过后邮件里会附上永久管理链接
-          （可随时下架 / 提交更新 / 变更公开与私密）。
+          {t('hp.submit.intro')}
         </p>
       </div>
 
       {result && (
         <div className="glass-soft rounded-2xl px-3.5 py-3 text-[13px]">
-          <div className="font-semibold">投稿已提交（{result.visibility === 'public' ? '公开' : '私密'}）</div>
+          <div className="font-semibold">
+            {t('hp.submit.submitted', {
+              visibility: result.visibility === 'public' ? t('hp.submit.public') : t('hp.submit.private')
+            })}
+          </div>
           <div className="caption mt-1 selectable break-all">
-            编号 {result.id} · SHA256 {result.sha256.slice(0, 16)}…
+            {t('hp.submit.resultMeta', { id: result.id, sha: result.sha256.slice(0, 16) })}
           </div>
           <div className="caption mt-1">
-            已编号脚本已保存到本地，启用前仍会联网核对编号与哈希。
-            {result.visibility === 'private' && ' 私密投稿需等待后台审核；审核后服务端会删除文件。'}
+            {t('hp.submit.saved')}
+            {result.visibility === 'private' && ` ${t('hp.submit.privateNote')}`}
           </div>
         </div>
       )}
@@ -490,23 +651,23 @@ function SubmitPane({ onDone }: { onDone: () => void }): JSX.Element {
 
       {!draft ? (
         <Button icon="plus" className="self-start" onClick={() => void pick()}>
-          选择脚本文件
+          {t('hp.submit.pick')}
         </Button>
       ) : (
         <div className="flex flex-col gap-3">
-          <Field label="脚本文件">
+          <Field label={t('hp.submit.fieldFile')}>
             <span className="text-[13px] opacity-70">{draft.filename}</span>
           </Field>
-          <Field label="名称">
+          <Field label={t('hp.submit.fieldName')}>
             <input className="input w-full" value={draft.name} onChange={(e) => setDraft({ ...draft, name: e.target.value })} />
           </Field>
-          <Field label="作者">
+          <Field label={t('hp.submit.fieldAuthor')}>
             <input className="input w-full" value={draft.author} onChange={(e) => setDraft({ ...draft, author: e.target.value })} />
           </Field>
-          <Field label="版本">
+          <Field label={t('hp.submit.fieldVersion')}>
             <input className="input w-full" value={draft.version} onChange={(e) => setDraft({ ...draft, version: e.target.value })} />
           </Field>
-          <Field label="简介">
+          <Field label={t('hp.submit.fieldDescription')}>
             <textarea
               className="input w-full resize-none"
               rows={3}
@@ -514,22 +675,22 @@ function SubmitPane({ onDone }: { onDone: () => void }): JSX.Element {
               onChange={(e) => setDraft({ ...draft, description: e.target.value })}
             />
           </Field>
-          <Field label="可见性">
+          <Field label={t('hp.submit.fieldVisibility')}>
             <Segmented<'public' | 'private'>
               value={visibility}
               onChange={setVisibility}
               options={[
-                { value: 'public', label: '公开（服务端长期保留）' },
-                { value: 'private', label: '私密（审核后删除）' }
+                { value: 'public', label: t('hp.submit.visPublic') },
+                { value: 'private', label: t('hp.submit.visPrivate') }
               ]}
             />
           </Field>
-          <Field label="开发者邮箱（必填）">
+          <Field label={t('hp.submit.fieldEmail')}>
             <div className="flex gap-2">
               <input
                 className="input w-full"
                 type="email"
-                placeholder="用于接收验证码 / 审核结果 / 永久管理链接"
+                placeholder={t('hp.submit.emailPlaceholder')}
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
               />
@@ -538,16 +699,20 @@ function SubmitPane({ onDone }: { onDone: () => void }): JSX.Element {
                 disabled={sending || cooldown > 0 || !email.trim()}
                 onClick={() => void sendCode()}
               >
-                {cooldown > 0 ? `${cooldown}s 后重发` : sending ? '发送中…' : '发送验证码'}
+                {cooldown > 0
+                  ? t('hp.submit.resend', { n: cooldown })
+                  : sending
+                    ? t('hp.submit.sending')
+                    : t('hp.submit.sendCode')}
               </Button>
             </div>
           </Field>
-          <Field label="邮箱验证码（6 位数字）">
+          <Field label={t('hp.submit.fieldCode')}>
             <input
               className="input w-full"
               inputMode="numeric"
               maxLength={6}
-              placeholder="请查收邮件并填入 6 位验证码"
+              placeholder={t('hp.submit.codePlaceholder')}
               value={code}
               onChange={(e) => setCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
             />
@@ -555,14 +720,14 @@ function SubmitPane({ onDone }: { onDone: () => void }): JSX.Element {
           {codeHint && <div className="caption -mt-1">{codeHint}</div>}
           <div className="flex gap-2">
             <Button onClick={() => setDraft(null)} disabled={busy}>
-              取消
+              {t('hp.submit.cancel')}
             </Button>
             <Button
               variant="primary"
               disabled={busy || !draft.name.trim() || !email.trim() || !/^\d{6}$/.test(code.trim())}
               onClick={() => void submit()}
             >
-              {busy ? '提交中…' : '提交投稿'}
+              {busy ? t('hp.submit.submitting') : t('hp.submit.submit')}
             </Button>
           </div>
         </div>

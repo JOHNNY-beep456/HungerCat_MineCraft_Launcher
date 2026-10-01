@@ -26,6 +26,25 @@ export interface MinecraftAccount {
   clientToken?: string
 }
 
+/** 第三方（Yggdrasil）登录时，供「多角色选择」弹窗展示的角色项。 */
+export interface YggdrasilProfileOption {
+  /** 角色 UUID（已去连字符）。 */
+  id: string
+  name: string
+  skinUrl?: string
+  skinModel?: 'classic' | 'slim'
+}
+
+/**
+ * 第三方登录结果：
+ * - 单角色：直接返回可用账号；
+ * - 多角色：返回待选角色列表，由界面弹窗选择（可多选）后再提交。
+ */
+export interface YggdrasilLoginOutcome {
+  account?: MinecraftAccount
+  profiles?: YggdrasilProfileOption[]
+}
+
 export interface DeviceCodeInfo {
   userCode: string
   deviceCode: string
@@ -147,6 +166,16 @@ export interface SystemMemoryInfo {
   free: number
 }
 
+/** 系统硬件信息：用于首次启动的「低配电脑」判定（超低占用模式自动开启）。 */
+export interface SystemHardwareInfo {
+  /** 逻辑 CPU 核心数。 */
+  cpuCores: number
+  /** 物理内存总量（单位 MB）。 */
+  totalMemMb: number
+  /** 是否判定为低配电脑（2010 年代老机器）：核心数或内存低于阈值。 */
+  lowEnd: boolean
+}
+
 export interface LaunchOptions {
   versionId: string
   accountId: string
@@ -175,6 +204,37 @@ export interface InstalledVersion {
   servers: Array<{ name: string; address: string }>
 }
 
+/** 从外部 .minecraft 目录扫描到的可导入版本。 */
+export interface ExternalVersion {
+  id: string
+  /** 基础 Minecraft 版本（尽力解析）。 */
+  mcVersion: string
+  /** 模组加载器；原版为 null。 */
+  loader: string | null
+  /** 版本目录大小（字节）。 */
+  size: number
+  /** 当前版本目录中是否已存在同名版本。 */
+  conflict: boolean
+}
+
+/** 导入重名版本时的处理策略。 */
+export type ConflictPolicy = 'rename' | 'overwrite' | 'skip'
+
+/**
+ * 版本目录：一个独立的「版本列表根目录」，内含各自的 versions/ 与运行目录。
+ * 默认目录来自设置页的 gameDir，其余由用户在实例页 / 主页添加，可设别名。
+ */
+export interface VersionDir {
+  /** 稳定 id（默认目录固定为 'default'）。 */
+  id: string
+  /** 别名（界面展示用）；为空时回退到目录名。 */
+  alias: string
+  /** 版本列表根目录的绝对路径。 */
+  path: string
+  /** 是否为「默认版本列表目录」（来自设置页的 gameDir，不可删除）。 */
+  isDefault?: boolean
+}
+
 export interface ModEntry {
   name: string
   path: string
@@ -188,6 +248,10 @@ export interface ModEntry {
   slug?: string
   /** Modrinth 项目简介，命中时才有。 */
   description?: string
+  /** 元数据来源；缺省为 Modrinth。 */
+  source?: ModSource
+  /** 项目主页地址（见 ModrinthProject.pageUrl）。 */
+  pageUrl?: string
 }
 
 export interface SchematicEntry {
@@ -223,14 +287,28 @@ export interface LaunchEvent {
 
 export interface LauncherSettings {
   theme: 'light' | 'dark' | 'system'
+  /** 界面语言：简体中文（默认）/ 繁体中文 / 英语。 */
+  language: 'zh-CN' | 'zh-TW' | 'en'
   memoryMb: number
   maxDownloadConcurrency: number
   mirror: 'mojang' | 'bmclapi'
+  /** 默认版本列表目录（原「游戏目录」）。 */
   gameDir: string
+  /** 额外的版本目录（不含默认目录）；可设别名，实例页与主页可切换。 */
+  versionDirs: VersionDir[]
+  /** 当前选中的版本目录 id；空串表示默认目录（gameDir）。 */
+  selectedVersionDirId: string
   javaAutoDetect: boolean
   javaPath?: string
   closeOnLaunch: boolean
   reducedMotion: boolean
+  /**
+   * 超低占用模式：为 2010 年代老电脑设计。在不改变界面 / 动画 / 功能的前提下，
+   * 降低后台持续开销（窗口不可见时暂停动画与轮询、延长刷新间隔、关闭鼠标光晕）。
+   */
+  lowUsageMode: boolean
+  /** 是否已完成首次启动的硬件检测（保证低配提醒只出现一次）。 */
+  hardwareChecked: boolean
   /** Each version gets its own isolated game directory (saves/mods/config). */
   versionIsolation: boolean
   /** Custom accent color (hex). */
@@ -242,6 +320,21 @@ export interface LauncherSettings {
    * 选图时先把图片复制进 userData 再只存文件名，避免原路径失效。
    */
   backgroundImage: string
+  /**
+   * 实验性（默认关闭）：设置自定义壁纸后，界面明暗按壁纸整体色调自动切换
+   * （偏暗的壁纸 → 深色界面，偏亮的壁纸 → 浅色界面）。未设壁纸或采样失败时，
+   * 仍由 theme 决定。与实验性界面皮肤相互独立。
+   */
+  autoThemeFromWallpaper: boolean
+  /**
+   * MC 游戏窗口尺寸：720P / 1080P / 最大化（铺满工作区）/ 全屏 / 自定义。
+   * 桌面模式（experimental = 'win10'）下强制按「全屏」处理。
+   */
+  gameWindowSize: '720p' | '1080p' | 'maximized' | 'fullscreen' | 'custom'
+  /** 自定义游戏窗口宽（仅 gameWindowSize === 'custom' 时生效），逻辑像素。 */
+  gameWindowWidth: number
+  /** 自定义游戏窗口高（仅 gameWindowSize === 'custom' 时生效），逻辑像素。 */
+  gameWindowHeight: number
   /** 运行模式：normal 普通 / local 本地（关闭联网功能）/ minimal 极简（UI 二维化）。 */
   mode: 'normal' | 'local' | 'minimal'
   /** Version ids the user has disabled. */
@@ -269,6 +362,53 @@ export interface LauncherSettings {
    * 用单一字段表达「相斥」，避免多个布尔同时为真。
    */
   experimental: 'off' | 'mica' | 'mac' | 'win10'
+  /**
+   * 开发模式授权到期时间（epoch ms，0 = 未授权）。
+   * 需在后台白名单内的邮箱通过验证码验证后才能获得，有效期 1 天；
+   * 到期自动关闭，再次开启需重新验证邮箱。
+   */
+  devModeGrantedUntil: number
+  /** 开发模式授权令牌（服务端签发，用于查询状态 / 解除授权）。 */
+  devModeToken: string
+  /** 授权邮箱的掩码展示形式（如 a***@example.com），仅用于界面显示。 */
+  devModeEmailMasked: string
+  /** 开发模式当前是否开启（仅在授权有效期内可自由开关）。 */
+  devModeEnabled: boolean
+  /**
+   * 开发模式下的主页安全防护档位：
+   *   full 完全模拟（默认，拦截危险操作）
+   *   warn 仅提示不阻止（照常执行但提示真实情况）
+   *   off  完全关闭（不做任何安全检查）
+   */
+  devModeSecurityMode: 'full' | 'warn' | 'off'
+  /**
+   * 启动时自动检查启动器更新（默认开启）。
+   * 关闭后仅在设置页手动点「检测更新」时才检查。
+   */
+  autoCheckLauncherUpdate: boolean
+  /**
+   * 每次进入启动器自动检查已安装的联网校验主页是否有更新（默认开启）。
+   * 关闭后不自动检查，「主页 → 可更新」栏也不显示自动结果。
+   */
+  autoCheckHomepageUpdate: boolean
+  /**
+   * 实验性（默认关闭）：自动翻译资源名与简介。
+   * 开启后经免费在线翻译接口即时翻译（会联网）；本地模式下不翻译。
+   */
+  autoTranslateResources: boolean
+  /**
+   * 自动翻译的子选项：是否翻译资源名（模组 / 资源包 / 光影的名称）。
+   * 仅在 autoTranslateResources 开启时生效，默认开启；关闭后只翻译简介与正文。
+   */
+  translateResourceNames: boolean
+  /**
+   * 是否已保存 uapis.cn 的 API KEY。
+   *
+   * 这是**派生状态**，不是持久字段：真实 KEY 由主进程经系统安全存储加密保存，
+   * 既不下发到渲染层，也不写入 settings.json，所以这里只暴露「有没有」。
+   * 访客额度的限额更低，填了 KEY 后翻译并发会相应提高。
+   */
+  uapisApiKeySet: boolean
 }
 
 /* ------------------------------------------------------------------ */
@@ -362,30 +502,6 @@ export interface ModpackExportOptions {
 }
 
 /* ------------------------------------------------------------------ */
-/* 实验性 Win10 桌面：外部窗口捕获（Windows 专用）                        */
-/* ------------------------------------------------------------------ */
-
-/** 矩形：x/y/w/h，单位为设备像素（相对宿主窗口客户区）。 */
-export interface NativeWindowRect {
-  x: number
-  y: number
-  w: number
-  h: number
-}
-
-/** 被摆进启动器桌面的外部窗口（MC / 文件资源管理器）。 */
-export interface NativeWindowInfo {
-  /** 窗口句柄（十进制字符串） */
-  id: string
-  title: string
-  /** 可执行文件名，如 javaw.exe / explorer.exe */
-  exe: string
-  kind: 'minecraft' | 'explorer'
-  /** 是否已经摆进启动器桌面 */
-  placed: boolean
-}
-
-/* ------------------------------------------------------------------ */
 /* 启动器自实现的资源管理器（替代打开系统资源管理器）                     */
 /* ------------------------------------------------------------------ */
 
@@ -433,6 +549,11 @@ export interface UpdateCheckResult {
   /** 服务端发布的最新版本信息；服务端不可达时为 null。 */
   latest: UpdateInfo | null
   hasUpdate: boolean
+  /**
+   * 服务端最新版本是否为测试版（版本号带 `-` 后缀，如 0.5.0-dev1）。
+   * 为 true 时启动自动检查不弹提示（仍可由设置页手动检查 / 安装）。
+   */
+  latestIsPrerelease: boolean
 }
 
 export type LoaderKind = 'fabric' | 'quilt'
@@ -442,6 +563,16 @@ export type ForgeKind = 'forge' | 'neoforge'
 
 /** Modrinth project types we surface in the UI. */
 export type ModrinthType = 'mod' | 'resourcepack' | 'shader' | 'modpack'
+
+/**
+ * 资源来源。缺省（undefined）视为 Modrinth；CurseForge 的结果会显式标注。
+ * 之所以用可选字段而不是必填：Modrinth 的 DTO 由网络进程构造，路径很长，
+ * 让「只有新增来源才需要标注」可以把改动面压到最小。
+ */
+export type ModSource = 'modrinth' | 'curseforge'
+
+/** 资源下载页的来源筛选。 */
+export type SourceFilter = 'all' | 'modrinth' | 'curseforge'
 
 /** Folder names inside a game directory. */
 export type ResourceKind = 'resourcepacks' | 'shaderpacks'
@@ -458,6 +589,10 @@ export interface ResourceFile {
   slug?: string
   /** Modrinth 项目简介，命中时才有。 */
   description?: string
+  /** 元数据来源；缺省为 Modrinth。 */
+  source?: ModSource
+  /** 项目主页地址（见 ModrinthProject.pageUrl）。 */
+  pageUrl?: string
 }
 
 /** 后台补齐已安装光影 / 资源包 Modrinth 元数据时的推送载荷。 */
@@ -465,6 +600,41 @@ export interface ResourceUpdated {
   versionId: string
   kind: ResourceKind
   file: ResourceFile
+}
+
+/** 可检测更新的资源类型：模组 / 资源包 / 光影。 */
+export type UpdateKind = 'mod' | 'resourcepack' | 'shader'
+
+/**
+ * 单个资源的更新检测结果。
+ *
+ * **只在「能确认本地文件确实来自该项目、且该项目有更新的兼容版本」时才产生**：
+ * 认错项目会导致更新时删掉用户的资源，所以定位不到本地版本时一律不报（见 resource-updates.ts）。
+ */
+export interface ResourceUpdateInfo {
+  /** 本地文件绝对路径；与 ModEntry.path / ResourceFile.path 一致，作为界面 key。 */
+  path: string
+  kind: UpdateKind
+  /** 本地当前版本号（能从版本列表里定位到时才有）。 */
+  currentVersion: string
+  /** Modrinth 上最新的兼容版本号。 */
+  latestVersion: string
+  /** 最新版本的下载文件（primary 优先）。 */
+  fileUrl: string
+  filename: string
+  size: number
+  /** Modrinth 项目 slug。 */
+  slug: string
+  /** Modrinth 项目标题。 */
+  title: string
+}
+
+/** 更新检测的增量推送：每判定完一项推送一次；update 为 null 表示该项无更新 / 无法判断。 */
+export interface ResourceUpdateEvent {
+  versionId: string
+  path: string
+  kind: UpdateKind
+  update: ResourceUpdateInfo | null
 }
 
 export interface ModrinthProject {
@@ -475,6 +645,32 @@ export interface ModrinthProject {
   downloads: number
   categories: string[]
   project_type: string
+  /** 来源；缺省为 Modrinth。 */
+  source?: ModSource
+  /**
+   * 项目主页地址。CurseForge 是 curseforge.com/…，Modrinth 由界面按类型拼；
+   * 有这个字段时界面优先用它，避免把 CurseForge 项目链到 modrinth.com。
+   */
+  pageUrl?: string
+  /** 是否允许第三方渠道下载（CurseForge 的 allowModDistribution；false = 只能去官网下）。 */
+  downloadable?: boolean
+}
+
+/** Modrinth 单个项目的完整信息（含 body 完整介绍，用于「完整介绍」弹窗）。 */
+export interface ModrinthProjectDetail {
+  slug: string
+  title: string
+  description: string
+  /** 完整介绍正文（Markdown）。 */
+  body: string
+  icon_url?: string
+  downloads: number
+  categories: string[]
+  project_type: string
+  /** 来源；缺省为 Modrinth。 */
+  source?: ModSource
+  /** 项目主页地址（见 ModrinthProject.pageUrl）。 */
+  pageUrl?: string
 }
 
 /** Modrinth 搜索分页结果。 */
@@ -482,6 +678,18 @@ export interface ModrinthSearchResult {
   hits: ModrinthProject[]
   /** 搜索结果总数（用于判断是否还有更多可加载）。 */
   totalHits: number
+}
+
+/** Modrinth 版本声明的依赖项。 */
+export interface ModrinthDependency {
+  /** 依赖的具体版本 id；null 表示不限版本，取适配的任意版本。 */
+  version_id: string | null
+  /** 依赖的项目 id。 */
+  project_id: string | null
+  /** 依赖的文件名（部分条目提供）。 */
+  file_name: string | null
+  /** required=必需前置；optional=可选；incompatible=互斥；embedded=已内嵌。 */
+  dependency_type: 'required' | 'optional' | 'incompatible' | 'embedded'
 }
 
 export interface ModrinthVersion {
@@ -493,6 +701,14 @@ export interface ModrinthVersion {
   downloads: number
   date_published?: string
   files: Array<{ url: string; filename: string; primary: boolean; size: number }>
+  /** 依赖声明；required 项在安装到实例时需检查是否已有前置。 */
+  dependencies?: ModrinthDependency[]
+  /** 来源；缺省为 Modrinth。 */
+  source?: ModSource
+  /** 是否可在启动器内直接下载（CurseForge 禁止分发时为 false）。 */
+  downloadable?: boolean
+  /** 文件页地址（禁止分发时用于跳转官网）。 */
+  pageUrl?: string
 }
 
 /* ------------------------------------------------------------------ */
@@ -580,6 +796,15 @@ export interface HomepageVerifyResult {
   message: string
   /** 服务端查无此编号（未上架 / 已下架 / 私密）；与「哈希不一致」需分别提示。 */
   notFound?: boolean
+  /**
+   * 哈希不一致、但线上存在新版本：说明只是本地版本过期，而非脚本被篡改。
+   * 界面应优先引导更新；只有确认没有新版本时才按「哈希不一致」拒绝运行。
+   */
+  outdated?: boolean
+  /** 存在新版本时的本地版本号（用于提示「v旧 → v新」）。 */
+  localVersion?: string
+  /** 存在新版本时的线上最新版本号。 */
+  latestVersion?: string
 }
 
 /** 主页市场条目（服务端下发）。 */
@@ -596,6 +821,26 @@ export interface MarketScript {
   updatedAt: number
   /** 服务端上的脚本下载地址。 */
   url: string
+}
+
+/** 主页「可更新」检测结果：某个已安装脚本在服务端有更新版本。 */
+export interface HomepageUpdate {
+  /** 本地已安装脚本的标识（HomepageEntry.id）。 */
+  localId: string
+  /** 服务端编号（HC-XXXXXX）。 */
+  id: string
+  name: string
+  author: string
+  /** 本地已安装版本号。 */
+  localVersion: string
+  /** 服务端最新版本号。 */
+  latestVersion: string
+  /** 服务端最新脚本 SHA256（与本地不同即视为有更新）。 */
+  latestSha256: string
+  /** 服务端上的下载地址。 */
+  url: string
+  /** 服务端更新时间（epoch ms）。 */
+  updatedAt: number
 }
 
 /** 投稿内容（启动器内自助投稿）。 */
@@ -621,6 +866,43 @@ export interface HomepageEmailCodeResult {
   ttl: number
   /** 重新发送的冷却时间（秒）。 */
   cooldown: number
+}
+
+/* ------------------------------------------------------------------ */
+/* 开发模式                                                             */
+/* ------------------------------------------------------------------ */
+
+/** 开发模式当前状态（供设置页渲染）。 */
+export interface DevModeStatus {
+  /** 是否有仍在有效期内的授权（未到期且未解除）。 */
+  granted: boolean
+  /** 授权到期时间（epoch ms，0 = 无）。 */
+  expiresAt: number
+  /** 开发模式是否开启（granted 为 false 时恒为 false）。 */
+  enabled: boolean
+  /** 掩码后的授权邮箱，用于展示（如 a***@example.com）。 */
+  emailMasked: string
+  /** 用户选择的档位（即使未授权也保留，便于下次验证后沿用）。 */
+  securityMode: 'full' | 'warn' | 'off'
+  /** 实际生效的档位：开发模式未开启时恒为 'full'。 */
+  effectiveSecurityMode: 'full' | 'warn' | 'off'
+}
+
+/** 开发模式验证码发送结果。 */
+export interface DevModeCodeResult {
+  ok: boolean
+  /** 验证码有效期（秒）。 */
+  ttl: number
+  /** 重新发送的冷却时间（秒）。 */
+  cooldown: number
+}
+
+/** 开发模式验证结果。 */
+export interface DevModeVerifyResult {
+  ok: boolean
+  /** 授权到期时间（epoch ms）。 */
+  expiresAt: number
+  error?: string
 }
 
 /** 投稿结果。 */
@@ -661,15 +943,38 @@ export interface LauncherApi {
     remove: (id: string) => Promise<MinecraftAccount[]>
     select: (id: string) => Promise<MinecraftAccount | null>
     addOffline: (name: string) => Promise<MinecraftAccount>
-    addYggdrasil: (server: string, email: string, password: string) => Promise<MinecraftAccount>
+    /** 第三方登录：单角色直接返回账号；多角色返回待选角色列表。 */
+    addYggdrasil: (server: string, email: string, password: string) => Promise<YggdrasilLoginOutcome>
+    /** 提交多角色选择结果，批量创建账号（返回新建的账号列表）。 */
+    addYggdrasilProfiles: (ids: string[]) => Promise<MinecraftAccount[]>
   }
   versions: {
     list: () => Promise<VersionManifest>
     get: (id: string) => Promise<VersionJson>
     createVanilla: (baseVersion: string, customName: string) => Promise<void>
+    /** 扫描外部 .minecraft 目录中的可导入版本（标注重名）。 */
+    scanExternal: (mcDir: string) => Promise<ExternalVersion[]>
+    /** 从外部 .minecraft 导入指定版本；重名按 onConflict 策略处理。 */
+    importExternal: (
+      mcDir: string,
+      versionId: string,
+      onConflict: ConflictPolicy
+    ) => Promise<{ id: string; action: 'imported' | 'renamed' | 'skipped' }>
   }
   installed: {
     list: () => Promise<InstalledVersion[]>
+  }
+  versionDirs: {
+    /** 列出全部版本目录（首项恒为默认目录，isDefault=true）。 */
+    list: () => Promise<VersionDir[]>
+    /** 添加一个版本目录（可带别名）；返回最新列表。 */
+    add: (input: { path: string; alias?: string }) => Promise<VersionDir[]>
+    /** 修改某个版本目录的别名 / 路径；返回最新列表。 */
+    update: (id: string, patch: { alias?: string; path?: string }) => Promise<VersionDir[]>
+    /** 删除某个版本目录（默认目录不可删）；返回最新列表。 */
+    remove: (id: string) => Promise<VersionDir[]>
+    /** 切换当前版本目录（空串 = 默认目录）；返回生效后的目录 id。 */
+    select: (id: string) => Promise<string>
   }
   loaders: {
     versions: (kind: LoaderKind, mcVersion: string) => Promise<string[]>
@@ -686,23 +991,61 @@ export interface LauncherApi {
     open: (versionId: string, kind: ResourceKind) => Promise<string>
     /** 已安装光影 / 资源包的 Modrinth 元数据后台补齐推送（逐个送达所在实例） */
     onUpdated: (cb: (p: ResourceUpdated) => void) => () => void
+    /**
+     * 进入实例管理时异步检测该实例的模组 / 资源包 / 光影是否有更新。
+     * 立即返回「已确认可更新」的清单；其余项在后台判定完后经 onUpdateChecked 逐个推送。
+     * 联网关闭（本地模式 / 仅识别元数据）时直接返回空数组。
+     */
+    checkUpdates: (versionId: string) => Promise<ResourceUpdateInfo[]>
+    /** 更新检测的增量推送：每判定完一项推送一次 */
+    onUpdateChecked: (cb: (p: ResourceUpdateEvent) => void) => () => void
+    /** 把某个资源更新到最新版：下载新版 → 删除旧文件（模组保留原有启用 / 禁用状态） */
+    applyUpdate: (versionId: string, update: ResourceUpdateInfo, enabled: boolean) => Promise<string>
   }
   download: {
     install: (id: string) => Promise<{ versionId: string; assetIndex: string }>
-    cancel: () => Promise<boolean>
+    /** 取消下载：传 taskId 只取消该任务，不传则取消全部。 */
+    cancel: (taskId?: string) => Promise<boolean>
     onProgress: (cb: (p: DownloadProgress) => void) => () => void
   }
   mods: {
-    search: (query: string, type?: ModrinthType, category?: string, gameVersion?: string, loader?: string, offset?: number) => Promise<ModrinthSearchResult>
-    versions: (slug: string, loaders: string[], gameVersions: string[]) => Promise<ModrinthVersion[]>
-    install: (fileUrl: string, filename: string, versionId: string, type?: ModrinthType) => Promise<string>
-    downloadTo: (fileUrl: string, destPath: string) => Promise<string>
+    search: (
+      query: string,
+      type?: ModrinthType,
+      category?: string,
+      gameVersion?: string,
+      loader?: string,
+      offset?: number,
+      /** 来源筛选：全部（两源合并）/ 仅 Modrinth / 仅 CurseForge。 */
+      source?: SourceFilter
+    ) => Promise<ModrinthSearchResult>
+    versions: (
+      slug: string,
+      loaders: string[],
+      gameVersions: string[],
+      /** 项目来源；缺省按 Modrinth 处理。 */
+      source?: ModSource,
+      type?: ModrinthType
+    ) => Promise<ModrinthVersion[]>
+    /** 获取项目完整信息（含 Markdown 正文），用于「完整介绍」弹窗。 */
+    project: (id: string, type?: ModrinthType) => Promise<ModrinthProjectDetail>
+    install: (
+      fileUrl: string,
+      filename: string,
+      versionId: string,
+      type?: ModrinthType,
+      /** 已知文件大小：可跳过下载前的 HEAD 探测（CurseForge 这类重定向 CDN 上能省约 1s/文件）。 */
+      sizeHint?: number
+    ) => Promise<string>
+    downloadTo: (fileUrl: string, destPath: string, sizeHint?: number) => Promise<string>
     installFabricApi: (mcVersion: string, versionId: string) => Promise<string>
   }
   java: {
     detect: () => Promise<JavaRuntime[]>
     check: (versionId: string) => Promise<JavaCheckResult>
     install: (major: number) => Promise<string>
+    /** 手动选择 Java 可执行文件，返回识别出的版本信息；用户取消或无法识别时为 null / 抛错。 */
+    pick: () => Promise<JavaRuntime | null>
   }
   manage: {
     mods: (versionId: string) => Promise<ModEntry[]>
@@ -734,6 +1077,8 @@ export interface LauncherApi {
   }
   system: {
     memory: () => Promise<SystemMemoryInfo>
+    /** 探测 CPU 核心数与内存总量，并给出「是否低配」判定（首次启动自动检测用）。 */
+    hardware: () => Promise<SystemHardwareInfo>
   }
   homepage: {
     /** 列出本地已安装的主页脚本。 */
@@ -761,6 +1106,13 @@ export interface LauncherApi {
     openDir: () => Promise<string>
     /** 拉取主页市场列表。 */
     market: () => Promise<MarketScript[]>
+    /**
+     * 检查已安装的「联网校验」主页是否有更新：逐个用编号查服务端，
+     * 比对服务端最新 SHA256 与本地哈希，不一致即视为有更新。
+     */
+    checkUpdates: () => Promise<HomepageUpdate[]>
+    /** 从服务端下载并覆盖安装某个可更新脚本，返回更新后的本地条目。 */
+    update: (update: HomepageUpdate) => Promise<HomepageEntry>
     /** 自助投稿。 */
     submit: (payload: HomepageSubmitPayload) => Promise<HomepageSubmitResult>
     /** 投稿前给开发者邮箱发送验证码。 */
@@ -778,6 +1130,34 @@ export interface LauncherApi {
      * 渲染层据此弹出全屏封锁遮罩（F-05 导航外泄）。
      */
     onNavBlocked: (cb: (url: string) => void) => () => void
+  }
+  devMode: {
+    /** 读取开发模式当前状态（含授权是否有效、是否开启、档位）。 */
+    status: () => Promise<DevModeStatus>
+    /** 向指定邮箱发送开发模式验证码（邮箱须在后台白名单内）。 */
+    sendCode: (email: string) => Promise<DevModeCodeResult>
+    /** 校验验证码；通过后获得 1 天授权。 */
+    verify: (email: string, code: string) => Promise<DevModeVerifyResult>
+    /** 在授权有效期内开关开发模式。 */
+    setEnabled: (enabled: boolean) => Promise<DevModeStatus>
+    /** 在授权有效期内解除授权（立即关闭并作废令牌）。 */
+    revoke: () => Promise<DevModeStatus>
+    /** 设置主页安全防护档位。 */
+    setSecurityMode: (mode: 'full' | 'warn' | 'off') => Promise<DevModeStatus>
+    /** 打开独立「开发者工具（F12）」窗口（仅在开发模式开启时生效）。 */
+    openTools: () => Promise<void>
+    /** 关闭独立开发者工具窗口。 */
+    closeTools: () => Promise<void>
+    /**
+     * 打开主窗口的原生 Chromium DevTools（元素 / 控制台 / 网络 / 源代码），
+     * 以独立窗口（detach）形式展示，避免挤占主界面；仅在开发模式开启时生效。
+     * 返回是否成功打开。
+     */
+    openDevTools: () => Promise<boolean>
+    /** 关闭主窗口的原生 Chromium DevTools。 */
+    closeDevTools: () => Promise<void>
+    /** 订阅开发模式状态变化（到期自动关闭等），返回退订函数。 */
+    onChanged: (cb: (s: DevModeStatus) => void) => () => void
   }
   modpack: {
     probe: (filePath: string) => Promise<ModpackProbe>
@@ -798,6 +1178,20 @@ export interface LauncherApi {
     downloadAndRun: (info: UpdateInfo) => Promise<string>
     onProgress: (cb: (p: DownloadProgress) => void) => () => void
   }
+  translate: {
+    /**
+     * 经在线翻译接口批量翻译文本，返回 [原文, 译文] 对。
+     * 未翻出来的条目译文为空串（区别于「无需翻译」时返回原文），便于上层决定是否重试。
+     */
+    texts: (texts: string[], target: string) => Promise<Array<[string, string]>>
+    /**
+     * 保存 API KEY：先真实请求一次做连通性测试，通过才加密落盘。
+     * 返回可直接展示给用户的结论（成功 / KEY 无效 / 限流 / 无法连接 / 系统不支持安全存储）。
+     */
+    setKey: (key: string) => Promise<{ ok: boolean; message: string }>
+    /** 删除已保存的 API KEY，回到访客额度。 */
+    clearKey: () => Promise<{ ok: boolean; message: string }>
+  }
   window: {
     minimize: () => Promise<void>
     maximize: () => Promise<void>
@@ -805,8 +1199,12 @@ export interface LauncherApi {
     isMaximized: () => Promise<boolean>
     /** 切换全屏（Win10 桌面模式进入时全屏、退出时还原），返回切换后的状态。 */
     setFullscreen: (on: boolean) => Promise<boolean>
-    /** 置顶（Win10 桌面模式用），level 为 screen-saver 可压住任务栏等系统窗口。 */
+    /** 置顶窗口（通用能力；桌面模式已改为普通全屏，不再调用）。 */
     setAlwaysOnTop: (on: boolean) => Promise<boolean>
+    /**
+     * 桌面模式外壳：普通全屏（不置顶、不隐藏系统任务栏）；关闭时还原。
+     */
+    setDesktopMode: (on: boolean) => Promise<boolean>
     /**
      * 安全拦截期间强制系统全屏（连 Windows 任务栏一起盖住）。
      *
@@ -815,28 +1213,20 @@ export interface LauncherApi {
      */
     securityFullscreen: (on: boolean) => Promise<boolean>
   }
-  /** 实验性 Win10 桌面：把 MC / 资源管理器窗口显示在启动器桌面里（仅 Windows 支持）。 */
-  desktop: {
-    /** 是否支持（非 Windows 或缺原生模块时为 false） */
-    supported: () => Promise<boolean>
-    /** 列出可显示的外部窗口（含已摆放的） */
-    list: () => Promise<NativeWindowInfo[]>
+  /** 显示器信息（用于「游戏窗口尺寸」的自定义与预览）。 */
+  display: {
     /**
-     * 把外部窗口摆到桌面预留矩形处并挖洞透出（rect 为客户端设备像素）。
-     * 只移动位置、不改窗口层级与样式，因此 GL/DirectComposition 画面不受影响。
-     * raise=true 时把它提到最上层（聚焦的窗口用）。
+     * 主显示器尺寸，均为逻辑像素（DIP）。
+     * width/height 为整屏；workWidth/workHeight 为工作区（已排除任务栏，
+     * 任务栏设为自动隐藏时二者相等）。
      */
-    place: (id: string, rect: NativeWindowRect, raise?: boolean) => Promise<boolean>
-    /** 是否在该矩形上挖洞（最小化 / 被启动器界面盖住 / 开始菜单打开时传 false） */
-    setVisible: (id: string, visible: boolean) => Promise<boolean>
-    /** 从桌面收回，放回原位置（不会关闭它） */
-    release: (id: string) => Promise<boolean>
-    /** 全部收回（退出桌面模式 / 关窗前必须调用） */
-    releaseAll: () => Promise<number>
-    /** 宿主窗口移动/缩放后重新摆放所有窗口 */
-    resync: () => Promise<boolean>
-    /** 聚焦该外部窗口（点任务栏条目时用） */
-    focus: (id: string) => Promise<boolean>
+    primary: () => Promise<{
+      width: number
+      height: number
+      workWidth: number
+      workHeight: number
+      scaleFactor: number
+    }>
   }
   /**
    * 启动器自实现的资源管理器：只做「浏览 + 打开」，

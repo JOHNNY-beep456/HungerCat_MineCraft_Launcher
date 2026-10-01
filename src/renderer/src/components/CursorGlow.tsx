@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react'
 import { useApp } from '../store'
+import { subscribeCursor } from '../cursor'
 
 const SIZE = 560
 const HALF = SIZE / 2
@@ -22,16 +23,21 @@ export function CursorGlow(): JSX.Element {
       el.style.transform = `translate3d(${x - HALF}px, ${y - HALF}px, 0)`
     }
 
-    const onMove = (e: MouseEvent): void => {
-      x = e.clientX
-      y = e.clientY
+    const move = (nx: number, ny: number): void => {
+      x = nx
+      y = ny
       if (!raf) raf = requestAnimationFrame(apply)
     }
 
+    const onMove = (e: MouseEvent): void => move(e.clientX, e.clientY)
+
     window.addEventListener('mousemove', onMove, { passive: true })
+    // 鼠标在自定义主页 iframe 内时宿主收不到 mousemove：由沙箱回传坐标，这里一并订阅。
+    const unsubscribe = subscribeCursor(move)
     apply()
     return () => {
       window.removeEventListener('mousemove', onMove)
+      unsubscribe()
       if (raf) cancelAnimationFrame(raf)
     }
   }, [settings.reducedMotion])

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { motion } from 'motion/react'
-import type { AuthStatus, DeviceCodeInfo } from '@shared/types'
+import type { AuthStatus, DeviceCodeInfo, YggdrasilProfileOption } from '@shared/types'
 import { useApp } from '../store'
 import { Avatar, Button, GlassCard, Icon, Segmented, Spinner } from '../components/ui'
 
@@ -38,7 +38,7 @@ const YGG_PRESETS: Array<{ value: YggPreset; domain: string }> = [
 ]
 
 export function AccountsPage(): JSX.Element {
-  const { accounts, selectedAccount, selectAccount, removeAccount, reloadAccounts, settings } = useApp()
+  const { t, accounts, selectedAccount, selectAccount, removeAccount, reloadAccounts, settings } = useApp()
   const [view, setView] = useState<AccountView>('list')
   const [info, setInfo] = useState<DeviceCodeInfo | null>(null)
   const [status, setStatus] = useState<AuthStatus | null>(null)
@@ -57,6 +57,11 @@ export function AccountsPage(): JSX.Element {
   // 弹窗生命周期守卫：关闭/取消后置 false，防止登录的异步结果在弹窗关闭后
   // 继续 setState（React 对已卸载/隐藏组件的 setState 会造成无响应）。
   const yggAlive = useRef(false)
+  // 多角色选择：服务端返回多个角色时弹出的「选择角色」弹窗（可多选）。
+  const [yggProfiles, setYggProfiles] = useState<YggdrasilProfileOption[] | null>(null)
+  const [yggPicked, setYggPicked] = useState<Set<string>>(new Set())
+  const [yggCommitting, setYggCommitting] = useState(false)
+  const [yggModalError, setYggModalError] = useState<string | null>(null)
 
   const begin = useCallback(async () => {
     setView('microsoft')
@@ -128,6 +133,7 @@ export function AccountsPage(): JSX.Element {
   const closeYgg = useCallback((): void => {
     yggAlive.current = false
     setYggLoading(false)
+    setYggProfiles(null)
     setView('list')
     setYggError(null)
   }, [])
@@ -145,13 +151,21 @@ export function AccountsPage(): JSX.Element {
     setYggLoading(true)
     try {
       // 统一 10s 保护性超时：即使认证服务器挂起，这里也不会永久 pending。
-      await withTimeout(
+      const result = await withTimeout(
         window.api.accounts.addYggdrasil(yggServer, yggEmail.trim(), yggPassword),
         YGG_LOGIN_TIMEOUT_MS,
-        '认证服务器连接超时，请检查地址后重试'
+        t('acc.yggTimeout')
       )
       // 关闭期间守卫会被置 false，这里直接放弃处理，避免离开页面后再 setState。
       if (!yggAlive.current) return
+      // 多角色：弹出选择弹窗（可多选），选完再批量建号。
+      if (result.profiles && result.profiles.length > 0) {
+        setYggProfiles(result.profiles)
+        // 默认勾选第一个角色，其余由用户按需勾选，避免误把全部角色一并添加。
+        setYggPicked(new Set([result.profiles[0].id]))
+        setYggModalError(null)
+        return
+      }
       setView('list')
       setYggEmail('')
       setYggPassword('')
@@ -161,6 +175,41 @@ export function AccountsPage(): JSX.Element {
       if (yggAlive.current) setYggError(err instanceof Error ? err.message : String(err))
     } finally {
       if (yggAlive.current) setYggLoading(false)
+    }
+  }
+
+  /** 切换某个角色是否被选中（多选）。 */
+  const toggleYggProfile = (id: string): void => {
+    setYggModalError(null)
+    setYggPicked((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+
+  /** 提交多角色选择：批量创建账号后回到列表。 */
+  const confirmYggProfiles = async (): Promise<void> => {
+    const ids = yggProfiles?.filter((p) => yggPicked.has(p.id)).map((p) => p.id) ?? []
+    if (ids.length === 0) {
+      setYggModalError(t('acc.yggPickRequired'))
+      return
+    }
+    setYggCommitting(true)
+    setYggModalError(null)
+    try {
+      await window.api.accounts.addYggdrasilProfiles(ids)
+      if (!yggAlive.current) return
+      setYggProfiles(null)
+      setView('list')
+      setYggEmail('')
+      setYggPassword('')
+      void reloadAccounts()
+    } catch (err) {
+      if (yggAlive.current) setYggModalError(err instanceof Error ? err.message : String(err))
+    } finally {
+      if (yggAlive.current) setYggCommitting(false)
     }
   }
 
@@ -179,25 +228,25 @@ export function AccountsPage(): JSX.Element {
         >
       <div className="flex items-end justify-between">
         <div>
-          <h1 className="display">账号</h1>
+          <h1 className="display">{t('acc.title')}</h1>
         </div>
         <div className="flex gap-2">
-          <Button onClick={() => setView('offline')}>离线账号</Button>
+          <Button onClick={() => setView('offline')}>{t('acc.offlineAccount')}</Button>
           <Button
             onClick={openYgg}
             disabled={settings.mode === 'local'}
-            title={settings.mode === 'local' ? '本地模式已关闭在线登录' : undefined}
+            title={settings.mode === 'local' ? t('acc.localModeDisabled') : undefined}
           >
-            第三方
+            {t('acc.thirdParty')}
           </Button>
           <Button
             variant="primary"
             icon="plus"
             onClick={begin}
             disabled={settings.mode === 'local'}
-            title={settings.mode === 'local' ? '本地模式已关闭在线登录' : undefined}
+            title={settings.mode === 'local' ? t('acc.localModeDisabled') : undefined}
           >
-            微软账号
+            {t('acc.microsoft')}
           </Button>
         </div>
       </div>
@@ -208,15 +257,15 @@ export function AccountsPage(): JSX.Element {
             <div className="flex h-16 w-16 items-center justify-center rounded-2xl" style={{ background: 'var(--fill-secondary)' }}>
               <Icon name="user" size={30} className="opacity-60" />
             </div>
-            <div className="title">还没有账号</div>
-            <p className="caption max-w-xs">登录你的微软账号后即可启动正版 Minecraft</p>
+            <div className="title">{t('acc.emptyTitle')}</div>
+            <p className="caption max-w-xs">{t('acc.emptyDesc')}</p>
             {settings.mode === 'local' ? (
               <Button icon="plus" onClick={() => setView('offline')}>
-                创建离线账号
+                {t('acc.createOffline')}
               </Button>
             ) : (
               <Button variant="primary" icon="plus" onClick={begin}>
-                登录微软账号
+                {t('acc.microsoftTitle')}
               </Button>
             )}
           </div>
@@ -230,15 +279,15 @@ export function AccountsPage(): JSX.Element {
               layout
               className="glass flex items-center gap-3 rounded-[24px] p-4"
             >
-              <Avatar name={a.name} uuid={a.id} skinUrl={a.skinUrl} authType={a.authType} yggdrasilServer={a.yggdrasilServer} size={48} />
+              <Avatar name={a.name} uuid={a.id} skinUrl={a.skinUrl} authType={a.authType} yggdrasilServer={a.yggdrasilServer} offline={a.offline} size={48} />
               <div className="min-w-0 flex-1">
                 <div className="flex items-center gap-2">
                   <span className="title truncate">{a.name}</span>
-                  {a.offline && <span className="chip">离线</span>}
-                  {a.authType === 'yggdrasil' && <span className="chip">第三方</span>}
+                  {a.offline && <span className="chip">{t('acc.chipOffline')}</span>}
+                  {a.authType === 'yggdrasil' && <span className="chip">{t('acc.chipThirdParty')}</span>}
                   {isSel && (
                     <span className="chip" style={{ color: 'var(--fill-primary)' }}>
-                      使用中
+                      {t('acc.inUse')}
                     </span>
                   )}
                 </div>
@@ -247,7 +296,7 @@ export function AccountsPage(): JSX.Element {
               <div className="flex items-center gap-1">
                 {!isSel && (
                   <Button size="sm" onClick={() => void selectAccount(a.id)}>
-                    使用
+                    {t('acc.use')}
                   </Button>
                 )}
                 <Button
@@ -255,7 +304,7 @@ export function AccountsPage(): JSX.Element {
                   icon="trash"
                   variant="ghost"
                   onClick={() => void removeAccount(a.id)}
-                  title="移除账号"
+                  title={t('acc.remove')}
                 />
               </div>
             </motion.div>
@@ -276,11 +325,11 @@ export function AccountsPage(): JSX.Element {
           {/* 页头 */}
           <div className="flex items-end justify-between gap-4">
             <div>
-              <h2 className="display">登录微软账号</h2>
-              <p className="caption mt-1">设备代码登录 · 无需申请开发者权限</p>
+              <h2 className="display">{t('acc.microsoftTitle')}</h2>
+              <p className="caption mt-1">{t('acc.microsoftSubtitle')}</p>
             </div>
             <Button icon="chevronLeft" onClick={cancel}>
-              返回
+              {t('acc.back')}
             </Button>
           </div>
 
@@ -295,34 +344,34 @@ export function AccountsPage(): JSX.Element {
                   >
                     <Icon name="check" size={28} />
                   </div>
-                  <div className="title">登录成功</div>
+                  <div className="title">{t('acc.success')}</div>
                   <p className="caption">{status.account.name}</p>
-                  <p className="caption mt-1 opacity-60">即将返回账号列表…</p>
+                  <p className="caption mt-1 opacity-60">{t('acc.returning')}</p>
                 </GlassCard>
               ) : (
                 <>
                   <GlassCard className="p-6">
                     <div className="mb-5">
-                      <h3 className="headline">设备代码</h3>
-                      <p className="caption mt-0.5">在你的浏览器中打开链接并输入下面的代码</p>
+                      <h3 className="headline">{t('acc.deviceCode')}</h3>
+                      <p className="caption mt-0.5">{t('acc.deviceCodeHint')}</p>
                     </div>
                     <div className="glass-soft rounded-2xl p-6 text-center">
-                      <div className="caption mb-1">你的登录代码</div>
+                      <div className="caption mb-1">{t('acc.yourCode')}</div>
                       {info ? (
                         <button
                           onClick={copyCode}
                           className="group relative mx-auto block text-4xl font-bold tracking-[0.2em] no-drag"
-                          title="点击复制"
+                          title={t('acc.clickToCopy')}
                         >
                           {info.userCode}
                           <span className="ml-1 align-middle text-sm opacity-0 transition-opacity group-hover:opacity-60">
-                            {copied ? '✓ 已复制' : '复制'}
+                            {copied ? t('acc.copied') : t('acc.copy')}
                           </span>
                         </button>
                       ) : (
                         <div className="flex items-center justify-center gap-2 py-1 text-[13px] opacity-70">
                           <Spinner size={16} />
-                          <span>正在获取登录代码…</span>
+                          <span>{t('acc.fetchingCode')}</span>
                         </div>
                       )}
                     </div>
@@ -330,13 +379,13 @@ export function AccountsPage(): JSX.Element {
 
                   <GlassCard className="p-6">
                     <div className="mb-4">
-                      <h3 className="headline">操作步骤</h3>
-                      <p className="caption mt-0.5">完成下面三步即可自动授权并登录</p>
+                      <h3 className="headline">{t('acc.steps')}</h3>
+                      <p className="caption mt-0.5">{t('acc.stepsHint')}</p>
                     </div>
                     <div className="space-y-2">
-                      <Step n={1} text={`打开浏览器访问 ${info?.verificationUri ?? 'microsoft.com/link'}`} />
-                      <Step n={2} text="输入上面的代码并登录你的微软账号" />
-                      <Step n={3} text="授权 Xbox Live，等待自动完成" />
+                      <Step n={1} text={t('acc.step1', { url: info?.verificationUri ?? 'microsoft.com/link' })} />
+                      <Step n={2} text={t('acc.step2')} />
+                      <Step n={3} text={t('acc.step3')} />
                     </div>
                   </GlassCard>
                 </>
@@ -348,7 +397,7 @@ export function AccountsPage(): JSX.Element {
                   style={{ background: 'rgba(255,69,58,0.14)', color: 'var(--fill-danger)' }}
                 >
                   <Icon name="xmark" size={18} />
-                  <span>登录失败：{status.error}</span>
+                  <span>{t('acc.loginFailed', { error: status.error })}</span>
                 </div>
               )}
 
@@ -358,7 +407,7 @@ export function AccountsPage(): JSX.Element {
                   style={{ background: 'var(--fill-secondary)' }}
                 >
                   <Spinner size={20} />
-                  <span className="caption">等待授权… 已等待 {status.elapsed}s / {status.expiresIn}s</span>
+                  <span className="caption">{t('acc.waiting', { elapsed: status.elapsed, expiresIn: status.expiresIn })}</span>
                 </div>
               )}
             </div>
@@ -373,11 +422,11 @@ export function AccountsPage(): JSX.Element {
                 onClick={cancel}
                 disabled={status?.state === 'success'}
               >
-                取消
+                {t('acc.cancel')}
               </Button>
               {status?.state === 'error' ? (
                 <Button variant="primary" size="lg" className="min-w-[176px]" onClick={begin}>
-                  重试
+                  {t('acc.retry')}
                 </Button>
               ) : (
                 <Button
@@ -387,7 +436,7 @@ export function AccountsPage(): JSX.Element {
                   icon="link"
                   onClick={() => info && window.api.shell.openExternal(info.verificationUri)}
                 >
-                  打开浏览器
+                  {t('acc.openBrowser')}
                 </Button>
               )}
             </div>
@@ -406,11 +455,11 @@ export function AccountsPage(): JSX.Element {
           {/* 页头 */}
           <div className="flex items-end justify-between gap-4">
             <div>
-              <h2 className="display">第三方账号登录</h2>
-              <p className="caption mt-1">LittleSkin 或自定义 Yggdrasil 认证服务器</p>
+              <h2 className="display">{t('acc.yggTitle')}</h2>
+              <p className="caption mt-1">{t('acc.yggSubtitle')}</p>
             </div>
             <Button icon="chevronLeft" onClick={closeYgg}>
-              返回
+              {t('acc.back')}
             </Button>
           </div>
 
@@ -419,19 +468,19 @@ export function AccountsPage(): JSX.Element {
             <div className="flex max-w-3xl flex-col gap-5 pb-6">
               <GlassCard className="p-6">
                 <div className="mb-5">
-                  <h3 className="headline">认证服务器</h3>
-                  <p className="caption mt-0.5">选择预设或填写自定义 Yggdrasil 认证服务器域名</p>
+                  <h3 className="headline">{t('acc.authServer')}</h3>
+                  <p className="caption mt-0.5">{t('acc.authServerHint')}</p>
                 </div>
                 <Segmented
                   options={[
                     { value: 'littleskin', label: 'LittleSkin' },
-                    { value: 'chanmao', label: '馋猫认证中心' },
-                    { value: 'custom', label: '自定义' }
+                    { value: 'chanmao', label: t('acc.presetChanmao') },
+                    { value: 'custom', label: t('acc.presetCustom') }
                   ]}
                   value={yggPreset}
                   onChange={chooseYggPreset}
                 />
-                <div className="caption mb-2 mt-4">认证服务器域名</div>
+                <div className="caption mb-2 mt-4">{t('acc.serverDomain')}</div>
                 <input
                   value={yggServer}
                   onChange={(e) => {
@@ -439,18 +488,18 @@ export function AccountsPage(): JSX.Element {
                     setYggError(null)
                   }}
                   disabled={yggPreset !== 'custom'}
-                  placeholder="例如 skin.johnnyblog.top"
+                  placeholder={t('acc.serverPlaceholder')}
                   className="input w-full"
                 />
-                <p className="caption mt-2">只需填域名，登录时自动补全 /api/yggdrasil</p>
+                <p className="caption mt-2">{t('acc.serverNote')}</p>
               </GlassCard>
 
               <GlassCard className="p-6">
                 <div className="mb-5">
-                  <h3 className="headline">账号信息</h3>
-                  <p className="caption mt-0.5">输入认证服务器发放给你的登录凭据</p>
+                  <h3 className="headline">{t('acc.accountInfo')}</h3>
+                  <p className="caption mt-0.5">{t('acc.accountInfoHint')}</p>
                 </div>
-                <div className="caption mb-2">邮箱 / 用户名</div>
+                <div className="caption mb-2">{t('acc.emailOrUsername')}</div>
                 <input
                   autoFocus
                   value={yggEmail}
@@ -461,7 +510,7 @@ export function AccountsPage(): JSX.Element {
                   placeholder="example@littleskin.cn"
                   className="input mb-3 w-full"
                 />
-                <div className="caption mb-2">密码</div>
+                <div className="caption mb-2">{t('acc.password')}</div>
                 <input
                   type="password"
                   value={yggPassword}
@@ -493,7 +542,7 @@ export function AccountsPage(): JSX.Element {
           <div className="glass-strong shrink-0 rounded-3xl p-4">
             <div className="flex flex-wrap items-center justify-end gap-3">
               <Button size="lg" className="min-w-[112px]" onClick={closeYgg}>
-                取消
+                {t('acc.cancel')}
               </Button>
               <Button
                 variant="primary"
@@ -502,7 +551,7 @@ export function AccountsPage(): JSX.Element {
                 disabled={yggLoading || !yggEmail.trim() || !yggPassword.trim()}
                 onClick={() => void addYggdrasil()}
               >
-                {yggLoading ? '登录中…' : '登录'}
+                {yggLoading ? t('acc.signingIn') : t('acc.signIn')}
               </Button>
             </div>
           </div>
@@ -520,11 +569,11 @@ export function AccountsPage(): JSX.Element {
           {/* 页头 */}
           <div className="flex items-end justify-between gap-4">
             <div>
-              <h2 className="display">离线账号</h2>
-              <p className="caption mt-1">无需登录，仅用于单机游戏（无法进入正版服务器）</p>
+              <h2 className="display">{t('acc.offlineAccount')}</h2>
+              <p className="caption mt-1">{t('acc.offlineSubtitle')}</p>
             </div>
             <Button icon="chevronLeft" onClick={() => setView('list')}>
-              返回
+              {t('acc.back')}
             </Button>
           </div>
 
@@ -533,8 +582,8 @@ export function AccountsPage(): JSX.Element {
             <div className="flex max-w-3xl flex-col gap-5 pb-6">
               <GlassCard className="p-6">
                 <div className="mb-5">
-                  <h3 className="headline">玩家名</h3>
-                  <p className="caption mt-0.5">输入一个仅用于单机离线模式的玩家名</p>
+                  <h3 className="headline">{t('acc.playerName')}</h3>
+                  <p className="caption mt-0.5">{t('acc.playerNameHint')}</p>
                 </div>
                 <input
                   autoFocus
@@ -546,7 +595,7 @@ export function AccountsPage(): JSX.Element {
                   onKeyDown={(e) => {
                     if (e.key === 'Enter' && offlineName.trim()) void addOffline()
                   }}
-                  placeholder="例如 Steve"
+                  placeholder={t('acc.playerPlaceholder')}
                   className="input w-full"
                 />
                 {offlineError && (
@@ -566,7 +615,7 @@ export function AccountsPage(): JSX.Element {
           <div className="glass-strong shrink-0 rounded-3xl p-4">
             <div className="flex flex-wrap items-center justify-end gap-3">
               <Button size="lg" className="min-w-[112px]" onClick={() => setView('list')}>
-                取消
+                {t('acc.cancel')}
               </Button>
               <Button
                 variant="primary"
@@ -575,11 +624,94 @@ export function AccountsPage(): JSX.Element {
                 disabled={!offlineName.trim()}
                 onClick={() => void addOffline()}
               >
-                创建
+                {t('acc.create')}
               </Button>
             </div>
           </div>
         </motion.div>
+      )}
+
+      {/* 多角色选择弹窗（可多选）：勾选后一次性添加为多个账号。 */}
+      {yggProfiles && (
+        <div className="fixed inset-0 z-[120] flex items-center justify-center p-6">
+          <div className="absolute inset-0" style={{ background: 'var(--scrim)' }} onClick={() => (yggCommitting ? undefined : setYggProfiles(null))} />
+          <motion.div
+            role="dialog"
+            aria-label={t('acc.yggProfilesTitle')}
+            className="glass-strong relative z-10 flex max-h-[80vh] w-full max-w-lg flex-col rounded-[28px] p-6"
+            initial={{ scale: 0.94, opacity: 0, y: 12 }}
+            animate={{ scale: 1, opacity: 1, y: 0 }}
+            transition={{ type: 'spring', bounce: 0.16, duration: 0.35 }}
+          >
+            <div className="mb-4">
+              <h3 className="title">{t('acc.yggProfilesTitle')}</h3>
+              <p className="caption mt-1">{t('acc.yggProfilesHint')}</p>
+            </div>
+
+            <div className="min-h-0 flex-1 space-y-2 overflow-y-auto pr-1">
+              {yggProfiles.map((p) => {
+                const checked = yggPicked.has(p.id)
+                return (
+                  <button
+                    key={p.id}
+                    type="button"
+                    disabled={yggCommitting}
+                    onClick={() => toggleYggProfile(p.id)}
+                    className="flex w-full items-center gap-3 rounded-2xl p-3 text-left no-drag transition-colors"
+                    style={{ background: checked ? 'var(--fill-primary)' : 'var(--fill-secondary)' }}
+                  >
+                    <span
+                      className="flex h-5 w-5 shrink-0 items-center justify-center rounded-md"
+                      style={{
+                        background: checked ? '#fff' : 'transparent',
+                        border: checked ? 'none' : '1.5px solid var(--divider)',
+                        color: 'var(--fill-primary)'
+                      }}
+                    >
+                      {checked && <Icon name="check" size={14} />}
+                    </span>
+                    <Avatar name={p.name} uuid={p.id} skinUrl={p.skinUrl} yggdrasilServer={yggServer} authType="yggdrasil" size={36} />
+                    <div className="min-w-0 flex-1">
+                      <div className="truncate text-[14px] font-semibold" style={{ color: checked ? '#fff' : 'var(--text-primary)' }}>
+                        {p.name}
+                      </div>
+                      <div className="caption truncate" style={{ color: checked ? 'rgba(255,255,255,0.8)' : undefined }}>
+                        {p.id}
+                      </div>
+                    </div>
+                  </button>
+                )
+              })}
+            </div>
+
+            {yggModalError && (
+              <div
+                className="mt-4 flex items-center gap-3 rounded-xl p-3 text-[13px]"
+                style={{ background: 'rgba(255,69,58,0.14)', color: 'var(--fill-danger)' }}
+              >
+                <Icon name="xmark" size={18} />
+                <span>{yggModalError}</span>
+              </div>
+            )}
+
+            <div className="mt-5 flex flex-wrap items-center justify-between gap-3">
+              <span className="caption">{t('acc.yggPickedCount', { n: yggPicked.size })}</span>
+              <div className="flex items-center gap-3">
+                <Button className="min-w-[96px]" disabled={yggCommitting} onClick={() => setYggProfiles(null)}>
+                  {t('acc.cancel')}
+                </Button>
+                <Button
+                  variant="primary"
+                  className="min-w-[140px]"
+                  disabled={yggCommitting || yggPicked.size === 0}
+                  onClick={() => void confirmYggProfiles()}
+                >
+                  {yggCommitting ? t('acc.yggAdding') : t('acc.yggAddSelected')}
+                </Button>
+              </div>
+            </div>
+          </motion.div>
+        </div>
       )}
     </div>
   )

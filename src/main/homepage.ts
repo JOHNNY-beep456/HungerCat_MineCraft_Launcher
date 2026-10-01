@@ -25,6 +25,7 @@ import type {
   HomepageSource,
   HomepageSubmitPayload,
   HomepageSubmitResult,
+  HomepageUpdate,
   HomepageVerify,
   HomepageVerifyResult,
   MarketScript
@@ -156,7 +157,7 @@ async function checkExternalScript(url: string, parentSha: string): Promise<JsVe
   try {
     if (settings.get().mode === 'local') throw new Error('本地模式已关闭联网功能')
     const text = await netRequest<string>('net:fetchText', { url, maxBytes: MAX_MARKET_SIZE })
-    const risk = analyzeScript(text, { library: true })
+    const risk = await analyzeScript(text, { library: true })
     const verdict: JsVerdict = {
       at: Date.now(),
       blocks: risk.blocks,
@@ -242,7 +243,7 @@ async function buildEntry(
   const stat = await fsp.stat(file)
   const meta = parseHomepageMeta(content, id)
   const st = state[id] ?? { confirmedSha: '', networkSha: '', verify: 'unchecked' as HomepageVerify }
-  let risk = analyzeScript(content)
+  let risk = await analyzeScript(content)
   // 静态已判拒绝时结论不会再变，不必再去取回外链脚本正文。
   if (deep && risk.level !== 'reject') risk = await deepAnalyzeRisk(risk, hash)
   if (st.blocked) {
@@ -461,8 +462,39 @@ export async function removeHomepage(id: string): Promise<void> {
 }
 
 /**
+ * 查询某个已安装脚本是否只是「本地版本较旧」：与主页市场的最新 SHA256 比对，
+ * 不同即视为有线上新版本。判据与 checkHomepageUpdates 一致，仅限定单个编号。
+ * 市场不可达 / 编号不在市场 / 已是最新 → 返回 null（无法据此判定为「过期」）。
+ */
+async function findHomepageUpdate(source: HomepageSource): Promise<HomepageUpdate | null> {
+  if (settings.get().mode === 'local') return null
+  if (!source.meta.id || source.blocked) return null
+  try {
+    const market = await fetchMarket()
+    const m = market.find((x) => x.id === source.meta.id)
+    if (!m || !m.sha256) return null
+    if (m.sha256.toLowerCase() === source.sha256.toLowerCase()) return null
+    return {
+      localId: source.id,
+      id: source.meta.id,
+      name: m.name || source.meta.name || source.id,
+      author: m.author || source.meta.author,
+      localVersion: source.meta.version,
+      latestVersion: m.version,
+      latestSha256: m.sha256,
+      url: m.url,
+      updatedAt: m.updatedAt
+    }
+  } catch {
+    // 市场不可达：无法确认是否只是过期，交由调用方按「不一致」处理（更保守）。
+    return null
+  }
+}
+
+/**
  * 联网核对「编号 + SHA256」。
- * 一致 → verified；不一致（含编号不存在）→ mismatch（渲染层拒绝运行）；
+ * 一致 → verified；不一致 → 先查是否有线上新版本：有则 outdated（引导更新），
+ * 确认无新版本才是 mismatch（可能被篡改，渲染层拒绝运行）；编号不存在 → notFound；
  * 无编号 → local；服务端不可达 → 视为未校验，回落本地流程。
  */
 export async function verifyHomepage(id: string): Promise<HomepageVerifyResult> {
@@ -499,6 +531,26 @@ export async function verifyHomepage(id: string): Promise<HomepageVerifyResult> 
     const verified = res?.verified === true
     // 服务端查无此编号时 script 为 null：这与「哈希不一致」是两回事，必须分别提示。
     const notFound = !verified && res?.ok === true && !res.script
+
+    // 哈希不一致：优先确认是否为「本地版本较旧」。有线上新版本说明只是过期、
+    // 而非被篡改；两者处置完全不同——过期应引导更新，篡改才必须拒绝运行。
+    if (!verified && !notFound) {
+      const upd = await findHomepageUpdate(source)
+      if (upd) {
+        st.verify = 'mismatch'
+        state[id] = st
+        await saveState(state)
+        return {
+          entry: stripContent(await readHomepage(id)),
+          reachable: true,
+          outdated: true,
+          localVersion: upd.localVersion,
+          latestVersion: upd.latestVersion,
+          message: `检测到新版本：本地 v${upd.localVersion || '未知'} → 线上 v${upd.latestVersion || '未知'}，脚本哈希因此不一致。请在「主页 → 可更新」中更新后再运行。`
+        }
+      }
+    }
+
     st.verify = verified ? 'verified' : 'mismatch'
     state[id] = st
     await saveState(state)
@@ -577,6 +629,73 @@ export async function blockHomepage(id: string, reason: string): Promise<void> {
 export async function fetchMarket(): Promise<MarketScript[]> {
   const res = await netRequest<{ scripts?: MarketScript[] }>('server:api', { path: 'market_list' })
   return Array.isArray(res?.scripts) ? res.scripts : []
+}
+
+/**
+ * 检查已安装的「联网校验」主页是否有更新。
+ *
+ * 只检查带服务端编号（meta.id 形如 HC-XXXXXX）的脚本：它们才有可比对的线上版本。
+ * 线上清单取自主页市场（仅 published + public），比对服务端最新 SHA256 与本地哈希：
+ * 哈希不同即视为有更新（同时带上版本号，便于界面展示「v旧 → v新」）。
+ * 已被封锁的脚本不参与检查（只能删除或重新导入）。
+ */
+export async function checkHomepageUpdates(): Promise<HomepageUpdate[]> {
+  if (settings.get().mode === 'local') return []
+  const installed = await listHomepages()
+  const numbered = installed.filter((e) => e.meta.id !== '' && !e.blocked)
+  if (numbered.length === 0) return []
+
+  const market = await fetchMarket()
+  const byId = new Map(market.map((m) => [m.id, m]))
+
+  const updates: HomepageUpdate[] = []
+  for (const e of numbered) {
+    const m = byId.get(e.meta.id)
+    if (!m) continue
+    // 哈希一致即本地已是最新；版本号变化但内容未变（理论上不会）也不算更新。
+    if (m.sha256 && m.sha256.toLowerCase() === e.sha256.toLowerCase()) continue
+    updates.push({
+      localId: e.id,
+      id: e.meta.id,
+      name: m.name || e.meta.name || e.id,
+      author: m.author || e.meta.author,
+      localVersion: e.meta.version,
+      latestVersion: m.version,
+      latestSha256: m.sha256,
+      url: m.url,
+      updatedAt: m.updatedAt
+    })
+  }
+  return updates
+}
+
+/** 从服务端下载最新版本并覆盖安装指定脚本（保持本地标识不变）。 */
+export async function updateHomepage(update: HomepageUpdate): Promise<HomepageEntry> {
+  if (!/^https:\/\//i.test(update.url)) throw new Error('仅支持从 https 地址更新主页脚本')
+  if (!HOMEPAGE_ID_RE.test(update.id)) throw new Error(`编号格式不正确：${update.id}`)
+  const dest = resolveEntry(update.localId)
+  await ensureDir()
+  const tmp = `${dest}.download`
+  try {
+    await streamDownload(update.url, tmp, {})
+  } catch (err) {
+    // 服务端 4xx（未公开 / 编号不存在等）会带中文正文，这里分类成可操作提示。
+    await fsp.rm(tmp, { force: true })
+    throw describeDownloadFailure(err)
+  }
+  try {
+    const buf = await fsp.readFile(tmp)
+    if (buf.byteLength === 0) throw new Error('下载到的脚本内容为空')
+    if (buf.byteLength > MAX_MARKET_SIZE) throw new Error('脚本体积超出上限（512KB）')
+    if (!looksLikeHtml(buf)) throw new Error('下载到的文件不是有效的 HTML 主页脚本')
+    // 覆盖前先落盘临时文件，确认无误再替换，避免半截文件破坏原脚本。
+    await fsp.rename(tmp, dest)
+  } catch (err) {
+    await fsp.rm(tmp, { force: true })
+    throw err
+  }
+  const { content: _content, ...entry } = await buildEntry(update.localId, await loadState())
+  return entry
 }
 
 /**

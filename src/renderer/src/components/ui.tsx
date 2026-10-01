@@ -11,7 +11,9 @@ import {
 } from 'react'
 import { createPortal } from 'react-dom'
 import { AnimatePresence, motion } from 'motion/react'
+import { marked } from 'marked'
 import defaultAvatar from '../assets/stevE.jpg'
+import { useApp } from '../store'
 
 /* ------------------------------------------------------------------ */
 /* Icons (SF-Symbols-style stroke icons)                               */
@@ -123,6 +125,19 @@ const ICON_PATHS: Record<string, ReactNode> = {
       <rect x="3" y="4" width="18" height="16" rx="2" />
       <circle cx="8.5" cy="9.5" r="1.5" />
       <path d="M21 15.5L16.5 11 10 17.5l-2-2-5 5" />
+    </>
+  ),
+  mail: (
+    <>
+      <rect x="3" y="5" width="18" height="14" rx="2" />
+      <path d="M4 7l8 6 8-6" />
+    </>
+  ),
+  terminal: (
+    <>
+      <rect x="3" y="4" width="18" height="16" rx="2" />
+      <path d="M7 9l3 3-3 3" />
+      <path d="M13 15h4" />
     </>
   )
 }
@@ -286,8 +301,9 @@ export function CatFishLoader({ size = 26, className = '' }: { size?: number; cl
 }
 
 export function Spinner({ size = 20, className = '' }: { size?: number; className?: string }): JSX.Element {
+  const { t } = useApp()
   return (
-    <span className={`inline-block align-middle ${className}`} aria-label="加载中" role="status">
+    <span className={`inline-block align-middle ${className}`} aria-label={t('cmp.spinner.ariaLabel')} role="status">
       <CatFishLoader size={size} />
     </span>
   )
@@ -297,11 +313,12 @@ export function Spinner({ size = 20, className = '' }: { size?: number; classNam
 /* Loading placeholder                                                 */
 /* ------------------------------------------------------------------ */
 
-export function LoadingState({ text = '加载中…' }: { text?: string }): JSX.Element {
+export function LoadingState({ text }: { text?: string }): JSX.Element {
+  const { t } = useApp()
   return (
     <div className="flex flex-col items-center justify-center gap-3 p-12">
       <Spinner size={26} />
-      <span className="caption">{text}</span>
+      <span className="caption">{text ?? t('cmp.loading')}</span>
     </div>
   )
 }
@@ -389,27 +406,65 @@ export function Segmented<T extends string>({
   options,
   value,
   onChange,
-  scroll = false
+  scroll = false,
+  disabled = false
 }: {
   options: Array<{ value: T; label: string }>
   value: T
   onChange: (v: T) => void
   /** 选项较多时横向滚动（隐藏滚动条、文字垂直居中），而不是换行 */
   scroll?: boolean
+  /** 禁用：整组置灰且不可点击 */
+  disabled?: boolean
 }): JSX.Element {
   const layoutId = useId()
+  // 横向滚动模式下的「拖拽滚动」：隐藏滚动条后，没有横向滚轮的鼠标只能靠拖拽
+  // 才能看到后面的选项。down 记录起点，移动超过阈值才判定为拖拽并接管滚动。
+  const drag = useRef<{ startX: number; startLeft: number } | null>(null)
+  const dragged = useRef(false)
+
   return (
     <div
       className={`mica-well inline-flex items-center gap-1 rounded-xl p-1 ${
-        scroll ? 'no-scrollbar min-w-0 max-w-full overflow-x-auto' : 'flex-wrap'
+        scroll ? 'no-scrollbar min-w-0 max-w-full cursor-grab touch-pan-x select-none overflow-x-auto active:cursor-grabbing' : 'flex-wrap'
       }`}
+      style={disabled ? { opacity: 0.5, pointerEvents: 'none' } : undefined}
+      onPointerDown={(e) => {
+        if (!scroll || disabled) return
+        dragged.current = false
+        drag.current = { startX: e.clientX, startLeft: e.currentTarget.scrollLeft }
+      }}
+      onPointerMove={(e) => {
+        const d = drag.current
+        if (!d) return
+        const dx = e.clientX - d.startX
+        if (Math.abs(dx) <= 3) return
+        dragged.current = true
+        // 确认是拖拽后才捕获指针：这样单纯点击不会被 capture 干扰。
+        e.currentTarget.setPointerCapture(e.pointerId)
+        e.currentTarget.scrollLeft = d.startLeft - dx
+      }}
+      onPointerUp={() => {
+        drag.current = null
+      }}
+      onPointerCancel={() => {
+        drag.current = null
+      }}
     >
       {options.map((o) => {
         const active = o.value === value
         return (
           <button
             key={o.value}
-            onClick={() => onChange(o.value)}
+            disabled={disabled}
+            onClick={() => {
+              // 刚发生拖拽：这次抬起不算点击，避免拖动时误切选项。
+              if (dragged.current) {
+                dragged.current = false
+                return
+              }
+              onChange(o.value)
+            }}
             className="relative shrink-0 rounded-lg px-3 py-1.5 text-[13px] font-medium transition-colors no-drag whitespace-nowrap"
             style={{ color: active ? 'var(--text-primary)' : 'var(--text-secondary)' }}
           >
@@ -446,7 +501,7 @@ export function Select({
   onChange,
   options,
   disabled,
-  placeholder = '请选择',
+  placeholder,
   className = ''
 }: {
   value: string
@@ -456,6 +511,7 @@ export function Select({
   placeholder?: string
   className?: string
 }): JSX.Element {
+  const { t } = useApp()
   const [open, setOpen] = useState(false)
   const [pos, setPos] = useState<{
     left: number
@@ -534,7 +590,7 @@ export function Select({
         className="input flex w-full items-center justify-between gap-2 no-drag"
         style={{ opacity: disabled ? 0.5 : 1, cursor: disabled ? 'default' : 'pointer' }}
       >
-        <span className="truncate">{current ? current.label : placeholder}</span>
+        <span className="truncate">{current ? current.label : placeholder ?? t('cmp.select.placeholder')}</span>
         <Icon
           name="chevronRight"
           size={14}
@@ -557,7 +613,7 @@ export function Select({
             >
               <div className="overflow-y-auto" style={{ maxHeight: pos.listMax }} role="listbox">
                 {options.length === 0 ? (
-                  <div className="px-3 py-3 text-center text-[13px] opacity-60">无可选项</div>
+                  <div className="px-3 py-3 text-center text-[13px] opacity-60">{t('cmp.select.empty')}</div>
                 ) : (
                   options.map((o) => {
                     const active = o.value === value
@@ -611,12 +667,16 @@ export function yggdrasilOrigin(server: string): string {
   return withScheme.match(/^(https?:\/\/[^/]+)/i)?.[1] ?? ''
 }
 
+/** 头像候选：在线面像源（url），或「本地裁切皮肤贴图合成头部」（local）。 */
+type FaceStep = { url: string } | { local: true }
+
 export function Avatar({
   name,
   uuid,
   skinUrl,
   authType,
   yggdrasilServer,
+  offline,
   size = 44
 }: {
   name?: string
@@ -627,38 +687,51 @@ export function Avatar({
   authType?: 'microsoft' | 'offline' | 'yggdrasil'
   /** Yggdrasil 认证服务器地址（完整认证基址），用于推导第三方头像接口。 */
   yggdrasilServer?: string
+  /** 离线（破解）账号：其 UUID 是按名字推导出来的假 UUID，uuid 类头像源不可用。 */
+  offline?: boolean
   size?: number
 }): JSX.Element {
+  const { t } = useApp()
   const [srcIndex, setSrcIndex] = useState(0)
-  // skinFailed = 皮肤贴图本身也无法加载时，直接落到内置默认头像，绝不显示问号。
+  // skinFailed = 皮肤贴图本身也无法加载时，跳过本地合成候选，绝不显示问号。
   const [skinFailed, setSkinFailed] = useState(false)
   useEffect(() => {
     setSrcIndex(0)
     setSkinFailed(false)
-  }, [uuid, skinUrl, authType, yggdrasilServer])
+  }, [uuid, skinUrl, authType, yggdrasilServer, offline])
 
-  // 按优先级收集在线面像候选；每个失败后通过 srcIndex +1 回退到下一候选项。
-  const sources: string[] = []
+  // 皮肤贴图统一升级为 https（Mojang 贴图地址默认是 http://），避免混合内容被拦。
+  const skinSrc = skinUrl ? skinUrl.replace(/^http:\/\//i, 'https://') : ''
   const hash = skinUrl?.match(/([0-9a-f]{64})/i)?.[1]
 
+  /**
+   * 候选顺序（失败逐个回退）：
+   * - 「本地合成」放在最前：只有自己按游戏规则合成，外层才会像游戏里那样
+   *   比头部大一圈露出来（见下方 layer 说明）。实测 minotar / crafatar 等第三方
+   *   面像源是把外层「平贴」在脸上的（外层宽度 = 脸宽），看不出外层，
+   *   与期望效果不符，所以只作为兜底。
+   * - 离线账号的 UUID 是按名字推导的假 UUID，uuid 类头像源只会返回通用 Steve
+   *   （既不是本账号皮肤、也没有外层），因此直接跳过 uuid 类源。
+   */
+  const steps: FaceStep[] = []
+  if (skinSrc) steps.push({ local: true })
   if (authType === 'yggdrasil') {
-    // 第三方账号：头像统一走认证站根域的 /avatar/player/{角色名}
-    //（official 头像源按 uuid 在很多第三方站会 404，minotar 又只返回 Steve 占位图）。
     const origin = yggdrasilOrigin(yggdrasilServer ?? '')
-    if (name && origin) sources.push(`${origin}/avatar/player/${encodeURIComponent(name)}`)
-    if (hash) sources.push(`https://mc-heads.net/avatar/${hash}`)
+    if (name && origin) steps.push({ url: `${origin}/avatar/player/${encodeURIComponent(name)}` })
+    if (hash) steps.push({ url: `https://mc-heads.net/avatar/${hash}` })
   } else {
-    // 正版 / 离线账号：Mojang 官方面像源按 uuid 优先，名字兜底，逐级回退。
-    if (uuid) sources.push(`https://mc-heads.net/avatar/${uuid}`)
-    if (uuid) sources.push(`https://minotar.net/helm/${uuid}`)
-    if (uuid) sources.push(`https://crafatar.com/avatars/${uuid}?overlay`)
-    if (hash) sources.push(`https://mc-heads.net/avatar/${hash}`)
-    if (name) sources.push(`https://minotar.net/avatar/${encodeURIComponent(name)}`)
+    if (uuid && !offline) steps.push({ url: `https://mc-heads.net/avatar/${uuid}` })
+    if (uuid && !offline) steps.push({ url: `https://minotar.net/helm/${uuid}` })
+    if (uuid && !offline) steps.push({ url: `https://crafatar.com/avatars/${uuid}?overlay` })
+    if (hash) steps.push({ url: `https://mc-heads.net/avatar/${hash}` })
+    if (name) steps.push({ url: `https://minotar.net/avatar/${encodeURIComponent(name)}` })
   }
 
+  const step = steps[srcIndex]
+
   // 在线面像源（失败逐个回退）。
-  const faceUrl = sources[srcIndex]
-  if (faceUrl) {
+  if (step && !('local' in step) && step.url) {
+    const faceUrl = step.url
     return (
       <img
         src={faceUrl}
@@ -677,29 +750,41 @@ export function Avatar({
     )
   }
 
-  // 兜底一：在线面像源全部失败后，直接裁切皮肤贴图渲染头部（脸 + 帽子层）。
-  // 皮肤贴图自身加载失败时也会落到默认头像。
-  if (skinUrl && !skinFailed) {
-    const scale = size * 8
-    const layer = (px: number): CSSProperties => ({
+  // 本地合成：裁切皮肤贴图渲染头部（基础脸层 + 帽子外层）。
+  //
+  // 关键：游戏里帽子立方体是 9×9，比头部 8×8 大 1/8，所以外层应当「从头四周露出一圈」。
+  // 因此这里把外层铺满整个容器、把基础层缩到 8/9 并居中——外层就会自然外扩
+  // （外层内缩 1/18 ≈ 5.6%，实测与期望效果一致）。若两者同尺寸直接叠加，
+  // 外层只会平贴在脸上、看不出「外层」。
+  if (step && 'local' in step && !skinFailed) {
+    const layer = (bgSize: number, posX: number, posY: number): CSSProperties => ({
       position: 'absolute',
       inset: 0,
-      backgroundImage: `url(${skinUrl})`,
-      backgroundSize: `${scale}px ${scale}px`,
-      backgroundPosition: `${-px}px ${-size}px`,
+      backgroundImage: `url(${skinSrc})`,
+      // 高度用 auto：兼容 64x32 的旧版皮肤（避免被纵向拉伸），64x64 时结果不变。
+      backgroundSize: `${bgSize}px auto`,
+      backgroundPosition: `${posX}px ${posY}px`,
       imageRendering: 'pixelated'
     })
+    // 外层：1 个皮肤像素 = size/8，区域为皮肤 x∈[40,48)、y∈[8,16)，正好铺满 size×size
+    const hatBg = size * 8
+    const hatX = -5 * size
+    const hatY = -size
+    // 基础层：按 8/9 缩放并居中（区域为皮肤 x∈[8,16)、y∈[8,16)，故横纵偏移相同）
+    const baseBg = (size / 9) * 64
+    const basePos = -(5 / 6) * size
     return (
       <>
-        {/* 不可见的皮肤探测图：加载失败即回退默认头像 */}
+        {/* 不可见的皮肤探测图：加载失败即跳过本候选，继续回退后续头像源 */}
         <img
-          src={skinUrl}
+          src={skinSrc}
           alt=""
           aria-hidden
           className="hidden"
           onError={() => {
-            console.warn(`皮肤贴图加载失败，回退默认头像：${skinUrl}`)
+            console.warn(`皮肤贴图加载失败，跳过本地合成：${skinSrc}`)
             setSkinFailed(true)
+            setSrcIndex((i) => i + 1)
           }}
         />
         <div
@@ -712,23 +797,69 @@ export function Avatar({
             flexShrink: 0
           }}
         >
-          <div style={layer(size)} />
-          <div style={layer(size * 5)} />
+          {/* 基础脸层（缩到 8/9 居中），上叠铺满容器的帽子外层 → 外层露出约 1/18 */}
+          <div style={layer(baseBg, basePos, basePos)} />
+          <div style={layer(hatBg, hatX, hatY)} />
         </div>
       </>
     )
   }
 
-  // 兜底二：一律落到内置默认头像，绝不显示问号/字母占位。
+  // 最终兜底：内置默认头像，绝不显示问号/字母占位。
   return (
     <img
       src={defaultAvatar}
       width={size}
       height={size}
-      alt="默认头像"
+      alt={t('cmp.avatar.defaultAlt')}
       className="rounded-xl"
       draggable={false}
       style={{ objectFit: 'cover', flexShrink: 0 }}
+    />
+  )
+}
+
+/* ------------------------------------------------------------------ */
+/* Markdown（更新日志 / 完整介绍等富文本渲染）                          */
+/* ------------------------------------------------------------------ */
+
+/** 渲染前的 XSS 基础清理：移除脚本类标签、on* 事件属性与 javascript: 协议。 */
+function sanitizeHtml(html: string): string {
+  return html
+    .replace(/<\s*(script|style|iframe)\b[^>]*>[\s\S]*?<\s*\/\s*\1\s*>/gi, '')
+    .replace(/<\s*\/?\s*(script|style|iframe)\b[^>]*>/gi, '')
+    .replace(/\son\w+\s*=\s*"[^"]*"/gi, '')
+    .replace(/\son\w+\s*=\s*'[^']*'/gi, '')
+    .replace(/\son\w+\s*=\s*[^\s>]+/gi, '')
+    .replace(/javascript:/gi, '')
+}
+
+/** 正文内的通用 Markdown 排版样式（标题 / 列表 / 代码块 / 引用 / 链接）。 */
+export const MARKDOWN_PROSE_CLASS =
+  'selectable [&_a]:underline [&_blockquote]:border-l-2 [&_blockquote]:pl-3 [&_blockquote]:opacity-80 [&_code]:rounded [&_code]:bg-[var(--fill-secondary)] [&_code]:px-1 [&_code]:py-0.5 [&_h1]:mb-2 [&_h1]:mt-4 [&_h1]:text-[18px] [&_h1]:font-semibold [&_h2]:mb-2 [&_h2]:mt-4 [&_h2]:text-[16px] [&_h2]:font-semibold [&_h3]:mb-1.5 [&_h3]:mt-3 [&_h3]:text-[14px] [&_h3]:font-semibold [&_img]:my-2 [&_img]:max-w-full [&_img]:rounded-lg [&_li]:my-0.5 [&_ol]:my-2 [&_ol]:list-decimal [&_ol]:pl-5 [&_p]:my-2 [&_pre]:my-2 [&_pre]:overflow-x-auto [&_pre]:rounded-lg [&_pre]:bg-[var(--fill-secondary)] [&_pre]:p-3 [&_ul]:my-2 [&_ul]:list-disc [&_ul]:pl-5'
+
+/**
+ * 把 Markdown 文本渲染为富文本。
+ * 传入 `text`（原文）或 `html`（已渲染并清理过的 HTML）之一；空内容时渲染 `fallback`。
+ */
+export function Markdown({
+  text,
+  html: htmlProp,
+  fallback,
+  className = ''
+}: {
+  text?: string
+  html?: string
+  fallback?: ReactNode
+  className?: string
+}): JSX.Element {
+  const src = (text ?? '').trim()
+  const html = htmlProp ?? (src ? sanitizeHtml(marked.parse(src) as string) : '')
+  if (!html) return <>{fallback ?? null}</>
+  return (
+    <div
+      className={`${MARKDOWN_PROSE_CLASS} break-words ${className}`}
+      dangerouslySetInnerHTML={{ __html: html }}
     />
   )
 }

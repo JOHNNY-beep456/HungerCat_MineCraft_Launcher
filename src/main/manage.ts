@@ -2,7 +2,7 @@ import { existsSync, promises as fsp } from 'fs'
 import { basename, join } from 'path'
 import type { ModEntry, ResourceFile, ResourceKind, SchematicEntry, VersionDirKind } from '@shared/types'
 import { listArchive, readArchiveText } from './archive'
-import { findProject, findProjectByName } from './modrinth'
+import { resolveProjectByIdentity, resolveProjectByName } from './sources'
 import { listResources, rememberResourceMeta } from './resources'
 import { withLocalTimeout } from './local-timeout'
 
@@ -37,9 +37,20 @@ export function resolveVersionDir(
 /* 模组元数据识别（JAR 内 fabric.mod.json / quilt.mod.json / mods.toml）  */
 /* ------------------------------------------------------------------ */
 
-interface ModMeta {
+export interface ModMeta {
   id: string
   name: string
+  /** JAR 里声明的模组版本号；是构建占位符（`${file.jarVersion}`）或缺失时为空串。 */
+  version: string
+}
+
+/**
+ * 归一化元数据里的版本号：占位符（`${file.jarVersion}` / `${version}`，Forge 开发构建常见）
+ * 不是真实版本号，一律当作「未知」，否则会拿它去比对而误判更新。
+ */
+function cleanVersion(v: unknown): string {
+  const s = typeof v === 'string' ? v.trim() : ''
+  return s && !s.includes('$') && !s.includes('{') ? s : ''
 }
 
 async function readModMeta(path: string): Promise<ModMeta | null> {
@@ -64,7 +75,8 @@ async function readModMeta(path: string): Promise<ModMeta | null> {
           : typeof loader?.metadata?.name === 'string'
             ? loader.metadata.name
             : ''
-      if (id || name) return { id, name }
+      const version = cleanVersion(loader?.version ?? loader?.metadata?.version)
+      if (id || name) return { id, name, version }
     } catch {
       /* 继续尝试其它元数据 */
     }
@@ -77,7 +89,8 @@ async function readModMeta(path: string): Promise<ModMeta | null> {
       const raw = await readArchiveText(path, toml)
       const id = raw.match(/modId\s*=\s*"([^"]+)"/)?.[1] ?? ''
       const name = raw.match(/displayName\s*=\s*"([^"]+)"/)?.[1] ?? ''
-      if (id || name) return { id, name }
+      const version = cleanVersion(raw.match(/\bversion\s*=\s*"([^"]+)"/)?.[1] ?? '')
+      if (id || name) return { id, name, version }
     } catch {
       /* ignore */
     }
@@ -85,13 +98,13 @@ async function readModMeta(path: string): Promise<ModMeta | null> {
   return null
 }
 
-interface LoadedMod {
+export interface LoadedMod {
   mod: ModEntry
   meta: ModMeta | null
 }
 
 /** 读取模组文件清单并提取 JAR 元数据（本地 tar，不联网）。 */
-async function loadModFiles(dir: string): Promise<LoadedMod[]> {
+export async function loadModFiles(dir: string): Promise<LoadedMod[]> {
   const entries = await fsp.readdir(dir, { withFileTypes: true })
   const mods: LoadedMod[] = []
   for (const e of entries) {
@@ -111,7 +124,7 @@ async function loadModFiles(dir: string): Promise<LoadedMod[]> {
 }
 
 /** 以受控并发（默认上限）映射处理列表。 */
-async function mapLimit<T, R>(items: T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
+export async function mapLimit<T, R>(items: T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
   const out = new Array<R>(items.length)
   let cursor = 0
   const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
@@ -156,14 +169,16 @@ export async function enrichMods(
   }
   await mapLimit(loaded, 6, async ({ mod, meta }) => {
             if (!meta) return
-            const project = await findProject(meta.id, meta.name)
+            const project = await resolveProjectByIdentity(meta.id, meta.name)
             if (project)
               onUpdate({
                 ...mod,
                 displayName: project.title,
                 iconUrl: project.icon_url,
                 slug: project.slug,
-                description: project.description
+                description: project.description,
+                source: project.source,
+                pageUrl: project.pageUrl
               })
           })
 }
@@ -173,7 +188,7 @@ export async function enrichMods(
 /* ------------------------------------------------------------------ */
 
 /** 把安装文件名收拾成搜索关键词。 */
-function packSearchName(fileName: string): string {
+export function packSearchName(fileName: string): string {
   return (
     fileName
       // 扩展名
@@ -212,14 +227,16 @@ export async function enrichResources(
   const pending = files.filter((f) => !f.displayName)
   const type = kind === 'shaderpacks' ? 'shader' : 'resourcepack'
   await mapLimit(pending, 4, async (file) => {
-    const project = await findProjectByName(packSearchName(file.name), type)
+    const project = await resolveProjectByName(packSearchName(file.name), type)
     if (!project) return
     const enriched: ResourceFile = {
       ...file,
       displayName: project.title,
       iconUrl: project.icon_url,
       slug: project.slug,
-      description: project.description
+      description: project.description,
+      source: project.source,
+      pageUrl: project.pageUrl
     }
     rememberResourceMeta(enriched)
     onUpdate(enriched)
