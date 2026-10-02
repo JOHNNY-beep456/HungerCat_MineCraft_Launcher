@@ -614,6 +614,72 @@ textarea.input {
   -webkit-app-region: no-drag;
 }
 
+/* --- 联机板块（MCTier 移植）局部控件 --- */
+.mp-input {
+  width: 100%;
+  padding: 7px 11px;
+  border-radius: 12px;
+  border: 1px solid var(--divider);
+  background: var(--fill-secondary);
+  color: var(--text-primary);
+  font-size: 13px;
+  line-height: 1.5;
+  outline: none;
+  transition: border-color 0.16s ease, background 0.16s ease;
+}
+.mp-input::placeholder {
+  color: var(--text-tertiary, var(--text-secondary));
+  opacity: 0.7;
+}
+.mp-input:focus {
+  border-color: var(--fill-primary);
+  background: var(--fill-secondary-hover);
+}
+.mp-input:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.mp-hotkey {
+  min-width: 118px;
+  padding: 6px 12px;
+  border-radius: 11px;
+  border: 1px solid var(--divider);
+  background: var(--fill-secondary);
+  color: var(--text-primary);
+  font-size: 12.5px;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+  transition: border-color 0.16s ease, background 0.16s ease;
+}
+.mp-hotkey:hover {
+  background: var(--fill-secondary-hover);
+}
+
+.mp-range {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 4px;
+  border-radius: 999px;
+  background: var(--fill-secondary-hover);
+  outline: none;
+  cursor: pointer;
+}
+.mp-range::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 15px;
+  height: 15px;
+  border-radius: 50%;
+  background: var(--fill-primary);
+  border: 2px solid var(--surface-solid, #fff);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.28);
+  cursor: grab;
+}
+.mp-range::-webkit-slider-thumb:active {
+  cursor: grabbing;
+}
+
 /* --- Reduced motion --- */
 @media (prefers-reduced-motion: reduce) {
   .app-background .blob {

@@ -8,7 +8,8 @@
 import { netRequest } from './broker'
 
 export const PARALLEL_THRESHOLD = 8 * 1024 * 1024 // 8 MB
-export const PARALLEL_CHUNKS = 8
+/** 每个文件的并发连接数（与原生内核默认值保持一致）。 */
+export const PARALLEL_CHUNKS = 64
 
 export interface StreamDownloadOptions {
   signal?: AbortSignal
@@ -20,6 +21,8 @@ export interface StreamDownloadOptions {
   sizeHint?: number
   /** 附加请求头（会覆盖默认 User-Agent，例如 CurseForge 需要浏览器 UA）。 */
   headers?: Record<string, string>
+  /** 单文件并发连接数；缺省由原生内核使用默认值（64）。 */
+  connections?: number
 }
 
 interface StreamProgress {
@@ -32,7 +35,13 @@ interface StreamProgress {
 export async function streamDownload(url: string, dest: string, opts: StreamDownloadOptions = {}): Promise<void> {
   await netRequest<{ ok: boolean }>(
     'stream:download',
-    { url, dest, sizeHint: opts.sizeHint, headers: opts.headers },
+    {
+      url,
+      dest,
+      sizeHint: opts.sizeHint,
+      headers: opts.headers,
+      connections: opts.connections ?? PARALLEL_CHUNKS
+    },
     {
       signal: opts.signal,
       onProgress: (_taskId, raw) => {

@@ -125,7 +125,7 @@ export function HomepagePage(): JSX.Element {
   const installFromMarket = async (item: MarketScript): Promise<void> => {
     setBusyId(item.id)
     try {
-      const entry = await window.api.homepage.download(item.url, `${item.id}.html`)
+      const entry = await window.api.homepage.download(item.url, `${item.id}.html`, item.size)
       await refresh()
       setGateId(entry.id)
     } catch (err) {

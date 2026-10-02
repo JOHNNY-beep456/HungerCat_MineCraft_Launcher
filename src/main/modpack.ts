@@ -14,7 +14,6 @@ import type {
   ModpackFormat,
   ModpackProbe
 } from '@shared/types'
-import type { MirrorKind } from './mirror'
 import { streamDownload } from './stream-download'
 import { netRequest } from './broker'
 import { CLASS_DIR, cfClassIds, cfFileById, cfFilesByIds, type CfFile } from './curseforge'
@@ -521,15 +520,14 @@ export async function probeModpack(archive: string): Promise<ModpackProbe> {
 async function downloadInstance(
   id: string,
   gameDir: string,
-  kind: MirrorKind,
   onProgress: (p: DownloadProgress) => void,
   signal?: AbortSignal
 ): Promise<void> {
   const s = settings.get()
-  const json = await resolveVersionJson(id, kind, gameDir)
-  await installVersion(json, gameDir, kind, s.maxDownloadConcurrency, (p) => {
+  const json = await resolveVersionJson(id, gameDir)
+  await installVersion(json, gameDir, s.maxDownloadConcurrency, (p) => {
     onProgress({ ...p, taskId: 'modpack' })
-  }, signal)
+  }, signal, s.downloadConnections)
 }
 
 async function installInstance(
@@ -538,7 +536,6 @@ async function installInstance(
   loaderVersion: string,
   gameDir: string,
   instanceName: string,
-  kind: MirrorKind,
   onProgress: (p: DownloadProgress) => void,
   onLog: (l: string) => void,
   signal?: AbortSignal
@@ -551,24 +548,24 @@ async function installInstance(
 
   if (!loader) {
     await createVanillaInstance(gameDir, mcVersion, instanceName)
-    await downloadInstance(instanceName, gameDir, kind, onProgress, signal)
+    await downloadInstance(instanceName, gameDir, onProgress, signal)
     return
   }
 
   if (loader === 'fabric' || loader === 'quilt') {
-    await downloadInstance(mcVersion, gameDir, kind, onProgress, signal)
+    await downloadInstance(mcVersion, gameDir, onProgress, signal)
     const id = await installLoader(loader as LoaderKind, mcVersion, loaderVersion, gameDir, instanceName)
-    await downloadInstance(id, gameDir, kind, onProgress, signal)
+    await downloadInstance(id, gameDir, onProgress, signal)
     return
   }
 
   if (loader === 'forge' || loader === 'neoforge') {
-    await downloadInstance(mcVersion, gameDir, kind, onProgress, signal)
+    await downloadInstance(mcVersion, gameDir, onProgress, signal)
     const s = settings.get()
     const java = await pickInstallerJava(allVersionDirs(s).map((d) => d.path), s.javaPath, requiredJavaForMc(mcVersion))
     if (!java) throw new Error('未找到 Java，无法安装 Forge/NeoForge 加载器')
     const id = await installForge(loader as ForgeKind, mcVersion, loaderVersion, gameDir, java.path, onLog, instanceName, onProgress, signal)
-    await downloadInstance(id, gameDir, kind, onProgress, signal)
+    await downloadInstance(id, gameDir, onProgress, signal)
     return
   }
 
@@ -749,6 +746,7 @@ async function applyModpackFiles(
             await streamDownload(candidate, dest, {
               signal,
               headers: f.headers,
+              connections: settings.get().downloadConnections,
               onBytes: (n) => {
                 doneBytes += n
                 emit(rel)
@@ -899,7 +897,7 @@ export async function importModpack(
 
   onProgress({ taskId: 'modpack', task: `安装 ${name}`, current: 0, total: 1, currentBytes: 0, totalBytes: 0, phase: 'client', percent: 0 })
   try {
-    await installInstance(parsed.mcVersion, parsed.loader, loaderVersion, gameDir, name, s.mirror, onProgress, onLog, signal)
+    await installInstance(parsed.mcVersion, parsed.loader, loaderVersion, gameDir, name, onProgress, onLog, signal)
     await applyModpackFiles(archive, format, parsed, gameDir, name, onProgress, onLog, signal)
   } catch (err) {
     // 中途取消 / 失败也补发 done，清理进度条目，再向上抛出。
@@ -960,6 +958,7 @@ export async function downloadModpack(
   try {
     await streamDownload(url, tmp, {
       signal,
+      connections: settings.get().downloadConnections,
       onSize: (size) => {
         total = size
         emit()
@@ -999,10 +998,9 @@ export async function downloadModpack(
 
 async function getInstanceMeta(
   versionId: string,
-  gameDir: string,
-  kind: MirrorKind
+  gameDir: string
 ): Promise<{ mcVersion: string; loader: string | null }> {
-  const json = await resolveVersionJson(versionId, kind, gameDir)
+  const json = await resolveVersionJson(versionId, gameDir)
   const mcVersion = json.clientVersion ?? json.inheritsFrom ?? json.id
   const libs = (json.libraries ?? []).map((l) => l.name ?? '').join(' ')
   let loader: string | null = null
@@ -1093,7 +1091,7 @@ export async function exportModpack(
   const s = settings.get()
   const isolated = s.versionIsolation || s.isolatedVersions.includes(versionId)
   const runDir = isolated ? join(gameDir, 'versions', versionId) : gameDir
-  const meta = await getInstanceMeta(versionId, gameDir, s.mirror)
+  const meta = await getInstanceMeta(versionId, gameDir)
   const format = options.format
 
   const tmp = join(tmpdir(), `hc-export-${Date.now()}-${Math.random().toString(36).slice(2)}`)

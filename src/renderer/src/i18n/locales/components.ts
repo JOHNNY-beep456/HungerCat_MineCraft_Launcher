@@ -79,9 +79,9 @@ export const messages: LocaleDict = {
     'cmp.agreement.noContent': '（暂无内容）',
     // Java 版本提示（JavaPrompt）
     'cmp.javaPrompt.title': 'Java 版本不匹配',
-    'cmp.javaPrompt.subtitle': '该版本需要 Java {n} 或更高版本',
+    'cmp.javaPrompt.subtitle': '该版本需要 Java {n}',
     'cmp.javaPrompt.body':
-      '未检测到兼容的 Java 运行时。你可以自动下载并安装 Java {n}（Adoptium Temurin），或取消本次启动。',
+      '未检测到合适的 Java {n} 运行时。你可以自动下载并安装 Java {n}（Adoptium Temurin），或取消本次启动。',
     'cmp.javaPrompt.cancel': '取消启动',
     'cmp.javaPrompt.installing': '安装中…',
     'cmp.javaPrompt.install': '自动安装 Java {n}'
@@ -158,9 +158,9 @@ export const messages: LocaleDict = {
     'cmp.agreement.agree': '同意並繼續',
     'cmp.agreement.noContent': '（暫無內容）',
     'cmp.javaPrompt.title': 'Java 版本不相符',
-    'cmp.javaPrompt.subtitle': '此版本需要 Java {n} 或更高版本',
+    'cmp.javaPrompt.subtitle': '此版本需要 Java {n}',
     'cmp.javaPrompt.body':
-      '未偵測到相容的 Java 執行環境。你可以自動下載並安裝 Java {n}（Adoptium Temurin），或取消本次啟動。',
+      '未偵測到合適的 Java {n} 執行環境。你可以自動下載並安裝 Java {n}（Adoptium Temurin），或取消本次啟動。',
     'cmp.javaPrompt.cancel': '取消啟動',
     'cmp.javaPrompt.installing': '安裝中…',
     'cmp.javaPrompt.install': '自動安裝 Java {n}'
@@ -240,9 +240,9 @@ export const messages: LocaleDict = {
     'cmp.agreement.agree': 'Agree and continue',
     'cmp.agreement.noContent': '(No content)',
     'cmp.javaPrompt.title': 'Java version mismatch',
-    'cmp.javaPrompt.subtitle': 'This version requires Java {n} or newer',
+    'cmp.javaPrompt.subtitle': 'This version requires Java {n}',
     'cmp.javaPrompt.body':
-      'No compatible Java runtime was found. You can download and install Java {n} (Adoptium Temurin) automatically, or cancel this launch.',
+      'No suitable Java {n} runtime was found. You can download and install Java {n} (Adoptium Temurin) automatically, or cancel this launch.',
     'cmp.javaPrompt.cancel': 'Cancel launch',
     'cmp.javaPrompt.installing': 'Installing…',
     'cmp.javaPrompt.install': 'Install Java {n} automatically'

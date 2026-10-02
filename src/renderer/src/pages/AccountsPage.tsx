@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { motion } from 'motion/react'
 import type { AuthStatus, DeviceCodeInfo, YggdrasilProfileOption } from '@shared/types'
 import { useApp } from '../store'
-import { Avatar, Button, GlassCard, Icon, Segmented, Spinner } from '../components/ui'
+import { Avatar, Button, GlassCard, Icon, Segmented, Spinner, yggdrasilSiteLabel } from '../components/ui'
 
 /** 账号页视图状态：账号列表，或某一种登录整页。 */
 type AccountView = 'list' | 'microsoft' | 'yggdrasil' | 'offline'
@@ -62,6 +62,22 @@ export function AccountsPage(): JSX.Element {
   const [yggPicked, setYggPicked] = useState<Set<string>>(new Set())
   const [yggCommitting, setYggCommitting] = useState(false)
   const [yggModalError, setYggModalError] = useState<string | null>(null)
+
+  // 进入账号页时，补全第三方账号缺失的「站点名称」（自动获取 Yggdrasil 元数据里的
+  // meta.serverName），随后刷新全局账号状态，让列表 / 侧栏都能显示站点名。
+  // best-effort：失败静默保留原状，不影响任何登录功能。
+  useEffect(() => {
+    let alive = true
+    void window.api.accounts
+      .refreshSiteNames()
+      .then(() => {
+        if (alive) void reloadAccounts()
+      })
+      .catch(() => undefined)
+    return () => {
+      alive = false
+    }
+  }, [reloadAccounts])
 
   const begin = useCallback(async () => {
     setView('microsoft')
@@ -273,6 +289,8 @@ export function AccountsPage(): JSX.Element {
 
         {accounts.map((a) => {
           const isSel = selectedAccount?.id === a.id
+          // 第三方账号显示站点名称（自动获取；缺失时回落到认证域名，再缺则用通用标签）。
+          const siteLabel = a.authType === 'yggdrasil' ? yggdrasilSiteLabel(a) || t('acc.chipThirdParty') : ''
           return (
             <motion.div
               key={a.id}
@@ -284,7 +302,7 @@ export function AccountsPage(): JSX.Element {
                 <div className="flex items-center gap-2">
                   <span className="title truncate">{a.name}</span>
                   {a.offline && <span className="chip">{t('acc.chipOffline')}</span>}
-                  {a.authType === 'yggdrasil' && <span className="chip">{t('acc.chipThirdParty')}</span>}
+                  {a.authType === 'yggdrasil' && <span className="chip">{siteLabel}</span>}
                   {isSel && (
                     <span className="chip" style={{ color: 'var(--fill-primary)' }}>
                       {t('acc.inUse')}

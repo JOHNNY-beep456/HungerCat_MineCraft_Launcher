@@ -1,0 +1,37 @@
+[package]
+name = "hungercat-downloader"
+version = "0.1.0"
+edition = "2021"
+license = "SEE LICENSE IN LICENSE"
+description = "HungerCat MineCraft Launcher 的原生多连接下载内核"
+
+# cdylib：产出 Node 可直接 require 的 .node 动态库。
+# rlib：便于后续写 Rust 侧集成测试。
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# Node-API 绑定：生成 ABI 稳定的原生模块，不依赖 V8 内部结构，
+# 因此对 Electron 升级不敏感（无需针对每个 Electron 版本重编译）。
+napi = { version = "2", default-features = false, features = ["napi8", "tokio_rt"] }
+napi-derive = "2"
+
+# 异步运行时：多连接下载需要真并发 IO。
+tokio = { version = "1", features = ["rt-multi-thread", "fs", "io-util", "time", "sync"] }
+
+# HTTP 客户端：原生 TLS + 连接池，单文件 32 连接时内存与 CPU 开销远低于 JS 侧。
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"] }
+
+futures-util = "0.3"
+
+# 构建脚本按 napi 约定命名，产物为 libhungercat_downloader.so/.dylib/.dll，
+# 由 scripts/build-native-downloader.mjs 改名为 .node 后放入 resources/native/。
+[build-dependencies]
+napi-build = "2"
+
+[profile.release]
+# 下载内核是纯 IO + 少量缓冲处理，体积优先。
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true

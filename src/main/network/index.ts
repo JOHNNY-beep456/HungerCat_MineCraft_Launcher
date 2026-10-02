@@ -10,8 +10,9 @@
 // 结果/进度（主进程在 child.on('message') 收到）。协议见 shared/net-protocol.ts。
 // ---------------------------------------------------------------------------
 
-import { mirrorConfig, type MirrorKind } from '../mirror'
+import { BMCLAPI, OFFICIAL } from '../mirror'
 import { streamDownload } from './stream-download'
+import { nativeStreamDownload } from '../native-downloader'
 import { translateTexts, testUapisKey } from './translate'
 import type {
   LoaderKind,
@@ -48,9 +49,12 @@ interface RawManifestVersion {
   url: string
 }
 
-function fetchVersionManifest(mirror: MirrorKind): Promise<VersionManifest> {
-  // 统一 10s 超时：避免版本清单请求挂起导致启动器卡死。
-  return fetchJson(mirrorConfig(mirror).manifest, AbortSignal.timeout(10_000)).then((raw) => {
+/**
+ * 拉取版本清单：**官方源优先**，官方不可达 / 出错时回退 BMCLAPI 镜像。
+ * 原先由用户选择的镜像源设置已移除，改为自动策略。
+ */
+async function fetchVersionManifest(): Promise<VersionManifest> {
+  const parse = (raw: unknown): VersionManifest => {
     const data = raw as { latest: { release: string; snapshot: string }; versions: RawManifestVersion[] }
     return {
       latest: data.latest,
@@ -62,12 +66,19 @@ function fetchVersionManifest(mirror: MirrorKind): Promise<VersionManifest> {
           releaseTime: v.releaseTime
         }))
     }
-  })
+  }
+  try {
+    // 统一 10s 超时：避免版本清单请求挂起导致启动器卡死。
+    return parse(await fetchJson(OFFICIAL.manifest, AbortSignal.timeout(10_000)))
+  } catch (err) {
+    console.warn(`[网络] 官方源版本清单不可用，回退 BMCLAPI：${err instanceof Error ? err.message : String(err)}`)
+    return parse(await fetchJson(BMCLAPI.manifest, AbortSignal.timeout(10_000)))
+  }
 }
 
-/** 通过版本清单定位并拉取版本 JSON（清单里的 entry.url 为官方地址，即官方源回退路径）。 */
-function fetchVersionJsonFromManifest(id: string, mirror: MirrorKind): Promise<VersionJson> {
-  return fetch(mirrorConfig(mirror).manifest, { signal: AbortSignal.timeout(10_000) })
+/** 通过指定源的版本清单定位并拉取版本 JSON（清单里的 entry.url 为该源的版本 JSON 地址）。 */
+function fetchVersionJsonFromManifest(id: string, manifestUrl: string): Promise<VersionJson> {
+  return fetch(manifestUrl, { signal: AbortSignal.timeout(10_000) })
     .then((res) => res.json() as Promise<{ versions: RawManifestVersion[] }>)
     .then((data) => {
       const entry = data.versions.find((v) => v.id === id)
@@ -76,19 +87,23 @@ function fetchVersionJsonFromManifest(id: string, mirror: MirrorKind): Promise<V
     })
 }
 
-/** 获取单个原版版本 JSON（不含 inheritsFrom 合并；合并仍由主进程 resolveVersionJson 承担）。 */
-function fetchRawVersionJson(id: string, mirror: MirrorKind): Promise<VersionJson> {
-  const fast = mirrorConfig(mirror).versionJson(id)
-  if (mirror !== 'mojang' && fast) {
-    // 镜像源的快速接口返回 404（例如尚未同步该版本）时，自动回退官方源。
-    return fetchJson(fast, AbortSignal.timeout(10_000)).catch((err: unknown) => {
-      const msg = err instanceof Error ? err.message : String(err)
-      if (!/HTTP[^\d]*404/.test(msg)) throw err
-      console.warn(`[网络] 镜像源缺少版本 ${id} 的 JSON，回退官方源`)
-      return fetchVersionJsonFromManifest(id, mirror)
-    }) as Promise<VersionJson>
+/**
+ * 获取单个原版版本 JSON（不含 inheritsFrom 合并；合并仍由主进程 resolveVersionJson 承担）。
+ * 策略：**官方源优先**（经官方清单定位 entry.url），失败后再回退 BMCLAPI
+ * （先用其直连版本 JSON 接口，失败再经 BMCLAPI 清单）。
+ */
+async function fetchRawVersionJson(id: string): Promise<VersionJson> {
+  try {
+    return await fetchVersionJsonFromManifest(id, OFFICIAL.manifest)
+  } catch (err) {
+    console.warn(`[网络] 官方源缺少版本 ${id} 的 JSON，回退 BMCLAPI：${err instanceof Error ? err.message : String(err)}`)
   }
-  return fetchVersionJsonFromManifest(id, mirror)
+  // BMCLAPI 快速接口：直连 version/<id>/json（尚未同步时再退回其清单路径）。
+  try {
+    return (await fetchJson(BMCLAPI.versionJson(id), AbortSignal.timeout(10_000))) as VersionJson
+  } catch {
+    return fetchVersionJsonFromManifest(id, BMCLAPI.manifest)
+  }
 }
 
 /* ------------------------------------------------------------------ */
@@ -352,6 +367,20 @@ async function yggdrasilRefresh(
   if (!res.ok) throw new Error(await yggdrasilError(res))
   const data = (await res.json()) as YggAuthResponse
   return { ...data, clientToken: data.clientToken ?? clientToken }
+}
+
+/**
+ * 读取 Yggdrasil 元数据中的站点名称（`meta.serverName`），用于界面标注第三方账号所属站点。
+ * 认证基址本身就是元数据端点（GET {base}），如 LittleSkin 返回「LittleSkin」。
+ * 服务端未实现 / 字段缺失时返回 undefined（调用方按域名兜底）。
+ */
+async function yggdrasilMeta(server: string): Promise<string | undefined> {
+  const base = server.trim().replace(/\/+$/, '')
+  const res = await yggdrasilFetch(base)
+  if (!res.ok) throw new Error(await yggdrasilError(res))
+  const data = (await res.json()) as { meta?: { serverName?: unknown } }
+  const name = data.meta?.serverName
+  return typeof name === 'string' && name.trim() ? name.trim() : undefined
 }
 
 function requireCryptoClientToken(): string {
@@ -692,12 +721,8 @@ async function msChain(msAccessToken: string): Promise<{
 /* 方法分发表                                                          */
 /* ------------------------------------------------------------------ */
 
-interface ManifestParams {
-  mirror: MirrorKind
-}
 interface VersionJsonParams {
   id: string
-  mirror: MirrorKind
 }
 interface LoaderParams {
   kind: LoaderKind
@@ -734,6 +759,8 @@ interface StreamDownloadParams {
   dest: string
   sizeHint?: number
   headers?: Record<string, string>
+  /** 单文件并发连接数（原生内核与 TS 回退共用）。 */
+  connections?: number
 }
 interface YggAuthParams {
   server: string
@@ -744,8 +771,8 @@ interface YggAuthParams {
 }
 
 const handlers: Record<string, NetHandler> = {
-  'versions:manifest': (p: ManifestParams) => fetchVersionManifest(p.mirror),
-  'versions:json': (p: VersionJsonParams) => fetchRawVersionJson(p.id, p.mirror),
+  'versions:manifest': () => fetchVersionManifest(),
+  'versions:json': (p: VersionJsonParams) => fetchRawVersionJson(p.id),
   'loaders:versions': (p: LoaderParams) => fetchLoaderVersions(p.kind, p.mcVersion),
   'loaders:profile': (p: LoaderParams) => fetchLoaderProfile(p.kind, p.mcVersion, p.loaderVersion ?? ''),
   'forge:versions': (p: ForgeParams) => fetchForgeVersions(p.kind, p.mcVersion),
@@ -758,6 +785,7 @@ const handlers: Record<string, NetHandler> = {
   'yggdrasil:authenticate': (p: YggAuthParams) => yggdrasilAuthenticate(p.server, p.email ?? '', p.password ?? '', p.clientToken),
   'yggdrasil:refresh': (p: YggAuthParams) =>
     yggdrasilRefresh(p.server, p.accessToken ?? '', p.clientToken ?? ''),
+  'yggdrasil:meta': (p: { server: string }) => yggdrasilMeta(p.server),
   'net:fetchJson': (p: NetJsonParams, ctx: NetHandlerCtx) => netFetchJson(p, ctx),
   'net:fetchText': (p: FetchTextParams, ctx: NetHandlerCtx) => netFetchText(p, ctx),
   'net:detectFilename': (p: DetectFilenameParams) => netDetectFilename(p),
@@ -769,12 +797,30 @@ const handlers: Record<string, NetHandler> = {
   'auth:chain': (p: { msAccessToken: string }) => msChain(p.msAccessToken),
   'auth:refreshToken': (p: RefreshTokenParams) => msRefreshToken(p),
   'stream:download': async (p: StreamDownloadParams, ctx: NetHandlerCtx) => {
+    const onBytes = (n: number): void => ctx.emit({ kind: 'bytes', n })
+    const onSize = (s: number): void => ctx.emit({ kind: 'size', s })
+
+    // 优先走原生（Rust）下载内核：32 连接 + 原生 TLS，比 JS 侧更省 CPU/内存。
+    // 返回 null 表示当前平台没有编译好的原生库 —— 这不是错误，自动回退到 TS 实现。
+    // 若原生路径抛错（HTTP/网络错误），直接上抛给上层 downloader.ts 走既有镜像回退与重试。
+    const native = await nativeStreamDownload(p.url, p.dest, {
+      signal: ctx.signal,
+      sizeHint: p.sizeHint,
+      headers: p.headers,
+      connections: p.connections,
+      onBytes,
+      onSize
+    })
+
+    if (native) return { ok: true, native: true, bytes: native.bytes, parallel: native.parallel }
+
     await streamDownload(p.url, p.dest, {
       signal: ctx.signal,
       sizeHint: p.sizeHint,
       headers: p.headers,
-      onBytes: (n) => ctx.emit({ kind: 'bytes', n }),
-      onSize: (s) => ctx.emit({ kind: 'size', s })
+      connections: p.connections,
+      onBytes,
+      onSize
     })
     return { ok: true }
   }

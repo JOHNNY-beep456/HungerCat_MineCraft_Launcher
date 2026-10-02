@@ -248,9 +248,11 @@ export function AppProvider({ children }: { children: ReactNode }): JSX.Element 
   }, [])
 
   const removeAccount = useCallback(async (id: string) => {
-    const list = await window.api.accounts.remove(id)
+    // 用主进程一并返回的账号列表与选中项更新状态：不再单独发 selected() 重新读盘，
+    // 避免「异步落盘尚未完成 → 读到删除前的旧文件 → 左下角仍显示被删用户」的竞态。
+    const { accounts: list, selected } = await window.api.accounts.remove(id)
     setAccounts(list)
-    setSelectedAccount(await window.api.accounts.selected())
+    setSelectedAccount(selected)
   }, [])
 
   const raiseSecurityAlert = useCallback((alert: SecurityAlert) => {
@@ -362,10 +364,11 @@ export function AppProvider({ children }: { children: ReactNode }): JSX.Element 
         language: 'zh-CN',
         memoryMb: 4096,
         maxDownloadConcurrency: 8,
-        mirror: 'mojang',
+        downloadConnections: 64,
         gameDir: '',
         versionDirs: [],
         selectedVersionDirId: '',
+        enableMultiplayer: false,
         javaAutoDetect: true,
         closeOnLaunch: false,
         reducedMotion: false,
@@ -398,7 +401,37 @@ export function AppProvider({ children }: { children: ReactNode }): JSX.Element 
         autoCheckHomepageUpdate: true,
         autoTranslateResources: false,
         translateResourceNames: true,
-        uapisApiKeySet: false
+        uapisApiKeySet: false,
+        multiplayerLicenseAcceptedAt: 0,
+        multiplayerPlayerName: '',
+        multiplayerUsePrivateServer: false,
+        multiplayerEasytierServer: 'udp://us01.225284.xyz:11010',
+        multiplayerSignalingServer: 'wss://mctier.pmhs.top/signaling',
+        multiplayerUseDomain: false,
+        multiplayerAutoLobbyEnabled: false,
+        multiplayerLobbyName: '',
+        multiplayerLobbyPassword: '',
+        multiplayerCustomNodes: [],
+        multiplayerSoundVolume: 0.8,
+        multiplayerDndEnabled: false,
+        multiplayerDndStart: 1320,
+        multiplayerDndEnd: 480,
+        multiplayerMicHotkey: 'Ctrl+M',
+        multiplayerGlobalMuteHotkey: 'Ctrl+T',
+        multiplayerPushToTalkHotkey: 'F2',
+        multiplayerSummonHotkey: 'Ctrl+Alt+M',
+        multiplayerDanmakuEnabled: true,
+        multiplayerDanmakuFontSize: 16,
+        multiplayerDanmakuSpeed: 8,
+        multiplayerDanmakuOpacity: 0.85,
+        multiplayerDanmakuTracks: 4,
+        multiplayerHudEnabled: false,
+        multiplayerHudOpacity: 0.8,
+        multiplayerVoiceChanger: 'off',
+        multiplayerTheme: 'system',
+        multiplayerStatsMinutes: 0,
+        multiplayerJoinCount: 0,
+        multiplayerHostCount: 0
       },
       accounts,
       selectedAccount,

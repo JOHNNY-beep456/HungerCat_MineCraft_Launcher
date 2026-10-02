@@ -263,6 +263,22 @@ export function pickJava(runtimes: JavaRuntime[], major: number): JavaRuntime | 
   return pool.find((r) => r.is64Bit) ?? pool[0] ?? null
 }
 
+/**
+ * 判断某个 Java 是否「能启动」需要 `required` 大版本的游戏（即启动前不必再提示装 Java）。
+ *
+ * - 大版本完全一致：能启动。
+ * - 比要求更高：16 及以后的要求（1.17 / Java 16 起）都能接受更高的运行时，
+ *   例如 1.17（Java 16）、1.18–1.20.4（Java 17）用 Java 21 都没问题。
+ * - 更早的版本（1.16.5 及以前，要求 Java 8）只认 Java 8：它们依赖旧字节码与已被高版本
+ *   Java 移除的内部 API，用 Java 17/21/25 启动会直接崩溃，所以此时仍应提示装 Java 8。
+ *
+ * 该判定同时用于启动前的兼容性检查：不满足时提示用户安装 Java `required`，
+ * 而不是静默用起不来的 Java 去启动。
+ */
+export function isJavaSuitable(jr: JavaRuntime, required: number): boolean {
+  return jr.major === required || (jr.major > required && required >= 16)
+}
+
 /** Minimum Java major needed to run the Forge/NeoForge installer for an MC version. */
 export function requiredJavaForMc(mcVersion: string): number {
   const [a, b, c] = mcVersion.split('.').map((n) => Number(n) || 0)

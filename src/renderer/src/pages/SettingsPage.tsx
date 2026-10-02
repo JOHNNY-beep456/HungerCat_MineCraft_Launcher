@@ -157,14 +157,15 @@ export function SettingsPage(): JSX.Element {
     !!display && (previewW > display.width || previewH > display.height)
 
   /** 手动指定 Java 可执行文件：选中即由主进程读取版本信息（自动识别 major / 厂商 / 位数），
-   *  然后加入列表并立即设为当前使用的 Java。 */
+   *  然后加入列表并记为当前 Java。不改动「自动检测」开关 —— 手动模式下它本就是关闭的，
+   *  自动检测模式下则只是补充一个检测不到的 Java 路径，不应因此关掉自动切换。 */
   const pickJava = async (): Promise<void> => {
     setJavaPickError(null)
     try {
       const jr = await window.api.java.pick()
       if (!jr) return
       setJavas((prev) => (prev.some((j) => j.path === jr.path) ? prev : [...prev, jr]))
-      await updateSettings({ javaPath: jr.path, javaAutoDetect: false })
+      await updateSettings({ javaPath: jr.path })
     } catch (err) {
       setJavaPickError(err instanceof Error ? err.message : String(err))
     }
@@ -173,6 +174,18 @@ export function SettingsPage(): JSX.Element {
   const [wallpaperPreview, setWallpaperPreview] = useState('')
   /** 开启 Win10 桌面模式前的提示弹窗。 */
   const [win10Notice, setWin10Notice] = useState(false)
+  /** 开启「联机」板块前的提示弹窗（实验性功能，提示可能有 bug）。 */
+  const [multiplayerNotice, setMultiplayerNotice] = useState(false)
+  /**
+   * 当前是否正在联机（已加入大厅）。
+   *
+   * 联机中不允许切换「联机板块」开关：开关只控制入口可见性，关掉并不能停掉
+   * 已在运行的 EasyTier 组网与信令，界面藏了、进程还在，语义混乱且难排查。
+   * 因此这里订阅主进程的大厅状态，联机期间把开关置灰并提示先退出大厅。
+   */
+  const [inLobby, setInLobby] = useState(false)
+  /** 关闭 Java「自动检测」前的二次确认弹窗。 */
+  const [javaManualNotice, setJavaManualNotice] = useState(false)
 
   /** 选图 → 主进程弹框、复制进数据目录、写设置；随后刷新 store 触发壁纸 effect。
    *  取消选择时返回的仍是原设置，刷新一次不会有副作用。 */
@@ -285,6 +298,32 @@ export function SettingsPage(): JSX.Element {
   useEffect(() => {
     void window.api.devMode.status().then(setDev).catch(() => {})
     return window.api.devMode.onChanged(setDev)
+  }, [])
+
+  /**
+   * 跟踪是否正在联机。
+   *
+   * 联机状态由主进程持有，且可能在别处变化（如在大厅内退出），因此除了首帧拉取，
+   * 还要订阅主进程广播——否则用户在大厅里退出后，设置页的开关会一直保持禁用。
+   */
+  useEffect(() => {
+    let alive = true
+    const sync = (): void => {
+      void window.api.mp
+        .getLobby()
+        .then((lobby) => {
+          if (alive) setInLobby(lobby !== null)
+        })
+        .catch(() => {
+          /* 联机模块不可用时按「未联机」处理 */
+        })
+    }
+    sync()
+    const off = window.api.mp.onLobbyChanged(sync)
+    return () => {
+      alive = false
+      off()
+    }
   }, [])
 
   // 发送验证码后的重发冷却倒计时。
@@ -692,6 +731,23 @@ export function SettingsPage(): JSX.Element {
             />
           </Row>
           <p className="caption -mt-1">{t('settings.exp.autoTheme.desc')}</p>
+
+          {/* 联机板块：实验性功能，默认隐藏。开启前必须确认「可能有 bug」提示。
+              正在联机时禁用切换：关掉开关并不会停掉已在运行的组网进程，
+              会变成「界面藏了、进程还在」的混乱状态，因此要求先退出大厅。 */}
+          <Row label={t('settings.row.multiplayer')}>
+            <Switch
+              checked={settings.enableMultiplayer}
+              disabled={inLobby}
+              onChange={(v) => {
+                if (v) setMultiplayerNotice(true)
+                else void updateSettings({ enableMultiplayer: false })
+              }}
+            />
+          </Row>
+          <p className="caption -mt-1">
+            {inLobby ? t('settings.exp.multiplayer.inLobby') : t('settings.exp.multiplayer.desc')}
+          </p>
         </Section>
 
         {/* 开发模式 */}
@@ -924,9 +980,16 @@ export function SettingsPage(): JSX.Element {
           <Row label={t('settings.row.javaAutoDetect')}>
             <Switch
               checked={settings.javaAutoDetect}
-              onChange={(v) => void updateSettings({ javaAutoDetect: v })}
+              onChange={(v) => {
+                // 关闭自动检测会改成「使用手动指定的 Java」，先二次确认再落盘；开启则直接生效。
+                if (v) void updateSettings({ javaAutoDetect: true })
+                else setJavaManualNotice(true)
+              }}
             />
           </Row>
+          {settings.javaAutoDetect && (
+            <p className="caption -mt-1">{t('settings.java.autoDetectHint')}</p>
+          )}
           <div className="mt-2">
             <div className="mb-2 flex items-center justify-between">
               <span className="caption">{t('settings.java.detected')}</span>
@@ -949,13 +1012,20 @@ export function SettingsPage(): JSX.Element {
                 <div className="caption">{t('settings.java.none')}</div>
               )}
               {javas.map((j) => {
-                const active = settings.javaPath === j.path
+                // 自动检测开启时列表只作展示：手动选择被禁用并置灰。
+                const disabledJava = settings.javaAutoDetect
+                const active = !disabledJava && settings.javaPath === j.path
                 return (
                   <button
                     key={j.path}
+                    disabled={disabledJava}
                     onClick={() => void updateSettings({ javaPath: j.path, javaAutoDetect: false })}
                     className="glass-soft flex w-full items-center justify-between rounded-xl px-3 py-2 no-drag"
-                    style={{ borderColor: active ? 'var(--fill-primary)' : undefined }}
+                    style={{
+                      borderColor: active ? 'var(--fill-primary)' : undefined,
+                      opacity: disabledJava ? 0.5 : 1,
+                      cursor: disabledJava ? 'not-allowed' : undefined
+                    }}
                   >
                     <div className="flex items-center gap-2">
                       {active && <Icon name="check" size={15} style={{ color: 'var(--fill-primary)' }} />}
@@ -976,28 +1046,35 @@ export function SettingsPage(): JSX.Element {
 
         {/* 下载 */}
         <Section title={t('settings.section.download')} icon="download">
-          <Row label={t('settings.row.mirror')}>
-            {/* 下载源已强制官方（Mojang），镜像选择置灰停用 */}
-            <Segmented
-              disabled
-              value={settings.mirror}
-              onChange={() => {}}
-              options={[
-                { value: 'mojang', label: t('settings.download.mojang') },
-                { value: 'bmclapi', label: 'BMCLAPI' }
-              ]}
-            />
-          </Row>
+          {/* 两个维度必须分开呈现，否则用户会以为「改了并发数，单文件下载就该变快」：
+              并发数管「同时下几个文件」，连接数管「一个文件开几条连接」。 */}
           <Row label={t('settings.row.concurrency')}>
             <input
               type="number"
               min={1}
-              max={32}
+              max={64}
               value={settings.maxDownloadConcurrency}
-              onChange={(e) => void updateSettings({ maxDownloadConcurrency: Number(e.target.value) || 8 })}
+              onChange={(e) => {
+                const n = clampInt(e.target.value, 1, 64, settings.maxDownloadConcurrency)
+                void updateSettings({ maxDownloadConcurrency: n })
+              }}
               className="input w-24"
             />
           </Row>
+          <Row label={t('settings.row.connections')}>
+            <input
+              type="number"
+              min={1}
+              max={256}
+              value={settings.downloadConnections}
+              onChange={(e) => {
+                const n = clampInt(e.target.value, 1, 256, settings.downloadConnections)
+                void updateSettings({ downloadConnections: n })
+              }}
+              className="input w-24"
+            />
+          </Row>
+          <p className="caption px-1">{t('settings.hint.download')}</p>
         </Section>
 
         {/* 更新 */}
@@ -1100,6 +1177,53 @@ export function SettingsPage(): JSX.Element {
         )}
       </div>
 
+      {/* 关闭 Java「自动检测」前的二次确认：关闭后将改为手动指定的 Java */}
+      <AnimatePresence>
+        {javaManualNotice && (
+          <motion.div
+            className="fixed inset-0 z-[115] flex items-center justify-center p-6"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+          >
+            <div
+              className="absolute inset-0"
+              style={{ background: 'var(--scrim)' }}
+              onClick={() => setJavaManualNotice(false)}
+            />
+            <motion.div
+              className="glass-strong relative z-10 w-full max-w-md rounded-[32px] p-7"
+              initial={{ scale: 0.92, opacity: 0, y: 24 }}
+              animate={{ scale: 1, opacity: 1, y: 0 }}
+              exit={{ scale: 0.94, opacity: 0, y: 16 }}
+              transition={{ type: 'spring', bounce: 0.2, duration: 0.45 }}
+            >
+              <div className="mb-2 flex items-center gap-2">
+                <Icon name="info" size={20} style={{ color: 'var(--fill-danger)' }} />
+                <span className="title">{t('settings.java.manual.title')}</span>
+              </div>
+              <p className="caption mt-3">{t('settings.java.manual.desc')}</p>
+              <div className="mt-6 flex items-center gap-2">
+                <Button className="flex-1" onClick={() => setJavaManualNotice(false)}>
+                  {t('settings.common.cancel')}
+                </Button>
+                <Button
+                  variant="primary"
+                  className="flex-1"
+                  icon="check"
+                  onClick={() => {
+                    setJavaManualNotice(false)
+                    void updateSettings({ javaAutoDetect: false })
+                  }}
+                >
+                  {t('settings.java.manual.confirm')}
+                </Button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
       {/* 开启 Win10 桌面模式前的提示：功能稳定性较差，仅建议尝鲜 / 测试 */}
       <AnimatePresence>
         {win10Notice && (
@@ -1136,6 +1260,49 @@ export function SettingsPage(): JSX.Element {
                   }}
                 >
                   {t('settings.win10.confirm')}
+                </Button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* 开启「联机」板块前的提示：该模块依赖组网内核与 P2P 信令，可能有 bug */}
+      <AnimatePresence>
+        {multiplayerNotice && (
+          <motion.div
+            className="fixed inset-0 z-[115] flex items-center justify-center p-6"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+          >
+            <div className="absolute inset-0" style={{ background: 'var(--scrim)' }} onClick={() => setMultiplayerNotice(false)} />
+            <motion.div
+              className="glass-strong relative z-10 w-full max-w-md rounded-[32px] p-7"
+              initial={{ scale: 0.92, opacity: 0, y: 24 }}
+              animate={{ scale: 1, opacity: 1, y: 0 }}
+              exit={{ scale: 0.94, opacity: 0, y: 16 }}
+              transition={{ type: 'spring', bounce: 0.2, duration: 0.45 }}
+            >
+              <div className="mb-2 flex items-center gap-2">
+                <Icon name="info" size={20} style={{ color: 'var(--fill-danger)' }} />
+                <span className="title">{t('settings.mpNotice.title')}</span>
+              </div>
+              <p className="caption mt-3 selectable leading-relaxed">{t('settings.mpNotice.desc')}</p>
+              <div className="mt-6 flex items-center gap-2">
+                <Button className="flex-1" onClick={() => setMultiplayerNotice(false)}>
+                  {t('settings.common.cancel')}
+                </Button>
+                <Button
+                  variant="primary"
+                  className="flex-1"
+                  icon="check"
+                  onClick={() => {
+                    setMultiplayerNotice(false)
+                    void updateSettings({ enableMultiplayer: true })
+                  }}
+                >
+                  {t('settings.mpNotice.confirm')}
                 </Button>
               </div>
             </motion.div>
@@ -1231,4 +1398,17 @@ function Row({ label, children }: { label: string; children: ReactNode }): JSX.E
       {children}
     </div>
   )
+}
+
+/**
+ * 数字输入框的取值钳制。
+ *
+ * 直接写 `Number(v) || 8` 有两个坑：清空输入框或输入 0 会被静默改成 8（用户以为
+ * 生效了其实没有），而手输超过 max 的值又会被原样保存（`max` 只约束上下箭头）。
+ * 这里统一：非法 / 空值 / 0 一律回落到上一次的有效值，合法值夹到 [min, max]。
+ */
+function clampInt(raw: string, min: number, max: number, fallback: number): number {
+  const n = Number.parseInt(raw, 10)
+  if (!Number.isFinite(n) || n <= 0) return fallback
+  return Math.min(max, Math.max(min, n))
 }

@@ -411,8 +411,13 @@ function describeDownloadFailure(err: unknown): Error {
   )
 }
 
-/** 从主页市场下载脚本并安装。 */
-export async function downloadHomepage(url: string, filename: string): Promise<HomepageEntry> {
+/** 从主页市场下载脚本并安装。
+ *
+ * 传入 `sizeHint`（市场条目已知大小）时，网络层会**跳过 HEAD 探测**直接下载：
+ * 既少一次往返，也避免 HEAD 打到 script.php 上被计一次下载（服务端虽已按方法过滤，
+ * 客户端也一并省掉这次多余请求）。
+ */
+export async function downloadHomepage(url: string, filename: string, sizeHint?: number): Promise<HomepageEntry> {
   if (!/^https:\/\//i.test(url)) throw new Error('仅支持从 https 地址下载主页脚本')
   // 按编号下载：先做格式校验，明显不合法的编号不必白跑一次网络请求。
   const scriptId = (() => {
@@ -431,7 +436,7 @@ export async function downloadHomepage(url: string, filename: string): Promise<H
   const dest = resolveEntry(id)
   await ensureDir()
   try {
-    await streamDownload(url, dest, {})
+    await streamDownload(url, dest, { sizeHint })
   } catch (err) {
     // 服务端 4xx（未公开 / 编号不存在等）会带中文正文，这里分类成可操作提示。
     await fsp.rm(dest, { force: true })
@@ -483,6 +488,7 @@ async function findHomepageUpdate(source: HomepageSource): Promise<HomepageUpdat
       latestVersion: m.version,
       latestSha256: m.sha256,
       url: m.url,
+      size: m.size,
       updatedAt: m.updatedAt
     }
   } catch {
@@ -663,6 +669,7 @@ export async function checkHomepageUpdates(): Promise<HomepageUpdate[]> {
       latestVersion: m.version,
       latestSha256: m.sha256,
       url: m.url,
+      size: m.size,
       updatedAt: m.updatedAt
     })
   }
@@ -677,7 +684,7 @@ export async function updateHomepage(update: HomepageUpdate): Promise<HomepageEn
   await ensureDir()
   const tmp = `${dest}.download`
   try {
-    await streamDownload(update.url, tmp, {})
+    await streamDownload(update.url, tmp, { sizeHint: update.size })
   } catch (err) {
     // 服务端 4xx（未公开 / 编号不存在等）会带中文正文，这里分类成可操作提示。
     await fsp.rm(tmp, { force: true })

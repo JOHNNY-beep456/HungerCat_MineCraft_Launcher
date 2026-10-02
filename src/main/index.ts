@@ -21,7 +21,8 @@ import type {
   DownloadPhase,
   ResourceUpdateInfo,
   ModSource,
-  SourceFilter
+  SourceFilter,
+  JavaRuntime
 } from '@shared/types'
 import {
   accounts,
@@ -38,13 +39,15 @@ import { initLogger, getLogBuffer, subscribeLogs } from './logger'
 import { startNetworkWorker, stopNetworkWorker, netRequest } from './broker'
 import { DedupCache } from './ipc-cache'
 import { DeviceCodeSession, refreshAccount } from './auth'
-import { loginYggdrasil, commitYggdrasilProfiles, refreshYggdrasil, ensureAuthlibInjector } from './yggdrasil'
+import { loginYggdrasil, commitYggdrasilProfiles, refreshYggdrasil, ensureAuthlibInjector, fetchYggdrasilSiteName } from './yggdrasil'
 import { fetchVersionManifest, resolveVersionJson, createVanillaInstance } from './versions'
 import { listInstalled } from './installed'
 import { scanExternalVersions, importExternalVersion } from './import-version'
 import { installVersion } from './downloader'
-import { detectJava, installJava, invalidateJavaCache, javaVersionAt, pickJava, pickInstallerJava, requiredJavaForMc } from './java'
+import { nativeDownloaderStatus } from './native-downloader'
+import { detectJava, installJava, invalidateJavaCache, isJavaSuitable, javaVersionAt, pickJava, pickInstallerJava, requiredJavaForMc } from './java'
 import { spawnGame } from './launcher'
+import { registerMultiplayerIpc, forceStopMultiplayer, getMultiplayerLobby, getMultiplayerPlayers, getMultiplayerAppState } from './multiplayer'
 import { loaderVersions, installLoader } from './loaders'
 import { forgeVersions, installForge } from './forge'
 import { installMod, downloadTo, findFabricApi } from './modrinth'
@@ -64,7 +67,7 @@ import {
 } from './files'
 import { clearWallpaper, pickWallpaper, wallpaperData } from './wallpaper'
 import { probeModpack, importModpack, importModpackFromUrl, exportModpack, collectExportInventory, downloadModpack } from './modpack'
-import { fetchAbout, fetchAgreement, fetchUpdateInfo, downloadUpdate, runUpdate, compareVersions, isPrerelease } from './server'
+import { fetchAbout, fetchAgreement, fetchUpdateInfo, downloadUpdate, runUpdate, compareVersions, isPrerelease, updateFileExists, updateFileName } from './server'
 import {
   devModeStatus,
   enforceDevModeExpiry,
@@ -114,6 +117,8 @@ let debugWindow: BrowserWindow | null = null
 let debugLogListener: ((entry: DebugLogEntry) => void) | null = null
 /** 开发模式：独立「开发者工具（F12）」窗口。 */
 let devWindow: BrowserWindow | null = null
+/** 联机板块：大厅小悬浮窗（无边框、置顶、可拖拽）。 */
+let miniWindow: BrowserWindow | null = null
 let authSession: DeviceCodeSession | null = null
 let gameProcess: ChildProcessWithoutNullStreams | null = null
 /** 全部下载任务的取消控制器，按 taskId 区分（版本安装 / Java / 资源下载共用）。 */
@@ -138,6 +143,26 @@ const installedCache = new DedupCache(60 * 1000)
 /** 已装版本列表缓存 key：当前版本目录 + 隔离策略决定扫描范围。 */
 function installedCacheKey(s: ReturnType<typeof settings.get>): string {
   return `${activeGameDir(s)}|${s.versionIsolation}|${s.isolatedVersions.join(',')}`
+}
+
+/**
+ * 挑出「适合」运行需要 `required` 大版本游戏的 Java（无合适则返回 null）。
+ *
+ * 候选 = 自动检测结果 + 「设置」里手动指定的 Java：后者可能是文件对话框选出、
+ * 不在自动扫描范围内的路径，必须一并纳入，否则会把本机已有的合适 Java 误判成没有。
+ * 判定用 isJavaSuitable（见 java.ts）：老版本（≤1.16.5）不吃更高版本的 Java。
+ */
+async function suitableJavaFor(s: LauncherSettings, required: number): Promise<JavaRuntime | null> {
+  const runtimes = await detectJava(allVersionDirs(s).map((d) => d.path))
+  const configured = s.javaPath
+  if (configured && !runtimes.some((r) => r.path === configured)) {
+    const jr = await javaVersionAt(configured)
+    if (jr) runtimes.push(jr)
+  }
+  return pickJava(
+    runtimes.filter((r) => isJavaSuitable(r, required)),
+    required
+  )
 }
 
 /* ------------------------------------------------------------------ */
@@ -317,6 +342,129 @@ function closeDebugWindow(): void {
   if (debugWindow && !debugWindow.isDestroyed()) debugWindow.close()
 }
 
+/* ------------------------------------------------------------------ */
+/* 联机板块：大厅小悬浮窗                                               */
+/* ------------------------------------------------------------------ */
+
+/**
+ * 打开（或唤起）大厅小悬浮窗。
+ *
+ * 参考 MCTier 的 MiniWindow：无边框、置顶、可拖拽、不占任务栏，方便玩家在游戏时
+ * 随时查看大厅人数与每个人的虚拟 IP。窗口独立于主界面，关闭主界面也仍可用。
+ */
+function createMiniWindow(): void {
+  if (miniWindow && !miniWindow.isDestroyed()) {
+    if (miniWindow.isMinimized()) miniWindow.restore()
+    miniWindow.show()
+    miniWindow.focus()
+    return
+  }
+
+  const iconPath = app.isPackaged
+    ? join(process.resourcesPath, 'icon.png')
+    : join(app.getAppPath(), 'build', 'icon.png')
+
+  miniWindow = new BrowserWindow({
+    width: 300,
+    height: 420,
+    minWidth: 240,
+    minHeight: 180,
+    show: false,
+    frame: false,
+    resizable: true,
+    maximizable: false,
+    fullscreenable: false,
+    skipTaskbar: true,
+    // 始终置顶：游戏时也能看到（MCTier 的迷你窗同样如此）。
+    alwaysOnTop: true,
+    hasShadow: false,
+    // 透明窗口在部分 Windows 环境（独显 + 缩放）下会出现「窗口在、内容不可见」，
+    // 用默认白色底兜底：透明由 CSS 的圆角外壳负责，视觉几乎无差别但可靠得多。
+    backgroundColor: '#00000000',
+    transparent: true,
+    icon: iconPath,
+    webPreferences: {
+      preload: join(__dirname, '../preload/index.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: false
+    }
+  })
+
+  // 用 did-finish-load 而不是 ready-to-show 来显示：透明窗口在部分 Windows 显卡 /
+  // 缩放环境下 ready-to-show 可能一直不触发，窗口就会「创建了但永远不显示」。
+  // 页面加载完成即显示，是更可靠的兜底；下面的 ready-to-show 保留为加速路径。
+  miniWindow.once('ready-to-show', () => miniWindow?.show())
+  miniWindow.webContents.once('did-finish-load', () => miniWindow?.show())
+  // 渲染失败必须留痕，否则用户只看到「点了没反应」而无从排查。
+  miniWindow.webContents.on('did-fail-load', (_e, code, desc, url) => {
+    console.error(`[悬浮窗] 页面加载失败 code=${code} ${desc} ${url}`)
+  })
+  miniWindow.webContents.on('render-process-gone', (_e, details) => {
+    console.error(`[悬浮窗] 渲染进程退出 reason=${details.reason}`)
+  })
+  miniWindow.webContents.on('console-message', (_e, level, message, line, sourceId) => {
+    // 只转发警告/错误，避免刷屏。
+    if (level >= 2) console.warn(`[悬浮窗] 控制台(${level}) ${message} (${sourceId}:${line})`)
+  })
+
+  const rendererUrl = process.env['ELECTRON_RENDERER_URL']
+  if (rendererUrl) {
+    void miniWindow.loadURL(`${rendererUrl}?window=mini`)
+  } else {
+    void miniWindow.loadFile(join(__dirname, '../renderer/index.html'), { query: { window: 'mini' } })
+  }
+
+  // 悬浮窗被用户手动关闭时清理引用。
+  miniWindow.on('closed', () => {
+    miniWindow = null
+  })
+}
+
+function closeMiniWindow(): void {
+  if (miniWindow && !miniWindow.isDestroyed()) miniWindow.close()
+}
+
+/** 是否为主界面（用于「主界面是否存在」判断，悬浮窗按此决定自己的行为）。 */
+function isMainWindow(win: BrowserWindow): boolean {
+  return !!mainWindow && !mainWindow.isDestroyed() && win.id === mainWindow.id
+}
+
+/** 向悬浮窗推送最新的大厅快照。 */
+function pushMiniWindowState(): void {
+  if (!miniWindow || miniWindow.isDestroyed()) return
+  miniWindow.webContents.send('mp:miniState', buildMiniState())
+}
+
+/**
+ * 大厅状态变化时同步所有界面。
+ *
+ * 关键：主界面与悬浮窗是两个独立渲染进程，谁发起的操作都只改主进程里的那份状态。
+ * 原来只推悬浮窗，导致「在悬浮窗里退出大厅」后主界面仍显示在大厅中（且表单页
+ * 停留不跳转）。这里统一广播 mp:lobbyChanged，两个界面各自监听并重新拉取状态。
+ * 顺带把悬浮窗快照也推一次，保持置顶小窗实时。
+ */
+function broadcastLobbyChanged(): void {
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (win.isDestroyed()) continue
+    win.webContents.send('mp:lobbyChanged')
+  }
+  pushMiniWindowState()
+}
+
+/** 组装悬浮窗所需的大厅快照。 */
+function buildMiniState(): {
+  lobby: ReturnType<typeof getMultiplayerLobby>
+  players: ReturnType<typeof getMultiplayerPlayers>
+  appState: string
+} {
+  return {
+    lobby: getMultiplayerLobby(),
+    players: getMultiplayerPlayers(),
+    appState: getMultiplayerAppState()
+  }
+}
+
 /**
  * 开发模式：打开独立「开发者工具（F12）」窗口。
  * 单独开窗而非在主界面内嵌面板，避免内容过多把主界面挤乱（用户明确要求）。
@@ -486,6 +634,18 @@ function registerIpc(): void {
   // ---- Accounts ----
   ipcMain.handle('accounts:list', () => accounts.list())
   ipcMain.handle('accounts:selected', () => accounts.selected())
+  // 站点名称是后加的字段：进入账号页时一次性补全旧账号（best-effort，失败不影响其它账号）。
+  ipcMain.handle('accounts:refreshSiteNames', async () => {
+    const targets = accounts.list().filter((a) => a.authType === 'yggdrasil' && !a.siteName && a.yggdrasilServer)
+    if (targets.length > 0) {
+      const names = await Promise.all(targets.map((a) => fetchYggdrasilSiteName(a.yggdrasilServer as string)))
+      targets.forEach((a, i) => {
+        const name = names[i]
+        if (name) accounts.upsert({ ...a, siteName: name })
+      })
+    }
+    return accounts.list()
+  })
   ipcMain.handle('accounts:remove', (_e, id: string) => accounts.remove(id))
   ipcMain.handle('accounts:select', (_e, id: string) => accounts.select(id))
   ipcMain.handle('accounts:addOffline', (_e, name: string) => {
@@ -510,13 +670,13 @@ function registerIpc(): void {
   })
 
   // ---- Versions ----
-  ipcMain.handle('versions:list', () => {
-    const mirror = settings.get().mirror
-    return versionsCache.get(`manifest:${mirror}`, () => fetchVersionManifest(mirror))
-  })
+  ipcMain.handle('versions:list', () =>
+    // 下载源固定（官方优先 + BMCLAPI 回退），无用户可选镜像，故不再把 mirror 计入缓存 key。
+    versionsCache.get('manifest', () => fetchVersionManifest())
+  )
   ipcMain.handle('versions:get', (_e, id: string) => {
     const s = settings.get()
-    return resolveVersionJson(id, s.mirror, activeGameDir(s))
+    return resolveVersionJson(id, activeGameDir(s))
   })
   ipcMain.handle('versions:createVanilla', async (_e, baseVersion: string, customName: string) => {
     await createVanillaInstance(activeGameDir(settings.get()), baseVersion, customName)
@@ -634,13 +794,13 @@ function registerIpc(): void {
   ipcMain.handle('download:install', async (event, id: string) => {
     const s = settings.get()
     const dir = activeGameDir(s)
-    const json = await resolveVersionJson(id, s.mirror, dir)
+    const json = await resolveVersionJson(id, dir)
     const controller = new AbortController()
     downloadAborts.set(id, controller)
     try {
-      await installVersion(json, dir, s.mirror, s.maxDownloadConcurrency, (p) => {
+      await installVersion(json, dir, s.maxDownloadConcurrency, (p) => {
         sendToSender(event.sender, 'download:progress', { ...p, taskId: id })
-      }, controller.signal)
+      }, controller.signal, s.downloadConnections)
     } finally {
       downloadAborts.delete(id)
     }
@@ -657,6 +817,8 @@ function registerIpc(): void {
     downloadAborts.clear()
     return true
   })
+  // 当前实际使用的下载器：原生（Rust）内核是否可用。「进度」页据此展示。
+  ipcMain.handle('download:engine', () => nativeDownloaderStatus())
 
   // ---- Mods & resources (Modrinth) ----
   // ---- Mods & resources（Modrinth 优先，未命中回落 CurseForge）----
@@ -976,18 +1138,12 @@ function registerIpc(): void {
   ipcMain.handle('java:check', async (_e, versionId: string) => {
     const s = settings.get()
     const dir = activeGameDir(s)
-    const json = await resolveVersionJson(versionId, s.mirror, dir)
+    const json = await resolveVersionJson(versionId, dir)
     const required = json.javaVersion?.majorVersion ?? 8
     const available = await detectJava(allVersionDirs(s).map((d) => d.path))
-    let compatible = false
-    const currentPath = s.javaPath
-    if (currentPath) {
-      const jr = await javaVersionAt(currentPath)
-      if (jr && jr.major >= required) compatible = true
-    }
-    if (!compatible) {
-      compatible = available.some((r) => r.major >= required)
-    }
+    // 「合适的 Java」= isJavaSuitable 判定通过（见 java.ts）。没有合适的就返回 compatible=false，
+    // 由渲染层弹「是否安装 Java {required}」提示，而不是静默用不匹配的 Java 去启动。
+    const compatible = (await suitableJavaFor(s, required)) !== null
     return { required, compatible, available }
   })
   ipcMain.handle('java:install', async (event, major: number) => {
@@ -1015,7 +1171,9 @@ function registerIpc(): void {
     }
     try {
       const path = await installJava(major, activeGameDir(s), emit, controller.signal)
-      settings.set({ javaPath: path, javaAutoDetect: false })
+      // 只记录路径，不关闭「自动检测」：否则启动器为某个版本自动装好 Java 后，
+      // 自动检测会被自己悄悄关掉，之后换版本启动时就不会再按版本切换 Java 了。
+      settings.set({ javaPath: path })
       // 新装了一个 Java：让检测缓存失效，设置页下次拉取就能看到它。
       invalidateJavaCache()
       return path
@@ -1119,7 +1277,7 @@ function registerIpc(): void {
 
     emit({ state: 'downloading' })
     const installDir = activeGameDir(s)
-    const json = await resolveVersionJson(options.versionId, s.mirror, installDir)
+    const json = await resolveVersionJson(options.versionId, installDir)
     const runDir = isIsolated(options.versionId)
       ? join(installDir, 'versions', options.versionId)
       : installDir
@@ -1128,21 +1286,24 @@ function registerIpc(): void {
     const downloadKey = options.versionId
     const controller = new AbortController()
     downloadAborts.set(downloadKey, controller)
-    const result = await installVersion(json, installDir, s.mirror, s.maxDownloadConcurrency, (p) => {
+    const result = await installVersion(json, installDir, s.maxDownloadConcurrency, (p) => {
       sendToSender(event.sender, 'download:progress', { ...p, taskId: options.versionId })
-    }, controller.signal).finally(() => {
+    }, controller.signal, s.downloadConnections).finally(() => {
       downloadAborts.delete(downloadKey)
     })
 
-    let javaPath = options.javaPath || s.javaPath
+    // Java 选择优先级：启动前提示里当场选择的路径 >（关闭自动检测时）手动指定的 Java >
+    // 按该游戏版本所需大版本自动挑选。开启自动检测时忽略手动指定的路径，
+    // 这样 1.12.2（Java 8）与 1.20.5+（Java 21）等不同版本能各自用上对的 Java。
+    const requiredJava = json.javaVersion?.majorVersion ?? 8
+    let javaPath = options.javaPath
+    if (!javaPath && !s.javaAutoDetect) javaPath = s.javaPath || undefined
     if (!javaPath) {
-      const major = json.javaVersion?.majorVersion ?? 8
-      const runtimes = await detectJava(allVersionDirs(s).map((d) => d.path))
-      const jr = pickJava(runtimes, major)
-      if (!jr) {
-        throw new Error(`未找到 Java ${major} 运行时，请在「设置」中手动指定 Java 路径`)
-      }
-      javaPath = jr.path
+      javaPath = (await suitableJavaFor(s, requiredJava))?.path
+    }
+    if (!javaPath) {
+      // 正常情况下渲染层已在启动前弹「是否安装 Java {requiredJava}」提示，这里只是兜底。
+      throw new Error(`未找到合适的 Java ${requiredJava} 运行时，请先在「设置」中安装或手动指定 Java 路径`)
     }
 
     if (account.authType === 'yggdrasil') {
@@ -1249,7 +1410,9 @@ function registerIpc(): void {
   ipcMain.handle('homepage:list', () => listHomepages())
   ipcMain.handle('homepage:read', (_e, id: string) => readHomepage(id))
   ipcMain.handle('homepage:importFile', () => importHomepage())
-  ipcMain.handle('homepage:download', (_e, url: string, filename: string) => downloadHomepage(url, filename))
+  ipcMain.handle('homepage:download', (_e, url: string, filename: string, sizeHint?: number) =>
+    downloadHomepage(url, filename, sizeHint)
+  )
   ipcMain.handle('homepage:remove', (_e, id: string) => removeHomepage(id))
   ipcMain.handle('homepage:verify', (_e, id: string) => verifyHomepage(id))
   ipcMain.handle('homepage:confirm', (_e, id: string, network: boolean) => confirmHomepage(id, network))
@@ -1337,9 +1500,13 @@ function registerIpc(): void {
   })
   ipcMain.handle('update:downloadAndRun', async (event, info: UpdateInfo) => {
     const s = settings.get()
-    const path = await downloadUpdate(info, s.gameDir, (p) => {
-      sendToSender(event.sender, 'update:progress', p)
-    })
+    // 已经下载过同一版本：直接运行，避免重复下载时再次对同名 exe 做覆盖写（Windows 上易 EPERM）。
+    const existing = updateFileExists(s.gameDir, info)
+    const path = existing
+      ? join(s.gameDir, 'updates', updateFileName(info))
+      : await downloadUpdate(info, s.gameDir, (p) => {
+          sendToSender(event.sender, 'update:progress', p)
+        })
     runUpdate(path)
     return path
   })
@@ -1574,6 +1741,29 @@ process.on('uncaughtException', (err) => {
 app.whenReady().then(() => {
   initLogger()
   registerIpc()
+  // 联机板块（MCTier 移植）：注册 mp:* 通道。组网资源在首次调用时才真正使用，
+  // 这里只挂 IPC，不产生额外启动开销。
+  registerMultiplayerIpc(broadcastLobbyChanged)
+  // 联机悬浮窗：创建 / 关闭 / 读取快照。
+  ipcMain.handle('mp:openMiniWindow', () => {
+    createMiniWindow()
+    // 窗口就绪后补推一次当前状态（避免首帧空白）。
+    setTimeout(pushMiniWindowState, 300)
+  })
+  ipcMain.handle('mp:closeMiniWindow', () => closeMiniWindow())
+  ipcMain.handle('mp:miniState', () => buildMiniState())
+  // 悬浮窗据此决定「退出大厅」后是自己关掉还是退回空态：
+  // 主界面还在时保持悬浮窗存活（用户可能还要继续用），否则一起关闭。
+  ipcMain.handle('mp:hasMainWindow', (e) => {
+    const win = BrowserWindow.fromWebContents(e.sender)
+    return !!win && !win.isDestroyed() && isMainWindow(win)
+  })
+  ipcMain.handle('mp:miniResize', (_e, width: number, height: number) => {
+    if (!miniWindow || miniWindow.isDestroyed()) return
+    const w = Math.max(240, Math.round(width))
+    const h = Math.max(120, Math.round(height))
+    miniWindow.setContentSize(w, h)
+  })
   // 注意：不再在启动关键路径上 fork 网络进程。netRequest 首次调用时会经 ensureNetworkWorker
   // 自动拉起，因此这里改为在窗口 ready-to-show 之后再建立（见 createWindow），
   // 避免 utilityProcess 冷启动与 Chromium 抢资源、拖慢首屏。
@@ -1606,4 +1796,7 @@ app.on('will-quit', () => {
   stopNetworkWorker()
   // 把在途的设置 / 账号异步写盘刷完，避免退出时丢掉最后一次修改。
   void flushWrites()
+  // 联机板块：退出启动器时停掉 EasyTier 与虚拟网卡，避免残留虚拟网卡影响下次启动。
+  void forceStopMultiplayer()
+  closeMiniWindow()
 })

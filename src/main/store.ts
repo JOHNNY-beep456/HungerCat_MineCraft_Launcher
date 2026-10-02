@@ -118,10 +118,12 @@ export function getDefaultSettings(): LauncherSettings {
     language: 'zh-CN',
     memoryMb: 4096,
     maxDownloadConcurrency: 8,
-    mirror: 'mojang',
+    downloadConnections: 64,
     gameDir: join(app.getPath('documents'), 'HungerCatMC'),
     versionDirs: [],
     selectedVersionDirId: '',
+    // 联机为实验性功能，默认隐藏（不在侧栏出现，也不接受导航）。
+    enableMultiplayer: false,
     javaAutoDetect: true,
     closeOnLaunch: false,
     reducedMotion: false,
@@ -154,7 +156,37 @@ export function getDefaultSettings(): LauncherSettings {
     autoCheckHomepageUpdate: true,
     autoTranslateResources: false,
     translateResourceNames: true,
-    uapisApiKeySet: false
+    uapisApiKeySet: false,
+    multiplayerLicenseAcceptedAt: 0,
+    multiplayerPlayerName: '',
+    multiplayerUsePrivateServer: false,
+    multiplayerEasytierServer: 'udp://us01.225284.xyz:11010',
+    multiplayerSignalingServer: 'wss://mctier.pmhs.top/signaling',
+    multiplayerUseDomain: false,
+    multiplayerAutoLobbyEnabled: false,
+    multiplayerLobbyName: '',
+    multiplayerLobbyPassword: '',
+    multiplayerCustomNodes: [],
+    multiplayerSoundVolume: 0.8,
+    multiplayerDndEnabled: false,
+    multiplayerDndStart: 1320,
+    multiplayerDndEnd: 480,
+    multiplayerMicHotkey: 'Ctrl+M',
+    multiplayerGlobalMuteHotkey: 'Ctrl+T',
+    multiplayerPushToTalkHotkey: 'F2',
+    multiplayerSummonHotkey: 'Ctrl+Alt+M',
+    multiplayerDanmakuEnabled: true,
+    multiplayerDanmakuFontSize: 16,
+    multiplayerDanmakuSpeed: 8,
+    multiplayerDanmakuOpacity: 0.85,
+    multiplayerDanmakuTracks: 4,
+    multiplayerHudEnabled: false,
+    multiplayerHudOpacity: 0.8,
+    multiplayerVoiceChanger: 'off',
+    multiplayerTheme: 'system',
+    multiplayerStatsMinutes: 0,
+    multiplayerJoinCount: 0,
+    multiplayerHostCount: 0
   }
 }
 
@@ -193,9 +225,6 @@ export const settings = {
     const s = { ...getDefaultSettings(), ...raw }
     // 派生状态：KEY 是否已保存以主进程的加密存储为准（该字段本身不持久化）。
     s.uapisApiKeySet = hasUapisKey()
-    // 下载源强制官方（Mojang）：镜像选择已置灰停用，这里把历史遗留的 'bmclapi'
-    // 一律归一为 'mojang'，避免旧配置继续走镜像源。
-    s.mirror = 'mojang'
     // 旧版本有独立的「原毛玻璃」实验项（'glass'），现已取消并成为默认观感，
     // 读到旧值时归一为 'off'，避免落到一个已不存在的皮肤上。
     if ((s.experimental as string) === 'glass') s.experimental = 'off'
@@ -216,8 +245,6 @@ export const settings = {
     const next = { ...this.get(), ...partial }
     // 派生字段不落盘：免得 settings.json 里的值与真实存储不一致。
     delete (next as Partial<LauncherSettings>).uapisApiKeySet
-    // 下载源强制官方：镜像选择已置灰停用，任何写入都改不回镜像源。
-    next.mirror = 'mojang'
     // 内存缓存先行：渲染层立刻拿到新值（乐观更新），落盘在后台异步完成，
     // 不再让「切换版本 / 切换版本目录」此类高频写入同步阻塞主进程事件循环。
     cachedSettings = { ...next, uapisApiKeySet: hasUapisKey() }
@@ -252,9 +279,32 @@ interface AccountsFile {
 
 const emptyAccounts: AccountsFile = { selectedId: null, accounts: [] }
 
+/**
+ * 账号内存缓存。
+ *
+ * 与 settings 同理：`accounts.json` 的写盘已改为异步（writeJsonAsync），若读接口仍每次去读盘，
+ * 就会出现「刚删了账号、紧接着的 selected() 又读回删除前的旧文件」这种竞态 ——
+ * 渲染层于是把已删除账号当成当前账号显示（左下角仍显示被删用户）。
+ *
+ * 因此这里同样以内存为唯一真源：所有读写都走缓存，写操作同步更新缓存、异步落盘。
+ * 只有本进程会写 accounts.json，故缓存可靠。
+ */
+let cachedAccounts: AccountsFile | null = null
+
+/** 让账号缓存失效（下次读取时重新读盘归一化）。 */
+export function invalidateAccountsCache(): void {
+  cachedAccounts = null
+}
+
 export const accounts = {
   all(): AccountsFile {
-    return readJson<AccountsFile>('accounts.json', emptyAccounts)
+    if (cachedAccounts) return cachedAccounts
+    const raw = readJson<Partial<AccountsFile>>('accounts.json', emptyAccounts)
+    cachedAccounts = {
+      selectedId: typeof raw.selectedId === 'string' ? raw.selectedId : null,
+      accounts: Array.isArray(raw.accounts) ? raw.accounts : []
+    }
+    return cachedAccounts
   },
   list(): MinecraftAccount[] {
     return this.all().accounts
@@ -272,12 +322,14 @@ export const accounts = {
     writeJsonAsync('accounts.json', f)
     return f.accounts
   },
-  remove(id: string): MinecraftAccount[] {
+  remove(id: string): { accounts: MinecraftAccount[]; selected: MinecraftAccount | null } {
     const f = this.all()
     f.accounts = f.accounts.filter((a) => a.id !== id)
     if (f.selectedId === id) f.selectedId = f.accounts[0]?.id ?? null
     writeJsonAsync('accounts.json', f)
-    return f.accounts
+    // 一并返回删除后的「选中账号」，渲染层无需再单独发一次 selected() ——
+    // 那次单独读取既多一次 IPC，也正是此前读到旧盘数据的竞态来源。
+    return { accounts: f.accounts, selected: this.selected() }
   },
   select(id: string): MinecraftAccount | null {
     const f = this.all()

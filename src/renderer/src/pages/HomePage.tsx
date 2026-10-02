@@ -144,12 +144,13 @@ export function HomePage(): JSX.Element {
     if (!selectedAccount) return
     if (!versionId) return
     void updateSettings({ memoryMb: memory })
+    // 不传 javaPath：由主进程按「Java 管理 → 自动检测」开关决定用哪个 Java。
+    // （传 settings.javaPath 会绕过自动检测，导致切换游戏版本时不换 Java。）
     void launch({
       versionId,
       accountId: selectedAccount.id,
       gameDir: activeGameDir(settings),
-      memoryMb: memory,
-      javaPath: settings.javaPath || undefined
+      memoryMb: memory
     })
   }
 

@@ -116,13 +116,15 @@ export function RuntimeProvider({ children }: { children: ReactNode }): JSX.Elem
       }
     })
     const offLaunch = window.api.launch.onEvent((e: LaunchEvent) => {
-      if (e.state === 'running') {
-        if (e.pid) setLaunchPid(e.pid)
-        setLaunchState('running')
-      } else if (e.state === 'downloading') {
-        setLaunchState('downloading')
-      } else {
-        setLaunchState(e.state)
+      // 纯日志事件（只有 log、无 state）不改变状态：状态只由生命周期事件驱动，
+      // 避免每来一行游戏输出都把状态刷回「运行中」。
+      if (e.state) {
+        if (e.state === 'running') {
+          if (e.pid) setLaunchPid(e.pid)
+          setLaunchState('running')
+        } else {
+          setLaunchState(e.state)
+        }
       }
       const log = e.log
       if (log) {

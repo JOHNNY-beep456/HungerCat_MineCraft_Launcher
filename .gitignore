@@ -8,3 +8,20 @@ release
 .vscode
 server
 /assets
+# 联机板块（MCTier 移植）的 EasyTier 内核与驱动：体积大且受各自许可约束，不进 Git。
+# 用 scripts/prepare-easytier-binaries.mjs 准备。
+resources/easytier
+# 原生下载内核（Rust 编译产物）：属可再生成物且平台相关，不进 Git。
+# 用 scripts/build-native-downloader.mjs 编译。
+resources/native
+# Rust 构建缓存与产物。
+native/*/target
+# 本地草稿/临时文件：打包产物、调试页、截图与调试日志。
+*.zip
+homepage-debug.html
+scripts/_*.out.txt
+# IDE / 工具本地配置。
+.trae
+# 根目录临时图片素材。
+/*.jpg
+/*.png

@@ -124,12 +124,12 @@ export function InstancesPage({ onManage }: { onManage: (versionId: string) => v
 
   const doLaunch = (versionId: string, opts?: { world?: string; server?: string }): void => {
     if (!selectedAccount) return
+    // 不传 javaPath：由主进程按「Java 管理 → 自动检测」开关决定用哪个 Java。
     void launch({
       versionId,
       accountId: selectedAccount.id,
       gameDir: activeGameDir(settings),
       memoryMb: settings.memoryMb,
-      javaPath: settings.javaPath || undefined,
       quickPlaySingleplayer: opts?.world,
       quickPlayMultiplayer: opts?.server
     })

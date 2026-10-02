@@ -107,6 +107,8 @@ export async function downloadUpdate(
 
   // 更新文件的真实下载委托给网络进程（stream:download），进度经 onBytes/onSize 回流。
   const tmp = dest + '.part'
+  // 清掉可能残留的旧临时文件，避免上次中断留下的半截文件被误用。
+  await fsp.rm(tmp, { force: true }).catch(() => {})
   let received = 0
   let total = 0
   await streamDownload(info.url, tmp, {
@@ -127,7 +129,7 @@ export async function downloadUpdate(
       total = s
     }
   })
-  await fsp.rename(tmp, dest)
+  await moveFile(tmp, dest)
   onProgress({
     taskId: 'update',
     task: filename,
@@ -139,6 +141,53 @@ export async function downloadUpdate(
     percent: 100
   })
   return dest
+}
+
+/**
+ * 把临时文件移动为最终文件，兼容 Windows 上覆盖面已存在文件的各种失败。
+ *
+ * 背景：`fsp.rename` 在 Windows 上覆盖一个**已存在**的目标时，会走 MoveFileEx 的
+ * 「替换已有文件」语义；若目标正被占用（例如上一次已点「下载并运行」、安装程序仍在运行）、
+ * 带只读属性，或刚下完的 exe 正被杀软实时扫描持有句柄，就会抛
+ * `EPERM / EACCES / EBUSY`（正是用户看到的 `EPERM: operation not permitted, rename`）。
+ *
+ * 处理：先尽力删除旧目标（并清掉只读属性），再带退避重试几次 rename；
+ * 仍失败则给出可操作的中文提示，而不是把裸 EPERM 抛给用户。
+ */
+async function moveFile(src: string, dest: string): Promise<void> {
+  const attempts = 5
+  for (let i = 0; i < attempts; i++) {
+    try {
+      // 先删除旧目标，避开「rename 覆盖已存在文件」在 Windows 上更易失败的问题。
+      const st = await fsp.stat(dest).catch(() => null)
+      if (st) {
+        if (!st.isDirectory() && (st.mode & 0o200) === 0) {
+          // 目标只读：先去掉只读位再删，否则删除本身也会失败。
+          await fsp.chmod(dest, st.mode | 0o200).catch(() => {})
+        }
+        await fsp.rm(dest, { force: true }).catch(() => {})
+      }
+      await fsp.rename(src, dest)
+      return
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException)?.code
+      const retriable = code === 'EPERM' || code === 'EACCES' || code === 'EBUSY'
+      if (!retriable || i === attempts - 1) {
+        await fsp.rm(src, { force: true }).catch(() => {})
+        throw new Error(
+          `更新文件写入失败（${code ?? '未知错误'}）：目标文件可能正被占用或处于受保护目录。` +
+            `请关闭正在运行的安装程序后重试，或手动删除 ${dest} 后重新下载。`
+        )
+      }
+      // 退避等待：给占用方（安装程序 / 杀软扫描）一点释放句柄的时间。
+      await new Promise<void>((r) => setTimeout(r, 300 * (i + 1)))
+    }
+  }
+}
+
+/** 更新文件落盘名（缺省从 URL 推导）。供「已存在则直接运行」的判断复用。 */
+export function updateFileName(info: UpdateInfo): string {
+  return filenameFrom(info)
 }
 
 /** 当前是否已存在更新文件（用于避免重复下载）。 */

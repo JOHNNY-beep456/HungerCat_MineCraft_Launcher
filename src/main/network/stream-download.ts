@@ -18,14 +18,19 @@ import { dirname } from 'path'
 
 const UA = { 'User-Agent': 'HungerCatLauncher/0.1' }
 export const PARALLEL_THRESHOLD = 2 * 1024 * 1024 // 2 MB：模组 / 资源包多为 1–8 MB，阈值过高会让它们只能单连接慢速下载
-/** 单个文件的最大并发连接数（动态分段下的「连接池」大小）。 */
-export const PARALLEL_CHUNKS = 8
+/** 单个文件的最大并发连接数（动态分段下的「连接池」大小）。
+ * 与原生内核默认值一致：在「服务端按连接限速」的 CDN 上，连接数才是带宽上限。 */
+export const PARALLEL_CHUNKS = 64
+/** 并发连接数上限，防止异常入参把服务端打爆。 */
+const MAX_CONNECTIONS = 256
 /**
  * 动态分段参数：目标段数远多于连接数，空闲连接总能立刻领到下一段。
  * 段大小再按文件大小自适应并夹在 [MIN, MAX] 之间——请求数量与单段大小都不失控。
+ * 段数倍率取 8（原为 4）：段越富余，越快摆脱「最慢段拖尾」，整文件时间趋近最慢连接。
  */
-const TARGET_SEGMENTS = PARALLEL_CHUNKS * 4
-const MIN_SEGMENT_SIZE = 1 * 1024 * 1024 // 1 MB
+const SEGMENTS_PER_CONNECTION = 8
+/** 段大小下限压到 256KB，让 64 连接下中等文件也能被切出足够多的段。 */
+const MIN_SEGMENT_SIZE = 256 * 1024 // 256 KB
 const MAX_SEGMENT_SIZE = 16 * 1024 * 1024 // 16 MB
 /** 单个分段的最大尝试次数：每次失败都从已写入位置续传，而非从头再来。 */
 const SEGMENT_ATTEMPTS = 3
@@ -42,6 +47,8 @@ export interface StreamDownloadOptions {
   sizeHint?: number
   /** 附加请求头（会覆盖默认 User-Agent，例如 CurseForge 需要浏览器 UA）。 */
   headers?: Record<string, string>
+  /** 单文件并发连接数（缺省 PARALLEL_CHUNKS）。 */
+  connections?: number
 }
 
 /* ---------- 瞬时 HTTP 错误（429 限流 / 408 / 5xx）自动重试 ---------- */
@@ -137,10 +144,17 @@ function parseContentRangeStart(value: string | null): number | null {
   return m ? Number(m[1]) : null
 }
 
-/** 按文件大小推导分段大小：目标段数 = 连接数 × 4，再夹在 [1MB, 16MB]。 */
-function segmentSizeFor(size: number): number {
-  const ideal = Math.ceil(size / TARGET_SEGMENTS)
+/** 按文件大小推导分段大小：目标段数 = 连接数 × 8，再夹在 [256KB, 16MB]。 */
+function segmentSizeFor(size: number, connections: number): number {
+  const target = Math.max(1, connections) * SEGMENTS_PER_CONNECTION
+  const ideal = Math.ceil(size / target)
   return Math.min(MAX_SEGMENT_SIZE, Math.max(MIN_SEGMENT_SIZE, ideal))
+}
+
+/** 解析本次生效的连接数（夹取到合理区间，避免异常入参）。 */
+function resolveConnections(opts: StreamDownloadOptions): number {
+  const n = opts.connections ?? PARALLEL_CHUNKS
+  return Math.min(MAX_CONNECTIONS, Math.max(1, Math.floor(n)))
 }
 
 /** 分段重试退避：复用瞬时错误的退避策略，但封顶更短，避免单段长时间空等。 */
@@ -356,7 +370,8 @@ async function parallelDownload(
   if (signal?.aborted) forwardAbort()
   const workerOpts: StreamDownloadOptions = { ...opts, signal: inner.signal }
   try {
-    const segSize = segmentSizeFor(size)
+    const connections = resolveConnections(opts)
+    const segSize = segmentSizeFor(size, connections)
     const total = Math.ceil(size / segSize)
     let next = 0
     let rangeUnsupported = false
@@ -384,7 +399,7 @@ async function parallelDownload(
       }
     }
 
-    await Promise.all(Array.from({ length: Math.min(PARALLEL_CHUNKS, total) }, runWorker))
+    await Promise.all(Array.from({ length: Math.min(connections, total) }, runWorker))
     if (failure !== null) throw failure
     if (rangeUnsupported) return false
     await fsp.rename(tmp, dest)

@@ -64,7 +64,22 @@ export type YggdrasilLoginOutcome =
   | { kind: 'select'; profiles: YggdrasilProfileOption[] }
 
 /** 多角色登录的暂存上下文：等用户在弹窗里选完，再据此批量建号。 */
-let pendingYgg: { base: string; data: YggdrasilAuthResponse; clientToken: string } | null = null
+let pendingYgg: { base: string; data: YggdrasilAuthResponse; clientToken: string; siteName?: string } | null = null
+
+/**
+ * 自动获取第三方认证站点的名称（Yggdrasil 元数据 `meta.serverName`，如「LittleSkin」）。
+ * 纯增强信息：任何失败都静默返回 undefined，绝不影响登录 / 刷新主流程。
+ */
+export async function fetchYggdrasilSiteName(server: string): Promise<string | undefined> {
+  const base = normalizeServer(server)
+  if (!base) return undefined
+  try {
+    const name = await netRequest<string | undefined>('yggdrasil:meta', { server: base })
+    return typeof name === 'string' && name.trim() ? name.trim() : undefined
+  } catch {
+    return undefined
+  }
+}
 
 /** 从 textures 属性（base64 JSON）解析皮肤 / 披风 / 模型。 */
 function extractSkin(profile?: YggdrasilProfile): {
@@ -97,7 +112,9 @@ function toAccount(
   data: YggdrasilAuthResponse,
   base: string,
   /** 本次请求实际使用的 clientToken：服务端未回传时用它兜底。 */
-  fallbackClientToken: string
+  fallbackClientToken: string,
+  /** 站点名称（自动获取，可能缺失）。 */
+  siteName?: string
 ): MinecraftAccount {
   const skin = extractSkin(profile)
   return {
@@ -112,6 +129,7 @@ function toAccount(
     addedAt: Date.now(),
     authType: 'yggdrasil',
     yggdrasilServer: base,
+    ...(siteName ? { siteName } : {}),
     clientToken: data.clientToken || fallbackClientToken
   }
 }
@@ -138,9 +156,11 @@ export async function loginYggdrasil(
     const profiles = available.length > 0 ? available : data.selectedProfile ? [data.selectedProfile] : []
     if (profiles.length === 0) throw new Error('该账号没有可用的角色档案')
     console.info(`[登录] 第三方登录成功：${base} / ${email}（可用角色 ${profiles.length} 个）`)
+    // 自动获取站点名称（元数据 meta.serverName）：纯增强，失败不影响登录。
+    const siteName = await fetchYggdrasilSiteName(base)
     if (profiles.length > 1) {
       // 多角色：暂存令牌上下文，交给界面弹窗选择（可多选）后再建号。
-      pendingYgg = { base, data, clientToken }
+      pendingYgg = { base, data, clientToken, siteName }
       return {
         kind: 'select',
         profiles: profiles.map((p) => {
@@ -151,7 +171,7 @@ export async function loginYggdrasil(
     }
     const profile = data.selectedProfile ?? profiles[0]
     pendingYgg = null
-    return { kind: 'ok', account: toAccount(profile, data, base, clientToken) }
+    return { kind: 'ok', account: toAccount(profile, data, base, clientToken, siteName) }
   } catch (err) {
     console.error(`[登录] 第三方登录失败：${base} / ${email} ${err instanceof Error ? err.message : String(err)}`)
     throw err
@@ -170,7 +190,7 @@ export function commitYggdrasilProfiles(ids: string[]): MinecraftAccount[] {
   const available = ctx.data.availableProfiles ?? []
   const picked = available.filter((p) => wanted.has(withoutDashes(p.id)))
   if (picked.length === 0) throw new Error('请至少选择一个角色')
-  return picked.map((p) => toAccount(p, ctx.data, ctx.base, ctx.clientToken))
+  return picked.map((p) => toAccount(p, ctx.data, ctx.base, ctx.clientToken, ctx.siteName))
 }
 
 export async function refreshYggdrasil(account: MinecraftAccount): Promise<MinecraftAccount> {
@@ -196,8 +216,10 @@ export async function refreshYggdrasil(account: MinecraftAccount): Promise<Minec
     )
     const profile = matched ?? { id: account.id, name: account.name }
     console.info(`[登录] 刷新第三方账号令牌成功：${account.name}`)
+    // 站点名称：沿用已存值；旧账号缺失时顺带补全（best-effort，失败不阻塞刷新）。
+    const siteName = account.siteName ?? (await fetchYggdrasilSiteName(base))
     return {
-      ...toAccount(profile, data, base, clientToken),
+      ...toAccount(profile, data, base, clientToken, siteName),
       addedAt: account.addedAt
     }
   } catch (err) {

@@ -26,7 +26,8 @@ import type {
   ExternalVersion,
   ConflictPolicy,
   JavaRuntime,
-  YggdrasilLoginOutcome
+  YggdrasilLoginOutcome,
+  MpMiniState
 } from '@shared/types'
 
 function subscribe<T>(channel: string): (cb: (payload: T) => void) => () => void {
@@ -56,6 +57,7 @@ const api: LauncherApi = {
   accounts: {
     list: () => ipcRenderer.invoke('accounts:list'),
     selected: () => ipcRenderer.invoke('accounts:selected'),
+    refreshSiteNames: () => ipcRenderer.invoke('accounts:refreshSiteNames'),
     remove: (id: string) => ipcRenderer.invoke('accounts:remove', id),
     select: (id: string) => ipcRenderer.invoke('accounts:select', id),
     addOffline: (name: string) => ipcRenderer.invoke('accounts:addOffline', name),
@@ -113,6 +115,8 @@ const api: LauncherApi = {
   download: {
     install: (id: string) => ipcRenderer.invoke('download:install', id),
     cancel: (taskId?: string) => ipcRenderer.invoke('download:cancel', taskId),
+    /** 当前实际使用的下载器（原生 Rust 内核是否可用）。 */
+    engine: () => ipcRenderer.invoke('download:engine'),
     onProgress: subscribe<DownloadProgress>('download:progress')
   },
   mods: {
@@ -177,7 +181,8 @@ const api: LauncherApi = {
     list: () => ipcRenderer.invoke('homepage:list'),
     read: (id: string) => ipcRenderer.invoke('homepage:read', id),
     importFile: () => ipcRenderer.invoke('homepage:importFile'),
-    download: (url: string, filename: string) => ipcRenderer.invoke('homepage:download', url, filename),
+    download: (url: string, filename: string, sizeHint?: number) =>
+      ipcRenderer.invoke('homepage:download', url, filename, sizeHint),
     remove: (id: string) => ipcRenderer.invoke('homepage:remove', id),
     verify: (id: string) => ipcRenderer.invoke('homepage:verify', id),
     confirm: (id: string, network: boolean) => ipcRenderer.invoke('homepage:confirm', id, network),
@@ -264,6 +269,49 @@ const api: LauncherApi = {
     pickFiles: (filters) => ipcRenderer.invoke('shell:pickFiles', filters),
     saveFile: (defaultName: string) => ipcRenderer.invoke('shell:saveFile', defaultName),
     getPathForFile: (file: File) => webUtils.getPathForFile(file)
+  },
+  // 联机板块（MCTier 移植）：组网内核、大厅生命周期与状态。
+  mp: {
+    binariesStatus: () => ipcRenderer.invoke('mp:binariesStatus'),
+    openResourceDir: () => ipcRenderer.invoke('mp:openResourceDir'),
+    isElevated: () => ipcRenderer.invoke('mp:isElevated'),
+    createLobby: (params) => ipcRenderer.invoke('mp:createLobby', params),
+    joinLobby: (params) => ipcRenderer.invoke('mp:joinLobby', params),
+    leaveLobby: () => ipcRenderer.invoke('mp:leaveLobby'),
+    forceStop: () => ipcRenderer.invoke('mp:forceStop'),
+    getAppState: () => ipcRenderer.invoke('mp:getAppState'),
+    getLobby: () => ipcRenderer.invoke('mp:getLobby'),
+    getPlayers: () => ipcRenderer.invoke('mp:getPlayers'),
+    setMicEnabled: (enabled: boolean) => ipcRenderer.invoke('mp:setMicEnabled', enabled),
+    getMicEnabled: () => ipcRenderer.invoke('mp:getMicEnabled'),
+    setGlobalMuted: (muted: boolean) => ipcRenderer.invoke('mp:setGlobalMuted', muted),
+    getGlobalMuted: () => ipcRenderer.invoke('mp:getGlobalMuted'),
+    mutePlayer: (playerId: string, muted: boolean) => ipcRenderer.invoke('mp:mutePlayer', playerId, muted),
+    isPlayerMuted: (playerId: string) => ipcRenderer.invoke('mp:isPlayerMuted', playerId),
+    parseVirtualIp: (text: string) => ipcRenderer.invoke('mp:parseVirtualIp', text),
+    openExternal: (url: string) => ipcRenderer.invoke('mp:openExternal', url),
+    // 大厅悬浮窗（类似 MCTier 的迷你窗）。
+    openMiniWindow: () => ipcRenderer.invoke('mp:openMiniWindow'),
+    closeMiniWindow: () => ipcRenderer.invoke('mp:closeMiniWindow'),
+    miniState: () => ipcRenderer.invoke('mp:miniState'),
+    miniResize: (width: number, height: number) => ipcRenderer.invoke('mp:miniResize', width, height),
+    onMiniState: (cb) => {
+      const listener = (_e: unknown, state: unknown): void => cb(state as MpMiniState)
+      ipcRenderer.on('mp:miniState', listener)
+      return () => ipcRenderer.removeListener('mp:miniState', listener)
+    },
+    // 大厅状态变化（不携带数据，收到后自行重新拉取，保证单一事实来源）。
+    onLobbyChanged: (cb: () => void) => {
+      const listener = (): void => cb()
+      ipcRenderer.on('mp:lobbyChanged', listener)
+      return () => ipcRenderer.removeListener('mp:lobbyChanged', listener)
+    },
+    hasMainWindow: () => ipcRenderer.invoke('mp:hasMainWindow'),
+    onMicChanged: (cb: (enabled: boolean) => void) => {
+      const listener = (_e: unknown, enabled: boolean): void => cb(enabled)
+      ipcRenderer.on('mp:micChanged', listener)
+      return () => ipcRenderer.removeListener('mp:micChanged', listener)
+    }
   }
 }
 
