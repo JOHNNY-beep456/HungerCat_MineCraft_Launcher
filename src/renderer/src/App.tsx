@@ -129,7 +129,7 @@ function Shell(): JSX.Element {
                   {managingId ? (
                     <InstanceManagePage versionId={managingId} onBack={() => setManagingId(null)} onRename={setManagingId} />
                   ) : (
-                    renderPage(page, setManagingId, resourcePreset)
+                    renderPage(page, setManagingId, resourcePreset, navigate, settings.enableMultiplayer)
                   )}
                 </motion.div>
               </main>

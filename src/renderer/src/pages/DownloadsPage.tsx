@@ -1,4 +1,6 @@
+import { useEffect, useState } from 'react'
 import { AnimatePresence, motion } from 'motion/react'
+import type { DownloadEngineStatus } from '@shared/types'
 import { activeGameDir, activeVersionDir, useApp } from '../store'
 import { useRuntime } from '../runtime'
 import { Button, Icon, ProgressBar, formatSpeed } from '../components/ui'
@@ -7,6 +9,28 @@ export function DownloadsPage(): JSX.Element {
   const { settings, openFileManager, t } = useApp()
   const { downloads, cancelDownload, cancelTask } = useRuntime()
   const active = downloads.filter((d) => d.phase !== 'done')
+  /**
+   * 当前实际使用的下载器。
+   *
+   * 原生内核是在网络进程启动时按平台探测加载的，运行期不会变，因此进入本页拉一次即可。
+   * 取不到时保持 null，界面显示「检测中 / 不可用」而不是假装成功。
+   */
+  const [engine, setEngine] = useState<DownloadEngineStatus | null>(null)
+
+  useEffect(() => {
+    let alive = true
+    void window.api.download
+      .engine()
+      .then((s) => {
+        if (alive) setEngine(s)
+      })
+      .catch(() => {
+        /* 探测失败不阻塞界面 */
+      })
+    return () => {
+      alive = false
+    }
+  }, [])
 
   return (
     <div className="flex h-full flex-col gap-5">
@@ -72,11 +96,26 @@ export function DownloadsPage(): JSX.Element {
 
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           <InfoRow label={t('downloads.versionDir')} value={activeVersionDir(settings).path} />
-          {/* 下载源已强制官方（Mojang），镜像选择已停用 */}
-          <InfoRow label={t('downloads.mirror')} value={t('downloads.mirrorMojang')} />
           <InfoRow
             label={t('downloads.concurrency')}
             value={t('downloads.concurrencyUnit', { n: settings.maxDownloadConcurrency })}
+          />
+          {/* 下载器内核：原生（Rust）或内置 TS。用状态点 + 文案区分，便于排查速度问题。 */}
+          <InfoRow
+            label={t('downloads.engine')}
+            value={
+              engine === null
+                ? t('downloads.engine.detecting')
+                : engine.available
+                  ? t('downloads.engine.native')
+                  : t('downloads.engine.ts')
+            }
+            tone={engine === null ? 'muted' : engine.available ? 'ok' : 'warn'}
+            hint={engine?.available ? undefined : t('downloads.engine.tsHint')}
+          />
+          <InfoRow
+            label={t('downloads.connections')}
+            value={t('downloads.connectionsUnit', { n: settings.downloadConnections })}
           />
         </div>
 
@@ -95,11 +134,37 @@ export function DownloadsPage(): JSX.Element {
   )
 }
 
-function InfoRow({ label, value }: { label: string; value: string }): JSX.Element {
+/** 状态色调：ok=正常、warn=降级/需注意、muted=尚未确定。 */
+type InfoTone = 'ok' | 'warn' | 'muted'
+
+function InfoRow({
+  label,
+  value,
+  tone,
+  hint
+}: {
+  label: string
+  value: string
+  tone?: InfoTone
+  hint?: string
+}): JSX.Element {
+  // 状态点颜色：走设计令牌，缺省时回落到语义色，避免自定义皮肤下丢色。
+  const dotColor =
+    tone === 'ok'
+      ? 'var(--fill-success, #5fd39a)'
+      : tone === 'warn'
+        ? 'var(--fill-warning, #f0b34a)'
+        : tone === 'muted'
+          ? 'var(--text-tertiary, #999)'
+          : null
   return (
     <div className="glass-soft rounded-2xl p-4">
       <div className="caption mb-1">{label}</div>
-      <div className="selectable truncate text-[13px] font-medium">{value}</div>
+      <div className="flex items-center gap-1.5">
+        {dotColor && <span className="h-1.5 w-1.5 shrink-0 rounded-full" style={{ background: dotColor }} />}
+        <span className="selectable truncate text-[13px] font-medium">{value}</span>
+      </div>
+      {hint && <div className="caption mt-1 leading-relaxed opacity-80">{hint}</div>}
     </div>
   )
 }

@@ -191,11 +191,17 @@ export function spawnGame(
     windowsHide: true
   })
 
-  child.stdout.on('data', (d: Buffer) => emit({ state: 'running', log: d.toString() }))
-  child.stderr.on('data', (d: Buffer) => emit({ state: 'running', log: d.toString() }))
+  // 日志行只带 log、不带 state：状态只由「明确的生命周期事件」驱动。
+  // 旧实现每来一行 stdout / stderr 都发 state:'running'，于是进程退出前后
+  // 任何残留输出都会把状态刷回「运行中」，让「已停止 / 出错」迟迟显示不出来。
+  child.stdout.on('data', (d: Buffer) => emit({ log: d.toString() }))
+  child.stderr.on('data', (d: Buffer) => emit({ log: d.toString() }))
   child.on('spawn', () => emit({ state: 'running', pid: child.pid }))
   child.on('error', (err) => emit({ state: 'error', error: err.message }))
-  child.on('exit', (code) => emit({ state: 'exited', exitCode: code ?? 0 }))
+  child.on('exit', (code, signal) => {
+    // 被主动 kill（停止游戏）时 signal 有值：归为正常「已退出」而非错误。
+    emit({ state: 'exited', exitCode: signal ? 0 : code ?? 0 })
+  })
 
   return child
 }

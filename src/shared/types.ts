@@ -22,6 +22,11 @@ export interface MinecraftAccount {
   authType?: 'microsoft' | 'offline' | 'yggdrasil'
   /** Yggdrasil 认证服务器地址（authlib-injector 的 API 根地址）。 */
   yggdrasilServer?: string
+  /**
+   * 第三方认证站点名称（自动获取，来自 Yggdrasil 元数据的 `meta.serverName`，
+   * 如「LittleSkin」「馋猫认证中心」），用于界面标注账号所属站点。
+   */
+  siteName?: string
   /** Yggdrasil 客户端令牌（用于刷新令牌）。 */
   clientToken?: string
 }
@@ -151,6 +156,22 @@ export interface DownloadProgress {
   speed?: number
 }
 
+/**
+ * 当前实际使用的下载器状态（「进度」页展示）。
+ *
+ * 下载传输层是「原生优先、TS 兜底」：能加载到 Rust 编译的 .node 就走原生内核，
+ * 否则自动降级到内置 TS 实现。两者功能一致、速度不同，界面需要让用户知道
+ * 现在跑的是哪一个——尤其在排查「下载为什么没变快」时。
+ */
+export interface DownloadEngineStatus {
+  /** 是否成功加载原生内核。 */
+  available: boolean
+  /** 解析到的 .node 绝对路径；未找到时为 null。 */
+  path: string | null
+  /** 当前平台目录名（如 win32-x64），用于说明为何没有该平台产物。 */
+  platform: string
+}
+
 export interface JavaRuntime {
   path: string
   version: string
@@ -278,7 +299,12 @@ export type LaunchState =
   | 'error'
 
 export interface LaunchEvent {
-  state: LaunchState
+  /**
+   * 状态变更；**可选**。纯日志行只带 `log` 不带 `state`——否则每来一行游戏输出
+   * 都会把状态强行重置为 `running`，导致用户点击「停止」后状态立刻又被日志刷回
+   * 「运行中」，表现为「状态更新不及时」。
+   */
+  state?: LaunchState
   pid?: number
   log?: string
   exitCode?: number
@@ -290,14 +316,35 @@ export interface LauncherSettings {
   /** 界面语言：简体中文（默认）/ 繁体中文 / 英语。 */
   language: 'zh-CN' | 'zh-TW' | 'en'
   memoryMb: number
+  /**
+   * 并行下载的**文件数量**（worker 池大小）。
+   * 注意与 `downloadConnections` 区分：这一项决定「同时下几个文件」，
+   * 而后者决定「单个文件开几条连接」。
+   */
   maxDownloadConcurrency: number
-  mirror: 'mojang' | 'bmclapi'
+  /**
+   * 单个文件的**并发连接数**（多连接分段下载）。
+   *
+   * 与 `maxDownloadConcurrency` 是两个独立维度：
+   *   - 版本安装会同时下几千个小文件 → 靠 maxDownloadConcurrency 铺并发；
+   *   - 单个大文件（客户端 jar / 整合包 / 大模组）→ 靠本项铺并发。
+   * 服务端（BMCLAPI 等）常按连接限速，此时连接数才是带宽上限。
+   */
+  downloadConnections: number
   /** 默认版本列表目录（原「游戏目录」）。 */
   gameDir: string
   /** 额外的版本目录（不含默认目录）；可设别名，实例页与主页可切换。 */
   versionDirs: VersionDir[]
   /** 当前选中的版本目录 id；空串表示默认目录（gameDir）。 */
   selectedVersionDirId: string
+  /**
+   * 是否启用「联机」板块（实验性，默认关闭）。
+   *
+   * 联机模块依赖 EasyTier 组网内核与 P2P 信令，稳定性和兼容性尚不充分，
+   * 因此默认隐藏：不在侧栏 / 桌面图标中出现，也不接受导航进入。
+   * 用户需在「设置 - 实验性功能」中主动开启并确认风险提示后才可用。
+   */
+  enableMultiplayer: boolean
   javaAutoDetect: boolean
   javaPath?: string
   closeOnLaunch: boolean
@@ -409,6 +456,75 @@ export interface LauncherSettings {
    * 访客额度的限额更低，填了 KEY 后翻译并发会相应提高。
    */
   uapisApiKeySet: boolean
+  /**
+   * 「联机」板块是否已同意 MCTier 许可协议（epoch ms，0 = 未同意）。
+   *
+   * MCTier 自有代码采用「源码可得（source-available）非商业许可」，
+   * 与本启动器的开源协议不兼容，因此单独设门禁：首次进入联机板块必须确认。
+   */
+  multiplayerLicenseAcceptedAt: number
+  /**
+   * 联机 · 玩家名称（大厅中显示的名字）。
+   */
+  multiplayerPlayerName: string
+  /**
+   * 联机 · 是否使用私有服务器（自建 EasyTier 节点 / WebRTC 信令）。
+   */
+  multiplayerUsePrivateServer: boolean
+  /** 联机 · 私有 EasyTier 节点地址。 */
+  multiplayerEasytierServer: string
+  /** 联机 · 私有 WebRTC 信令服务器地址。 */
+  multiplayerSignalingServer: string
+  /** 联机 · 是否使用虚拟域名。 */
+  multiplayerUseDomain: boolean
+  /** 联机 · 启动时自动创建/加入大厅。 */
+  multiplayerAutoLobbyEnabled: boolean
+  /** 联机 · 自动大厅名称。 */
+  multiplayerLobbyName: string
+  /** 联机 · 自动大厅密码。 */
+  multiplayerLobbyPassword: string
+  /** 联机 · 自定义 EasyTier 节点列表（备用节点，内置节点不在此保存）。 */
+  multiplayerCustomNodes: Array<{ name: string; address: string }>
+  /** 联机 · 提示音音量（0–1）。 */
+  multiplayerSoundVolume: number
+  /** 联机 · 消息免打扰。 */
+  multiplayerDndEnabled: boolean
+  /** 联机 · 免打扰起始（自 0 点起的分钟数）。 */
+  multiplayerDndStart: number
+  /** 联机 · 免打扰结束（自 0 点起的分钟数）。 */
+  multiplayerDndEnd: number
+  /** 联机 · 全局快捷键：麦克风开关。 */
+  multiplayerMicHotkey: string
+  /** 联机 · 全局快捷键：全局听筒开关。 */
+  multiplayerGlobalMuteHotkey: string
+  /** 联机 · 全局快捷键：临时开麦（按住说话）。 */
+  multiplayerPushToTalkHotkey: string
+  /** 联机 · 全局快捷键：唤出主窗口。 */
+  multiplayerSummonHotkey: string
+  /** 联机 · 消息弹幕开关。 */
+  multiplayerDanmakuEnabled: boolean
+  /** 联机 · 弹幕字号（px）。 */
+  multiplayerDanmakuFontSize: number
+  /** 联机 · 弹幕速度（秒/屏）。 */
+  multiplayerDanmakuSpeed: number
+  /** 联机 · 弹幕透明度（0–1）。 */
+  multiplayerDanmakuOpacity: number
+  /** 联机 · 弹幕轨道数。 */
+  multiplayerDanmakuTracks: number
+  /** 联机 · 游戏内 HUD 浮层开关。 */
+  multiplayerHudEnabled: boolean
+  /** 联机 · HUD 浮层透明度（0–1）。 */
+  multiplayerHudOpacity: number
+  /** 联机 · 默认变声器音色。 */
+  multiplayerVoiceChanger: string
+  /** 联机 · 界面主题偏好（跟随系统 / 亮色 / 暗色）。 */
+  multiplayerTheme: 'system' | 'light' | 'dark'
+  /** 联机 · 联机时长与统计的本地数据。 */
+  multiplayerStatsMinutes: number
+  /** 联机 · 加入大厅次数。 */
+  multiplayerJoinCount: number
+  /** 联机 · 作为房主次数。 */
+  multiplayerHostCount: number
 }
 
 /* ------------------------------------------------------------------ */
@@ -839,6 +955,8 @@ export interface HomepageUpdate {
   latestSha256: string
   /** 服务端上的下载地址。 */
   url: string
+  /** 服务端最新脚本大小（字节）；已知时可跳过下载前的 HEAD 探测。 */
+  size?: number
   /** 服务端更新时间（epoch ms）。 */
   updatedAt: number
 }
@@ -940,7 +1058,10 @@ export interface LauncherApi {
   accounts: {
     list: () => Promise<MinecraftAccount[]>
     selected: () => Promise<MinecraftAccount | null>
-    remove: (id: string) => Promise<MinecraftAccount[]>
+    /** 补全第三方账号缺失的站点名称（自动获取 meta.serverName），返回更新后的账号列表。 */
+    refreshSiteNames: () => Promise<MinecraftAccount[]>
+    /** 删除账号：返回删除后的账号列表与新的选中账号（避免再单独读一次导致竞态）。 */
+    remove: (id: string) => Promise<{ accounts: MinecraftAccount[]; selected: MinecraftAccount | null }>
     select: (id: string) => Promise<MinecraftAccount | null>
     addOffline: (name: string) => Promise<MinecraftAccount>
     /** 第三方登录：单角色直接返回账号；多角色返回待选角色列表。 */
@@ -1006,6 +1127,8 @@ export interface LauncherApi {
     install: (id: string) => Promise<{ versionId: string; assetIndex: string }>
     /** 取消下载：传 taskId 只取消该任务，不传则取消全部。 */
     cancel: (taskId?: string) => Promise<boolean>
+    /** 当前实际使用的下载器（原生 Rust 内核是否可用）。 */
+    engine: () => Promise<DownloadEngineStatus>
     onProgress: (cb: (p: DownloadProgress) => void) => () => void
   }
   mods: {
@@ -1087,8 +1210,8 @@ export interface LauncherApi {
     read: (id: string) => Promise<HomepageSource>
     /** 打开文件选择器导入本地脚本；用户取消时返回 null。 */
     importFile: () => Promise<HomepageEntry | null>
-    /** 从主页市场下载并安装脚本。 */
-    download: (url: string, filename: string) => Promise<HomepageEntry>
+    /** 从主页市场下载并安装脚本。sizeHint 为已知文件大小时可跳过 HEAD 探测。 */
+    download: (url: string, filename: string, sizeHint?: number) => Promise<HomepageEntry>
     /** 删除已安装脚本。 */
     remove: (id: string) => Promise<void>
     /** 联网核对编号 + SHA256；无编号或服务端不可达时回落本地流程。 */
@@ -1261,4 +1384,106 @@ export interface LauncherApi {
     saveFile: (defaultName: string) => Promise<string | null>
     getPathForFile: (file: File) => string
   }
+  /** 联机板块（界面与后端移植自 MCTier）。 */
+  mp: MpApi
+}
+
+/* ------------------------------------------------------------------ */
+/* 联机板块（MCTier 移植）                                              */
+/* ------------------------------------------------------------------ */
+
+/** 组网二进制自检结果。 */
+export interface MpBinaryStatus {
+  /** 二进制名 → 是否存在。 */
+  present: Record<string, boolean>
+  missing: string[]
+  corrupted: string[]
+  /** 资源目录（提示用户放文件的位置）。 */
+  dir: string
+  /** core + 驱动是否就绪。 */
+  ready: boolean
+  reason: string
+}
+
+export type MpAppState = 'idle' | 'connecting' | 'in-lobby'
+
+/** 大厅信息。 */
+export interface MpLobby {
+  name: string
+  password: string
+  serverNode: string
+  signalingServer: string
+  virtualIp: string
+  useDomain: boolean
+  isHost: boolean
+  createdAt: string
+}
+
+/** 大厅成员。 */
+export interface MpPlayer {
+  id: string
+  name: string
+  virtualIp?: string
+  virtualDomain?: string
+  useDomain?: boolean
+  micEnabled: boolean
+  isMuted: boolean
+  joinedAt: string
+  isSelf: boolean
+}
+
+/** 创建 / 加入大厅的入参。 */
+export interface MpJoinParams {
+  name: string
+  password: string
+  playerName: string
+  playerId: string
+  serverNode: string
+  signalingServer: string
+  useDomain?: boolean
+}
+
+export interface MpApi {
+  binariesStatus: () => Promise<MpBinaryStatus>
+  openResourceDir: () => Promise<string>
+  /** 当前是否以管理员 / root 运行（创建虚拟网卡必需）。 */
+  isElevated: () => Promise<boolean>
+  createLobby: (params: MpJoinParams) => Promise<MpLobby>
+  joinLobby: (params: MpJoinParams) => Promise<MpLobby>
+  leaveLobby: () => Promise<void>
+  forceStop: () => Promise<void>
+  getAppState: () => Promise<MpAppState>
+  getLobby: () => Promise<MpLobby | null>
+  getPlayers: () => Promise<MpPlayer[]>
+  setMicEnabled: (enabled: boolean) => Promise<void>
+  getMicEnabled: () => Promise<boolean>
+  setGlobalMuted: (muted: boolean) => Promise<void>
+  getGlobalMuted: () => Promise<boolean>
+  mutePlayer: (playerId: string, muted: boolean) => Promise<void>
+  isPlayerMuted: (playerId: string) => Promise<boolean>
+  parseVirtualIp: (text: string) => Promise<string | null>
+  openExternal: (url: string) => Promise<void>
+  /** 大厅悬浮窗（类似 MCTier 的迷你窗）：创建 / 关闭 / 快照 / 尺寸。 */
+  openMiniWindow: () => Promise<void>
+  closeMiniWindow: () => Promise<void>
+  miniState: () => Promise<MpMiniState>
+  miniResize: (width: number, height: number) => Promise<void>
+  onMiniState: (cb: (state: MpMiniState) => void) => () => void
+  /**
+   * 大厅状态变化广播（主界面 / 悬浮窗都可能发起操作，需双向同步）。
+   *
+   * 回调不携带数据：收到后由调用方重新 `getLobby() / getPlayers()` 拉取，
+   * 这样只有一个事实来源（主进程），不会因广播的旧快照产生状态错乱。
+   */
+  onLobbyChanged: (cb: () => void) => () => void
+  /** 当前窗口是否为主界面（悬浮窗据此决定退出大厅后是否自行关闭）。 */
+  hasMainWindow: () => Promise<boolean>
+  onMicChanged: (cb: (enabled: boolean) => void) => () => void
+}
+
+/** 悬浮窗所需的大厅快照。 */
+export interface MpMiniState {
+  lobby: MpLobby | null
+  players: MpPlayer[]
+  appState: MpAppState
 }

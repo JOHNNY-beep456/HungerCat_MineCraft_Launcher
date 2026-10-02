@@ -1,20 +1,21 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import type { VersionJson, VersionManifest } from '@shared/types'
-import type { MirrorKind } from './mirror'
 import { netRequest } from './broker'
 
 /**
  * 版本清单 / 版本 JSON 的【远程获取核心执行】已迁到网络进程（out/main/network.js）。
  * 本模块仅保留调用方视角的封装：本地磁盘解析、inheritsFrom 合并仍在主进程完成。
+ *
+ * 下载源固定为「官方优先 + BMCLAPI 回退」，不再有镜像源设置，故无需传 kind。
  */
-export function fetchVersionManifest(kind: MirrorKind): Promise<VersionManifest> {
-  return netRequest<VersionManifest>('versions:manifest', { mirror: kind })
+export function fetchVersionManifest(): Promise<VersionManifest> {
+  return netRequest<VersionManifest>('versions:manifest', {})
 }
 
 /** 获取单个原版版本 JSON（不含合并），远程部分委托给网络进程。 */
-function fetchRawVersionJson(id: string, kind: MirrorKind): Promise<VersionJson> {
-  return netRequest<VersionJson>('versions:json', { id, mirror: kind })
+function fetchRawVersionJson(id: string): Promise<VersionJson> {
+  return netRequest<VersionJson>('versions:json', { id })
 }
 
 type VersionArg = string | { rules: unknown[]; value: string | string[] }
@@ -85,7 +86,7 @@ function mergeVersions(parent: VersionJson, child: VersionJson): VersionJson {
  * Resolve a version JSON, honoring local disk first (loader profiles written
  * by the Fabric/Quilt/Forge installers) and following `inheritsFrom` chains.
  */
-export async function resolveVersionJson(id: string, kind: MirrorKind, gameDir?: string): Promise<VersionJson> {
+export async function resolveVersionJson(id: string, gameDir?: string): Promise<VersionJson> {
   // 1. Local disk (loader profiles and previously-installed versions).
   if (gameDir) {
     const localPath = join(gameDir, 'versions', id, `${id}.json`)
@@ -93,14 +94,14 @@ export async function resolveVersionJson(id: string, kind: MirrorKind, gameDir?:
       try {
         const local = JSON.parse(readFileSync(localPath, 'utf-8')) as VersionJson
         if (local.inheritsFrom && local.inheritsFrom !== id) {
-          const parent = await resolveVersionJson(local.inheritsFrom, kind, gameDir)
+          const parent = await resolveVersionJson(local.inheritsFrom, gameDir)
           return mergeVersions(parent, local)
         }
         // Resolved loader profile (clientVersion points to the base MC version).
         // Older builds saved stale, unmerged `arguments`; re-derive them from the
         // base version so the launch keeps `-cp ${classpath}` and game args.
         if (local.clientVersion && local.clientVersion !== id && argumentsLookStale(local.arguments)) {
-          const base = await resolveVersionJson(local.clientVersion, kind, gameDir)
+          const base = await resolveVersionJson(local.clientVersion, gameDir)
           local.arguments = mergeArguments(base.arguments, local.arguments)
         }
         return local
@@ -111,9 +112,9 @@ export async function resolveVersionJson(id: string, kind: MirrorKind, gameDir?:
   }
 
   // 2. Remote fetch (vanilla versions).
-  const json = await fetchRawVersionJson(id, kind)
+  const json = await fetchRawVersionJson(id)
   if (json.inheritsFrom) {
-    const parent = await resolveVersionJson(json.inheritsFrom, kind, gameDir)
+    const parent = await resolveVersionJson(json.inheritsFrom, gameDir)
     return mergeVersions(parent, json)
   }
   return json

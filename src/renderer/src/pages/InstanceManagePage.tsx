@@ -197,6 +197,8 @@ export function InstanceManagePage({
   const [schematics, setSchematics] = useState<SchematicEntry[]>([])
   const [busyId, setBusyId] = useState<string | null>(null)
   const [deleting, setDeleting] = useState(false)
+  /** 删除实例的二次确认弹窗：删除不可恢复，先确认再执行。 */
+  const [deleteConfirm, setDeleteConfirm] = useState(false)
   const [exportOpen, setExportOpen] = useState(false)
   const [renaming, setRenaming] = useState(false)
   const [renameValue, setRenameValue] = useState(versionId)
@@ -411,12 +413,12 @@ export function InstanceManagePage({
 
   const doLaunch = (opts?: { world?: string; server?: string }): void => {
     if (!selectedAccount) return
+    // 不传 javaPath：由主进程按「Java 管理 → 自动检测」开关决定用哪个 Java。
     void launch({
       versionId,
       accountId: selectedAccount.id,
       gameDir: activeGameDir(settings),
       memoryMb: settings.memoryMb,
-      javaPath: settings.javaPath || undefined,
       quickPlaySingleplayer: opts?.world,
       quickPlayMultiplayer: opts?.server
     })
@@ -429,6 +431,7 @@ export function InstanceManagePage({
 
   const doDeleteVersion = async (): Promise<void> => {
     if (deleting) return
+    setDeleteConfirm(false)
     setDeleting(true)
     setNotice(null)
     try {
@@ -657,7 +660,7 @@ export function InstanceManagePage({
               </Button>
             </Row>
             <Row label={t('ins.deleteVersion')} desc={t('ins.deleteVersionDesc')}>
-              <Button size="sm" variant="danger" icon="trash" disabled={deleting} onClick={() => void doDeleteVersion()}>
+              <Button size="sm" variant="danger" icon="trash" disabled={deleting} onClick={() => setDeleteConfirm(true)}>
                 {deleting ? t('ins.deleting') : t('ins.delete')}
               </Button>
             </Row>
@@ -1106,6 +1109,41 @@ export function InstanceManagePage({
           {notice}
         </div>
       )}
+
+      {/* 删除实例的二次确认：删除后不可恢复 */}
+      <AnimatePresence>
+        {deleteConfirm && (
+          <motion.div
+            className="fixed inset-0 z-[115] flex items-center justify-center p-6"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+          >
+            <div className="absolute inset-0" style={{ background: 'var(--scrim)' }} onClick={() => setDeleteConfirm(false)} />
+            <motion.div
+              className="glass-strong relative z-10 w-full max-w-md rounded-[32px] p-7"
+              initial={{ scale: 0.92, opacity: 0, y: 24 }}
+              animate={{ scale: 1, opacity: 1, y: 0 }}
+              exit={{ scale: 0.94, opacity: 0, y: 16 }}
+              transition={{ type: 'spring', bounce: 0.2, duration: 0.45 }}
+            >
+              <div className="mb-2 flex items-center gap-2">
+                <Icon name="info" size={20} style={{ color: 'var(--fill-danger)' }} />
+                <span className="title">{t('ins.deleteConfirm.title')}</span>
+              </div>
+              <p className="caption mt-3">{t('ins.deleteConfirm.desc', { name: versionId })}</p>
+              <div className="mt-6 flex items-center gap-2">
+                <Button className="flex-1" onClick={() => setDeleteConfirm(false)}>
+                  {t('ins.deleteConfirm.cancel')}
+                </Button>
+                <Button variant="danger" className="flex-1" icon="trash" onClick={() => void doDeleteVersion()}>
+                  {t('ins.deleteConfirm.confirm')}
+                </Button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       <AnimatePresence>
         {exportOpen && <ExportPage versionId={versionId} onClose={() => setExportOpen(false)} />}

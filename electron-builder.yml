@@ -10,6 +10,17 @@ asar: true
 extraResources:
   - from: build/icon.png
     to: icon.png
+  # 联机板块（MCTier 移植）所需的 EasyTier 内核与驱动。
+  # 由 scripts/prepare-easytier-binaries.mjs 准备；不进 Git。
+  # 运行时经 process.resourcesPath/easytier/ 定位。
+  - from: resources/easytier
+    to: easytier
+  # 原生下载内核（Rust → .node）。由 scripts/build-native-downloader.mjs 编译。
+  # 必须放在 asar 之外：原生库无法从 asar 内 dlopen，只能作为普通文件加载。
+  # 运行时经 process.resourcesPath/native/<platform>-<arch>/ 定位；
+  # 缺失该平台产物时自动降级到 TS 下载器（见 src/main/native-downloader.ts）。
+  - from: resources/native
+    to: native
 # 最高压缩：仅影响安装包内的资源打包率（功能 / UI / 动画均不变），可显著减小安装包体积。
 compression: maximum
 mac:

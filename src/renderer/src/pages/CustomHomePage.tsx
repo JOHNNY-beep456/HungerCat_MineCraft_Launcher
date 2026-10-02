@@ -31,7 +31,7 @@ import { activeGameDir, useAdaptivePolling, useApp, versionDirLabel } from '../s
 import { emitCursor } from '../cursor'
 import { useRuntime } from '../runtime'
 import { HomepageGate } from '../components/HomepageGate'
-import { LoadingState, yggdrasilOrigin } from '../components/ui'
+import { LoadingState, yggdrasilOrigin, yggdrasilSiteLabel } from '../components/ui'
 import { HomePage } from './HomePage'
 
 /** 注入 iframe 的设计令牌：宿主变量名 → 暴露给脚本的 --hc-* 变量名。 */
@@ -647,7 +647,7 @@ interface HostSnapshot {
   memory: SystemMemoryInfo | null
   /** 分配给游戏的内存（MB），脚本可通过 hc.settings.memory.set 修改。 */
   allocatedMemory: number
-  account: { name: string; id: string; avatarUrl: string; authType: string } | null
+  account: { name: string; id: string; avatarUrl: string; authType: string; siteName: string } | null
   /** 当前版本目录下的已安装版本；切换版本目录后随之变化。 */
   versions: InstalledVersion[]
   selectedVersionId: string
@@ -940,7 +940,10 @@ export function CustomHomePage({ id }: { id: string }): JSX.Element {
             name: selectedAccount.name,
             id: selectedAccount.id,
             avatarUrl: avatarUrl(selectedAccount),
-            authType: selectedAccount.authType ?? (selectedAccount.offline ? 'offline' : 'microsoft')
+            authType: selectedAccount.authType ?? (selectedAccount.offline ? 'offline' : 'microsoft'),
+            // 账号「归属名」：第三方账号为自动获取的站点名称（缺失时回落到认证域名）；
+            // 非第三方账号无归属站点，为空串。
+            siteName: selectedAccount.authType === 'yggdrasil' ? yggdrasilSiteLabel(selectedAccount) : ''
           }
         : null,
     [selectedAccount]
@@ -1129,12 +1132,12 @@ export function CustomHomePage({ id }: { id: string }): JSX.Element {
           // 回退：无账号 / 无已安装版本时给出可读错误；Java 不兼容由运行时的 Java 提示接管。
           if (!selectedAccount) throw new Error('尚未登录账号，请先在「账号」页登录')
           if (!selectedVersionId) throw new Error('没有已安装的游戏版本，请先在「资源下载」页安装')
+          // 不传 javaPath：由主进程按「Java 管理 → 自动检测」开关决定用哪个 Java。
           const opts: LaunchOptions = {
             versionId: selectedVersionId,
             accountId: selectedAccount.id,
             gameDir: activeGameDir(settings),
-            memoryMb: settings.memoryMb,
-            javaPath: settings.javaPath || undefined
+            memoryMb: settings.memoryMb
           }
           await launch(opts)
           return { ok: true, versionId: selectedVersionId }

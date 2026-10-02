@@ -8,6 +8,7 @@ export type PageId =
   | 'homepage'
   | 'resources'
   | 'instances'
+  | 'multiplayer'
   | 'downloads'
   | 'accounts'
   | 'settings'
@@ -20,11 +21,35 @@ export const NAV: Array<{ id: PageId; label: string; icon: string }> = [
   { id: 'homepage', label: '主页', icon: 'palette' },
   { id: 'resources', label: '资源下载', icon: 'cube' },
   { id: 'instances', label: '实例', icon: 'box' },
+  { id: 'multiplayer', label: '联机', icon: 'globe' },
   { id: 'downloads', label: '进度', icon: 'download' },
   { id: 'accounts', label: '账号', icon: 'user' },
   { id: 'settings', label: '设置', icon: 'settings' },
   { id: 'about', label: '关于', icon: 'info' }
 ]
+
+/**
+ * 按当前设置过滤出实际可见的导航项。
+ *
+ * 两处必须用同一份规则（侧栏 + 实验性 Win10 桌面），否则会出现
+ * 「侧栏里没有联机、桌面上却有图标」的不一致。
+ *   - 本地模式：隐藏依赖联网的「资源下载 / 进度 / 关于」；
+ *   - 联机：实验性功能，默认隐藏，仅在设置里主动开启后才出现。
+ */
+export function visibleNav(settings: { mode: string; enableMultiplayer: boolean }): typeof NAV {
+  return NAV.filter((n) => {
+    if (settings.mode === 'local' && (n.id === 'resources' || n.id === 'downloads' || n.id === 'about')) {
+      return false
+    }
+    if (n.id === 'multiplayer' && !settings.enableMultiplayer) return false
+    return true
+  })
+}
+
+/** 某个页面当前是否可见（供路由兜底：不可见时退回主页）。 */
+export function isPageVisible(settings: { mode: string; enableMultiplayer: boolean }, page: PageId): boolean {
+  return visibleNav(settings).some((n) => n.id === page)
+}
 
 export function Sidebar({
   active,
@@ -35,7 +60,7 @@ export function Sidebar({
 }): JSX.Element {
   const { accounts, selectedAccount, settings, homepageUpdates, t } = useApp()
   const { downloads } = useRuntime()
-  const nav = settings.mode === 'local' ? NAV.filter((n) => n.id !== 'resources' && n.id !== 'downloads' && n.id !== 'about') : NAV
+  const nav = visibleNav(settings)
 
   return (
     <aside className="flex h-full flex-col gap-3 p-4 pr-1">

@@ -12,6 +12,7 @@ import { DownloadsPage } from './DownloadsPage'
 import { SettingsPage } from './SettingsPage'
 import { AboutPage } from './AboutPage'
 import { InstancesPage } from './InstancesPage'
+import { MultiplayerPage } from './MultiplayerPage'
 
 /** 资源下载页的预置定位（引导安装时使用）。 */
 export type ResourcePreset = { tab: Extract<Tab, 'versions'>; search: string } | null
@@ -19,7 +20,16 @@ export type ResourcePreset = { tab: Extract<Tab, 'versions'>; search: string } |
 export function renderPage(
   page: PageId,
   onManage: (versionId: string) => void,
-  resourcePreset: ResourcePreset
+  resourcePreset: ResourcePreset,
+  onNavigate?: (p: PageId) => void,
+  /**
+   * 是否允许进入「联机」板块（实验性功能，默认关闭）。
+   *
+   * 侧栏已在未开启时不渲染该入口，但导航状态可能残留（例如用户开着联机页
+   * 去设置里把它关掉）。这里做兜底：不允许时直接回落主页，避免出现
+   * 「入口没了、页面却还停着」的半死状态。
+   */
+  multiplayerEnabled = false
 ): JSX.Element {
   switch (page) {
     case 'home':
@@ -30,6 +40,11 @@ export function renderPage(
       return <ResourceDownloadPage initialTab={resourcePreset?.tab} presetSearch={resourcePreset?.search} />
     case 'instances':
       return <InstancesPage onManage={onManage} />
+    case 'multiplayer':
+      // 未开启实验性联机：不渲染联机页，回落主页。
+      if (!multiplayerEnabled) return <HomeRoute />
+      // onExit：拒绝 MCTier 许可协议时返回主界面（onNavigate 缺省时不显示「拒绝」）
+      return <MultiplayerPage onExit={onNavigate ? () => onNavigate('home') : undefined} />
     case 'accounts':
       return <AccountsPage />
     case 'downloads':

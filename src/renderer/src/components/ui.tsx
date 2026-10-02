@@ -139,6 +139,68 @@ const ICON_PATHS: Record<string, ReactNode> = {
       <path d="M7 9l3 3-3 3" />
       <path d="M13 15h4" />
     </>
+  ),
+  globe: (
+    <>
+      <circle cx="12" cy="12" r="9" />
+      <path d="M3 12h18" />
+      <path d="M12 3a15 15 0 010 18a15 15 0 010-18z" />
+      <path d="M5.5 6.5a12 12 0 0113 0" />
+      <path d="M5.5 17.5a12 12 0 0013 0" />
+    </>
+  ),
+  users: (
+    <>
+      <circle cx="9" cy="8" r="3.2" />
+      <path d="M2.5 19.5a6.5 6.5 0 0113 0" />
+      <path d="M16.5 5.6a3.2 3.2 0 010 4.8" />
+      <path d="M18 14.4a6.5 6.5 0 013.5 5.1" />
+    </>
+  ),
+  wifi: (
+    <>
+      <path d="M2.5 8.5a15 15 0 0119 0" />
+      <path d="M6 12a10 10 0 0112 0" />
+      <path d="M9.5 15.5a5 5 0 015 0" />
+      <path d="M12 19h.01" />
+    </>
+  ),
+  server: (
+    <>
+      <rect x="3" y="4" width="18" height="7" rx="2" />
+      <rect x="3" y="13" width="18" height="7" rx="2" />
+      <path d="M7 7.5h.01" />
+      <path d="M7 16.5h.01" />
+    </>
+  ),
+  mic: (
+    <>
+      <rect x="9" y="3" width="6" height="11" rx="3" />
+      <path d="M5.5 11a6.5 6.5 0 0013 0" />
+      <path d="M12 17.5V21" />
+      <path d="M9 21h6" />
+    </>
+  ),
+  message: (
+    <>
+      <path d="M4 5h16a1 1 0 011 1v11a1 1 0 01-1 1H9l-4 4v-4H4a1 1 0 01-1-1V6a1 1 0 011-1z" />
+      <path d="M8 10h8" />
+      <path d="M8 13.5h5" />
+    </>
+  ),
+  keyboard: (
+    <>
+      <rect x="2.5" y="6" width="19" height="12" rx="2" />
+      <path d="M6 10h.01M9 10h.01M12 10h.01M15 10h.01M18 10h.01" />
+      <path d="M7 14h10" />
+    </>
+  ),
+  download2: (
+    <>
+      <path d="M12 3v12" />
+      <path d="M7.5 10.5L12 15l4.5-4.5" />
+      <path d="M4 19h16" />
+    </>
   )
 }
 
@@ -665,6 +727,17 @@ export function yggdrasilOrigin(server: string): string {
   if (!s) return ''
   const withScheme = /^https?:\/\//i.test(s) ? s : `https://${s}`
   return withScheme.match(/^(https?:\/\/[^/]+)/i)?.[1] ?? ''
+}
+
+/**
+ * 第三方账号的「站点名称」标签：优先用自动获取的站点名（Yggdrasil 元数据 meta.serverName，
+ * 如「LittleSkin」「馋猫认证中心」）；缺失时回落到认证域名（如 littleskin.cn）。
+ * 都没有时返回空串，由调用方决定是否显示兜底文案。
+ */
+export function yggdrasilSiteLabel(account: { siteName?: string; yggdrasilServer?: string }): string {
+  const name = account.siteName?.trim()
+  if (name) return name
+  return yggdrasilOrigin(account.yggdrasilServer ?? '').replace(/^https?:\/\//i, '')
 }
 
 /** 头像候选：在线面像源（url），或「本地裁切皮肤贴图合成头部」（local）。 */

@@ -1,6 +1,6 @@
 {
   "name": "hunger-cat-minecraft-launcher",
-  "version": "0.5.3",
+  "version": "0.6.0-dev3",
   "description": "HungerCat MineCraft Launcher — cross-platform (Windows/macOS), iOS 26 Liquid Glass UI, PCL-CE-class features",
   "main": "./out/main/index.js",
   "author": "Hunger Cat",
@@ -11,6 +11,8 @@
     "start": "electron-vite preview",
     "preview": "electron-vite preview",
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
+    "native:build": "node scripts/build-native-downloader.mjs",
+    "native:build:debug": "node scripts/build-native-downloader.mjs --debug",
     "win": "electron-vite build && electron-builder --win",
     "mac": "electron-vite build && electron-builder --mac",
     "dist": "electron-vite build && electron-builder",

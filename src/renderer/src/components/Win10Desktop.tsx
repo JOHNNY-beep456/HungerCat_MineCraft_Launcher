@@ -12,7 +12,8 @@
 // ---------------------------------------------------------------------------
 
 import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
-import { NAV, type PageId } from './Sidebar'
+// NAV 用于查图标 / 标题元数据（不受可见性影响）；visibleNav 用于实际渲染哪些入口。
+import { NAV, visibleNav, type PageId } from './Sidebar'
 import { Avatar, Icon } from './ui'
 import { activeGameDir, useApp } from '../store'
 import { useRuntime } from '../runtime'
@@ -90,14 +91,8 @@ export function Win10Desktop(): JSX.Element {
   const zRef = useRef(10)
   const dragRef = useRef<{ key: string; dx: number; dy: number } | null>(null)
 
-  // 本地模式隐藏联网相关入口，与侧栏保持一致。
-  const nav = useMemo(
-    () =>
-      settings.mode === 'local'
-        ? NAV.filter((n) => n.id !== 'resources' && n.id !== 'downloads' && n.id !== 'about')
-        : NAV,
-    [settings.mode]
-  )
+  // 导航项与侧栏共用同一份过滤规则（本地模式隐藏联网入口；联机实验性默认隐藏）。
+  const nav = useMemo(() => visibleNav(settings), [settings])
 
   /* --- 强置顶外壳：进入即全屏 + 最高层级置顶 + 从系统任务栏隐藏，
          让 Windows 的任务栏与开始菜单都盖不进来；退出该模式（组件卸载）时还原， */
@@ -451,7 +446,7 @@ export function Win10Desktop(): JSX.Element {
                 onRename={(id) => renameManage(w.key, id)}
               />
             ) : (
-              renderPage(w.page, openManage, null)
+              renderPage(w.page, openManage, null, undefined, settings.enableMultiplayer)
             )}
           </div>
         </section>

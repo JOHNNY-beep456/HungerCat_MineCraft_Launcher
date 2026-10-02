@@ -4,6 +4,7 @@ import { promises as fsp } from 'fs'
 import { join } from 'path'
 import type { ModrinthProject, ModrinthProjectDetail, ModrinthSearchResult, ModrinthType, ModrinthVersion } from '@shared/types'
 import { netRequest } from './broker'
+import { settings } from './store'
 import { streamDownload } from './stream-download'
 
 /**
@@ -174,6 +175,7 @@ export async function installMod(
   await streamDownload(fileUrl, dest, {
     signal,
     sizeHint,
+    connections: settings.get().downloadConnections,
     onBytes: (n) => {
       received += n
       onProgress?.(received, total)
@@ -199,6 +201,7 @@ export async function downloadTo(
   await streamDownload(fileUrl, destPath, {
     signal,
     sizeHint,
+    connections: settings.get().downloadConnections,
     onBytes: (n) => {
       received += n
       onProgress?.(received, total)
