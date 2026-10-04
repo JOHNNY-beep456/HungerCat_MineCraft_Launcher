@@ -329,6 +329,7 @@ export function InstancesPage({ onManage }: { onManage: (versionId: string) => v
         <Icon name="folder" size={15} className="shrink-0 opacity-60" />
         <span className="caption shrink-0">{t('ins.versionDir')}</span>
         <Select
+          variant="seamless"
           className="w-[220px] max-w-[44vw] shrink-0"
           value={currentDirId}
           onChange={(v) => void selectDir(v)}

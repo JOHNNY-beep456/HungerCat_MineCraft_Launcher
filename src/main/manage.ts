@@ -5,6 +5,7 @@ import { listArchive, readArchiveText } from './archive'
 import { resolveProjectByIdentity, resolveProjectByName } from './sources'
 import { listResources, rememberResourceMeta } from './resources'
 import { withLocalTimeout } from './local-timeout'
+import { nativeScanFiles } from './native-downloader'
 
 function runDir(gameDir: string, versionId: string, isolated: boolean): string {
   return isolated ? join(gameDir, 'versions', versionId) : gameDir
@@ -103,8 +104,25 @@ export interface LoadedMod {
   meta: ModMeta | null
 }
 
+/** 模组文件允许的扩展名（与旧实现的正则 `\.(jar|zip)$` 一一对应）。 */
+const MOD_EXTENSIONS = ['jar', 'zip']
+
+/** 投影文件允许的扩展名（与旧实现的正则 `\.(litematic|schem|schematic)$` 一一对应）。 */
+const SCHEMATIC_EXTENSIONS = ['litematic', 'schem', 'schematic']
+
 /** 读取模组文件清单并提取 JAR 元数据（本地 tar，不联网）。 */
 export async function loadModFiles(dir: string): Promise<LoadedMod[]> {
+  // 优先走原生扫描（并行 stat，见 native-downloader.ts / scan.rs）。
+  // 返回 null 表示原生不可用或缺失该能力 —— 此时回退到下面的 TS 实现（功能一致）。
+  const scanned = await nativeScanFiles(dir, MOD_EXTENSIONS, true)
+  if (scanned) {
+    const mods: LoadedMod[] = scanned.map((f) => ({
+      mod: { name: f.name, path: f.path, enabled: f.enabled, size: f.size },
+      meta: null
+    }))
+    return mapLimit(mods, 6, async (l) => ({ ...l, meta: await readModMeta(l.mod.path) }))
+  }
+
   const entries = await fsp.readdir(dir, { withFileTypes: true })
   const mods: LoadedMod[] = []
   for (const e of entries) {
@@ -174,6 +192,7 @@ export async function enrichMods(
               onUpdate({
                 ...mod,
                 displayName: project.title,
+                translatedName: project.translatedName,
                 iconUrl: project.icon_url,
                 slug: project.slug,
                 description: project.description,
@@ -232,6 +251,7 @@ export async function enrichResources(
     const enriched: ResourceFile = {
       ...file,
       displayName: project.title,
+      translatedName: project.translatedName,
       iconUrl: project.icon_url,
       slug: project.slug,
       description: project.description,
@@ -272,6 +292,27 @@ export async function installLocalMod(
   return dest
 }
 
+/**
+ * 从本地导入模组 / 资源包 / 光影到当前实例。
+ *
+ * 与 installLocalMod 同一套编排（隔离实例落到 versions/<id>/ 下），
+ * 只是目标目录按 kind 区分——模组页原本就有拖拽导入，资源包 / 光影页需要同样的能力。
+ */
+export async function installLocalResource(
+  gameDir: string,
+  versionId: string,
+  isolated: boolean,
+  kind: 'mods' | 'resourcepacks' | 'shaderpacks',
+  sourcePath: string
+): Promise<string> {
+  const dir = join(runDir(gameDir, versionId, isolated), kind)
+  await withLocalTimeout(fsp.mkdir(dir, { recursive: true }), `创建目录 ${dir}`)
+  const dest = join(dir, basename(sourcePath))
+  await withLocalTimeout(fsp.copyFile(sourcePath, dest), `导入本地文件 ${basename(sourcePath)}`)
+  console.info(`[资源] 已导入本地文件 ${basename(sourcePath)} -> ${kind} / 版本 ${versionId}`)
+  return dest
+}
+
 export async function deleteWorld(
   gameDir: string,
   versionId: string,
@@ -288,6 +329,13 @@ export async function deleteWorld(
 
 export async function listSchematics(gameDir: string, versionId: string, isolated: boolean): Promise<SchematicEntry[]> {
   const dir = join(runDir(gameDir, versionId, isolated), 'schematics')
+  // 原生优先；返回 null 时回退 TS。原生命名不识别 `.disabled`（与旧实现一致）。
+  const scanned = await nativeScanFiles(dir, SCHEMATIC_EXTENSIONS, false)
+  if (scanned) {
+    return scanned
+      .map((f) => ({ name: f.name, path: f.path, size: f.size }))
+      .sort((a, b) => a.name.localeCompare(b.name))
+  }
   try {
     const entries = await fsp.readdir(dir, { withFileTypes: true })
     const out: SchematicEntry[] = []

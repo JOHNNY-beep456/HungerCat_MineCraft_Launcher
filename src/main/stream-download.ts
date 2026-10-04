@@ -7,7 +7,11 @@
 // 协议回流，由 broker 转发回本代理的 onBytes/onSize 回调。
 import { netRequest } from './broker'
 
-export const PARALLEL_THRESHOLD = 8 * 1024 * 1024 // 8 MB
+/**
+ * 走分段下载的最小文件体积。**必须与 network/stream-download.ts 保持一致**：
+ * 两处曾是 8MB / 2MB 两份不一致的死常量，一旦被引用即产生行为分叉。
+ */
+export const PARALLEL_THRESHOLD = 2 * 1024 * 1024 // 2 MB
 /** 每个文件的并发连接数（与原生内核默认值保持一致）。 */
 export const PARALLEL_CHUNKS = 64
 
@@ -44,6 +48,9 @@ export async function streamDownload(url: string, dest: string, opts: StreamDown
     },
     {
       signal: opts.signal,
+      // 下载是长任务：用「空闲看门狗」而非绝对超时。只要进度还在推进就永不超时，
+      // 连续无进度才会失败并级联 cancel 远端 —— 避免 client.jar / 慢网模组包被误杀。
+      stream: true,
       onProgress: (_taskId, raw) => {
         const m = raw as StreamProgress
         if (m.kind === 'bytes') opts.onBytes?.(m.n ?? 0)

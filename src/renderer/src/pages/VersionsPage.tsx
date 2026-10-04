@@ -43,6 +43,38 @@ function withTimeout<T>(p: Promise<T>, ms: number, tip: string): Promise<T> {
   })
 }
 
+/** 把 MC 版本号解析成数字段（如 "1.21.11" -> [1,21,11]，忽略预发布后缀）。 */
+function parseMcParts(mc: string): number[] {
+  const core = mc.split('-')[0]
+  return core.split('.').map((n) => parseInt(n, 10) || 0)
+}
+
+/** 按数字段比较两个 MC 版本：a<b 返回负，a>b 返回正，相等返回 0。 */
+function compareMc(a: string, b: string): number {
+  const pa = parseMcParts(a)
+  const pb = parseMcParts(b)
+  const len = Math.max(pa.length, pb.length)
+  for (let i = 0; i < len; i++) {
+    const d = (pa[i] ?? 0) - (pb[i] ?? 0)
+    if (d !== 0) return d
+  }
+  return 0
+}
+
+/**
+ * 该 Minecraft 版本是否支持安装「游戏内离线翻译模组」。
+ *
+ * 覆盖两个区间（含端点）：
+ *   1) 1.13 ~ 1.21.11
+ *   2) 26.1 ~ 26.3
+ * 该模组只在 Fabric + Fabric API 环境下工作，因此调用方还需校验加载器为 fabric。
+ */
+function supportsOfflineTranslate(mc: string): boolean {
+  const inOld = compareMc(mc, '1.13') >= 0 && compareMc(mc, '1.21.11') <= 0
+  const inNew = compareMc(mc, '26.1') >= 0 && compareMc(mc, '26.3') <= 0
+  return inOld || inNew
+}
+
 export function VersionsPage({ presetSearch }: { presetSearch?: string }): JSX.Element {
   const { download, installingId, busy, installVersion } = useRuntime()
   const { t } = useApp()
@@ -66,6 +98,11 @@ export function VersionsPage({ presetSearch }: { presetSearch?: string }): JSX.E
   const [customName, setCustomName] = useState('')
   const [nameTouched, setNameTouched] = useState(false)
   const [installFabricApi, setInstallFabricApi] = useState(true)
+  // 是否一并安装「游戏内离线翻译模组」：仅在 Fabric + 目标版本支持时为可选（默认勾选）。
+  const [installOfflineTranslate, setInstallOfflineTranslate] = useState(true)
+  // 离线翻译模组的署名/许可确认弹窗：勾选安装该模组时必须先知晓并同意。
+  const [consentOpen, setConsentOpen] = useState(false)
+  const [consentAgreed, setConsentAgreed] = useState(false)
   const logRef = useRef<HTMLDivElement>(null)
   // 加载器版本查询的请求序号：快速切换加载器分段时用于作废“过期的旧响应”，
   // 防止乱序返回的旧响应把当前选择的加载器版本覆盖掉。
@@ -166,6 +203,9 @@ export function VersionsPage({ presetSearch }: { presetSearch?: string }): JSX.E
     setCustomName(mc)
     setNameTouched(false)
     setInstallFabricApi(true)
+    setInstallOfflineTranslate(true)
+    setConsentOpen(false)
+    setConsentAgreed(false)
   }
 
   const switchLoaderKind = async (kind: InstallKind): Promise<void> => {
@@ -195,6 +235,19 @@ export function VersionsPage({ presetSearch }: { presetSearch?: string }): JSX.E
       return
     }
     if (loaderKind !== 'vanilla' && !loaderVersion) return
+    // 勾选安装离线翻译模组时，必须先确认署名与许可（原作者 / MIT License）。
+    const willInstallOfflineTranslate =
+      loaderKind === 'fabric' && installFabricApi && installOfflineTranslate && supportsOfflineTranslate(loaderTarget)
+    if (willInstallOfflineTranslate && !consentAgreed) {
+      setConsentOpen(true)
+      return
+    }
+    await runInstall(name)
+  }
+
+  /** 执行安装（确认弹窗通过后亦复用此流程）。 */
+  const runInstall = async (name: string): Promise<void> => {
+    if (!loaderTarget) return
     setLoaderBusy(true)
     setLoaderError(null)
     setLoaderLog([])
@@ -220,6 +273,16 @@ export function VersionsPage({ presetSearch }: { presetSearch?: string }): JSX.E
             )
           }
         }
+        // 可选：游戏内离线翻译模组（仅 Fabric + 目标版本支持时提供，需依赖 Fabric API）。
+        if (loaderKind === 'fabric' && installFabricApi && installOfflineTranslate && supportsOfflineTranslate(loaderTarget)) {
+          try {
+            await window.api.mods.installOfflineTranslate(id)
+          } catch (err) {
+            setLoaderError(
+              t('res.versions.offlineTranslateFailed', { msg: err instanceof Error ? err.message : String(err) })
+            )
+          }
+        }
       }
       void refresh()
     } catch (err) {
@@ -231,6 +294,8 @@ export function VersionsPage({ presetSearch }: { presetSearch?: string }): JSX.E
 
   const isForge = loaderKind === 'forge' || loaderKind === 'neoforge'
   const isVanilla = loaderKind === 'vanilla'
+  // 目标 MC 版本是否支持离线翻译模组（还需加载器为 fabric 才展示该选项）
+  const canOfflineTranslate = !!loaderTarget && supportsOfflineTranslate(loaderTarget)
   const targetSummary = manifest?.versions.find((v) => v.id === loaderTarget)
 
   return (
@@ -513,6 +578,21 @@ export function VersionsPage({ presetSearch }: { presetSearch?: string }): JSX.E
                   </div>
                 )}
 
+                {loaderKind === 'fabric' && installFabricApi && canOfflineTranslate && (
+                  <div
+                    className="mt-3 flex items-center justify-between gap-4 rounded-2xl p-4"
+                    style={{ background: 'var(--fill-secondary)' }}
+                  >
+                    <div>
+                      <div className="text-[13px] font-semibold" style={{ color: 'var(--text-primary)' }}>
+                        {t('res.versions.installOfflineTranslate')}
+                      </div>
+                      <div className="caption mt-0.5">{t('res.versions.installOfflineTranslateDesc')}</div>
+                    </div>
+                    <Checkbox checked={installOfflineTranslate} onChange={setInstallOfflineTranslate} />
+                  </div>
+                )}
+
                 {isForge && loaderLog.length > 0 && (
                   <div className="mt-5">
                     <div className="caption mb-2">{t('res.versions.installLog')}</div>
@@ -574,6 +654,76 @@ export function VersionsPage({ presetSearch }: { presetSearch?: string }): JSX.E
               </Button>
             </div>
           </div>
+        </motion.div>
+      )}
+
+      {/* 离线翻译模组：署名 / 许可确认弹窗（勾选安装该模组时必须先知晓并同意） */}
+      {consentOpen && (
+        <motion.div
+          className="absolute inset-0 z-50 flex items-center justify-center p-6"
+          style={{ background: 'rgba(0,0,0,0.45)' }}
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          transition={{ duration: 0.18 }}
+        >
+          <motion.div
+            className="glass-strong w-full max-w-lg rounded-[24px] p-6"
+            initial={{ scale: 0.95, y: 12 }}
+            animate={{ scale: 1, y: 0 }}
+            transition={{ type: 'spring', bounce: 0.2, duration: 0.32 }}
+          >
+            <div className="mb-3 flex items-center gap-2">
+              <Icon name="info" size={18} />
+              <span className="title">{t('res.versions.translateConsent.title')}</span>
+            </div>
+            <p className="caption mb-3">{t('res.versions.translateConsent.intro')}</p>
+            <div className="space-y-2 text-[13px]">
+              <div>
+                <span className="opacity-70">{t('res.versions.translateConsent.author')}</span>
+                <button
+                  className="ml-1 underline"
+                  style={{ color: 'var(--fill-primary)' }}
+                  onClick={() => void window.api.shell.openExternal('https://space.bilibili.com/3546631091783712')}
+                >
+                  {t('res.versions.translateConsent.authorName')}
+                </button>
+              </div>
+              <div>
+                <span className="opacity-70">{t('res.versions.translateConsent.license')}</span>
+                <span> MIT License</span>
+                <button
+                  className="ml-1 underline"
+                  style={{ color: 'var(--fill-primary)' }}
+                  onClick={() =>
+                    void window.api.shell.openExternal(
+                      'https://github.com/TWJohnJohn20116/mc-auto-translation-tool/blob/main/LICENSE'
+                    )
+                  }
+                >
+                  {t('res.versions.translateConsent.licenseLink')}
+                </button>
+              </div>
+            </div>
+            <label className="mt-4 flex items-center gap-2 text-[13px]">
+              <Checkbox checked={consentAgreed} onChange={setConsentAgreed} />
+              <span>{t('res.versions.translateConsent.agree')}</span>
+            </label>
+            <div className="mt-5 flex justify-end gap-2">
+              <Button variant="ghost" onClick={() => setConsentOpen(false)}>
+                {t('res.cancel')}
+              </Button>
+              <Button
+                variant="primary"
+                disabled={!consentAgreed}
+                onClick={async () => {
+                  setConsentOpen(false)
+                  await runInstall(sanitizeName(customName))
+                }}
+              >
+                {t('res.versions.translateConsent.confirm')}
+              </Button>
+            </div>
+          </motion.div>
         </motion.div>
       )}
     </div>

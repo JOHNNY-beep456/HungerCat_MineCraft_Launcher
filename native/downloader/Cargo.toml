@@ -13,16 +13,25 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 # Node-API 绑定：生成 ABI 稳定的原生模块，不依赖 V8 内部结构，
 # 因此对 Electron 升级不敏感（无需针对每个 Electron 版本重编译）。
-napi = { version = "2", default-features = false, features = ["napi8", "tokio_rt"] }
+#
+# 注意：**不启用 `tokio_rt`**。该 feature 会让 napi 的 `AsyncTask` 跑在 napi 自带的
+# tokio runtime 上；但我们已在 `compute()` 中把整段下载 `spawn` 到自己的进程级
+# runtime（见 lib.rs），再启用会造成两套 runtime 并存、白白多一份线程池。
+napi = { version = "2", default-features = false, features = ["napi8"] }
 napi-derive = "2"
 
 # 异步运行时：多连接下载需要真并发 IO。
-tokio = { version = "1", features = ["rt-multi-thread", "fs", "io-util", "time", "sync"] }
+# `macros` 提供 `tokio::select!`（HEAD 探测 / Range 探测的取消打断）。
+tokio = { version = "1", features = ["rt-multi-thread", "fs", "io-util", "time", "sync", "macros"] }
 
 # HTTP 客户端：原生 TLS + 连接池，单文件 32 连接时内存与 CPU 开销远低于 JS 侧。
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"] }
 
 futures-util = "0.3"
+
+# 正则引擎：主页脚本静态安全检测（危险规则表 + 外链采集）用，见 src/homepage.rs。
+# 只用到 regex（不支持零宽断言），相关的 2 条规则已改写为等价形态。
+regex = "1"
 
 # 构建脚本按 napi 约定命名，产物为 libhungercat_downloader.so/.dylib/.dll，
 # 由 scripts/build-native-downloader.mjs 改名为 .node 后放入 resources/native/。

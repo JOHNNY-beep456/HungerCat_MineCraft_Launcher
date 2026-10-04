@@ -30,6 +30,8 @@ import {
 } from './modrinth'
 import { cfProjectDetail, cfSearch, cfVersions } from './curseforge'
 import { defaultCurseforgeKey } from './curseforge-key'
+import { applyNameMap, buildNameMap, enrichWithMcmod, lookupMcmodName } from './mcmod'
+import { shouldUseMcmod } from './mirror'
 
 /** 当前是否配了 CurseForge KEY（没配就完全不碰 CurseForge）。 */
 export function hasCurseforge(): boolean {
@@ -57,6 +59,9 @@ function keyOf(p: ModrinthProject): string {
  * @param category 本启动器的类别名；两侧都会套用（CurseForge 侧按 classId 翻译成
  *   categoryId，见 curseforge.ts 的 CATEGORY_ID）。没有对应映射的类别在 CurseForge
  *   一侧不额外过滤。
+ *
+ * 额外：接入 MC百科以提供中文名（译名），并支持「原名 / 译名均可搜」——
+ * 中文查询词会先经 MC百科解析出原文名，再补一次官方检索。见 mcmod.ts。
  */
 export async function searchResources(opts: {
   source: SourceFilter
@@ -68,6 +73,44 @@ export async function searchResources(opts: {
   loader?: string
   offset?: number
 }): Promise<ModrinthSearchResult> {
+  // 1) 主查询
+  const primary = await searchOnce(opts, opts.query)
+
+  // 2) MC百科：补中文名；中文查询时顺便解析出原文名
+  const { hits: mcHits, extraQueries } = await enrichWithMcmod(primary.hits, opts.query)
+
+  // 3) 译名命中：用解析出的原文名补一次官方检索并合并（译名也能搜到）
+  if (extraQueries.length > 0) {
+    const map = buildNameMap(mcHits)
+    for (const q of extraQueries) {
+      const extra = await searchOnce(opts, q)
+      applyNameMap(extra.hits, map)
+      for (const p of extra.hits) {
+        const key = keyOf(p)
+        if (primary.seen.has(key)) continue
+        primary.seen.add(key)
+        primary.hits.push(p)
+      }
+      primary.totalHits += extra.totalHits
+    }
+  }
+
+  return { hits: primary.hits, totalHits: primary.totalHits }
+}
+
+/** 单次查询（不含 MC百科 编排）：Modrinth / CurseForge 合并去重。 */
+async function searchOnce(
+  opts: {
+    source: SourceFilter
+    limit: number
+    type: ModrinthType
+    category?: string
+    gameVersion?: string
+    loader?: string
+    offset?: number
+  },
+  query: string
+): Promise<ModrinthSearchResult & { seen: Set<string> }> {
   const wantModrinth = opts.source === 'all' || opts.source === 'modrinth'
   const wantCf = (opts.source === 'all' || opts.source === 'curseforge') && hasCurseforge()
 
@@ -75,7 +118,7 @@ export async function searchResources(opts: {
   if (wantModrinth) {
     tasks.push(
       mrSearchMods(
-        opts.query,
+        query,
         opts.limit,
         opts.type,
         opts.category,
@@ -88,7 +131,7 @@ export async function searchResources(opts: {
   if (wantCf) {
     tasks.push(
       cfSearch(defaultCurseforgeKey(), {
-        query: opts.query,
+        query,
         limit: opts.limit,
         type: opts.type,
         category: opts.category,
@@ -99,8 +142,11 @@ export async function searchResources(opts: {
     )
   }
   // 单来源时直接透传（保留原始报错，界面才能提示「KEY 无效」这类具体原因）
-  if (tasks.length === 1) return tasks[0]
-  if (tasks.length === 0) return { hits: [], totalHits: 0 }
+  if (tasks.length === 1) {
+    const r = await tasks[0]
+    return { ...r, seen: new Set(r.hits.map(keyOf)) }
+  }
+  if (tasks.length === 0) return { hits: [], totalHits: 0, seen: new Set<string>() }
 
   // 合并：Modrinth 在前；CurseForge 失败不影响整体（例如 KEY 过期时仍能看到 Modrinth 结果）
   const [mr, cf] = await Promise.all([
@@ -115,7 +161,7 @@ export async function searchResources(opts: {
     seen.add(k)
     merged.push(p)
   }
-  return { hits: merged, totalHits: mr.totalHits + cf.totalHits }
+  return { hits: merged, totalHits: mr.totalHits + cf.totalHits, seen }
 }
 
 /* ------------------------------ 识别项目 ------------------------------ */
@@ -130,11 +176,11 @@ export async function resolveProjectByIdentity(
   type: ModrinthType = 'mod'
 ): Promise<ModrinthProject | null> {
   const hit = await mrFindProject(modId, name, type)
-  if (hit) return { ...hit, source: 'modrinth' }
+  if (hit) return withTranslated({ ...hit, source: 'modrinth' })
   if (!hasCurseforge()) return null
   const query = (name && name.trim()) || (modId && modId.trim())
   if (!query) return null
-  return cfFindProject(query, modId, type)
+  return withTranslated(await cfFindProject(query, modId, type))
 }
 
 /**
@@ -143,9 +189,25 @@ export async function resolveProjectByIdentity(
  */
 export async function resolveProjectByName(name: string, type: ModrinthType): Promise<ModrinthProject | null> {
   const hit = await mrFindProjectByName(name, type)
-  if (hit) return { ...hit, source: 'modrinth' }
+  if (hit) return withTranslated({ ...hit, source: 'modrinth' })
   if (!hasCurseforge()) return null
-  return cfFindProject(name, '', type)
+  return withTranslated(await cfFindProject(name, '', type))
+}
+
+/**
+ * 给已识别的项目补中文译名（MC百科）。
+ *
+ * 只在「社区资源来源」允许查 MC百科时进行；任何失败都降级为「无译名」，
+ * 绝不影响项目识别本身（识别失败才是致命问题，译名只是锦上添花）。
+ */
+async function withTranslated(project: ModrinthProject | null): Promise<ModrinthProject | null> {
+  if (!project || !shouldUseMcmod() || project.translatedName) return project
+  const zh = await lookupMcmodName(project.title || project.slug)
+  if (zh) {
+    project.translatedName = zh.nameZh
+    project.mcmodUrl = zh.url
+  }
+  return project
 }
 
 /**

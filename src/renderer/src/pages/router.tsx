@@ -10,6 +10,7 @@ import { ResourceDownloadPage, type Tab } from './ResourceDownloadPage'
 import { AccountsPage } from './AccountsPage'
 import { DownloadsPage } from './DownloadsPage'
 import { SettingsPage } from './SettingsPage'
+import { FeedbackPage } from './FeedbackPage'
 import { AboutPage } from './AboutPage'
 import { InstancesPage } from './InstancesPage'
 import { MultiplayerPage } from './MultiplayerPage'
@@ -51,6 +52,8 @@ export function renderPage(
       return <DownloadsPage />
     case 'settings':
       return <SettingsPage />
+    case 'feedback':
+      return <FeedbackPage />
     case 'about':
       return <AboutPage />
   }

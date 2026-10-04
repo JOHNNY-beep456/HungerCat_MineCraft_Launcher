@@ -10,11 +10,18 @@ asar: true
 extraResources:
   - from: build/icon.png
     to: icon.png
-  # 联机板块（MCTier 移植）所需的 EasyTier 内核与驱动。
-  # 由 scripts/prepare-easytier-binaries.mjs 准备；不进 Git。
+  # 联机板块（MCTier 移植）所需的 EasyTier 内核。
+  # 由 scripts/build-easytier-npcap-free.ps1 构建（无 Npcap）；不进 Git。
+  # 只打包 core + cli：组网以 --no-tun 运行，不需要 wintun.dll / WinDivert64.sys；
+  # 显式列出文件名，避免把调试用的 easytier-core.vendor/ 也带进安装包。
   # 运行时经 process.resourcesPath/easytier/ 定位。
   - from: resources/easytier
     to: easytier
+    filter:
+      - easytier-core.exe
+      - easytier-cli.exe
+      - easytier-core
+      - easytier-cli
   # 原生下载内核（Rust → .node）。由 scripts/build-native-downloader.mjs 编译。
   # 必须放在 asar 之外：原生库无法从 asar 内 dlopen，只能作为普通文件加载。
   # 运行时经 process.resourcesPath/native/<platform>-<arch>/ 定位；

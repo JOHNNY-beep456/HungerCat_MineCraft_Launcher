@@ -33,6 +33,7 @@ import type {
 import { analyzeScript, parseHomepageMeta } from './homepage-analyzer'
 import { settings } from './store'
 import { netRequest } from './broker'
+import { fetchServerLimits } from './feedback'
 import { streamDownload } from './stream-download'
 
 /** 本地导入的体积上限（服务端投稿上限为 512KB，本地留出余量）。 */
@@ -725,7 +726,11 @@ export async function sendEmailCode(email: string): Promise<HomepageEmailCodeRes
 export async function submitHomepage(payload: HomepageSubmitPayload): Promise<HomepageSubmitResult> {
   const raw = Buffer.from(payload.contentBase64, 'base64')
   if (raw.byteLength === 0) throw new Error('脚本内容为空')
-  if (raw.byteLength > MAX_MARKET_SIZE) throw new Error('投稿脚本体积超出上限（512KB）')
+  // 投稿体积上限以服务端当前生效的限制为准（站长可在后台调整）。
+  const scriptMaxBytes = (await fetchServerLimits()).scriptMaxBytes
+  if (raw.byteLength > scriptMaxBytes) {
+    throw new Error(`投稿脚本体积超出上限（${Math.round(scriptMaxBytes / 1024)}KB）`)
+  }
   const res = await netRequest<
     Partial<HomepageSubmitResult> & { content_base64?: string; error?: string }
   >('server:post', {

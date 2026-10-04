@@ -13,15 +13,36 @@
 
 import { utilityProcess } from 'electron'
 import { join } from 'path'
-import type { NetRequestMessage, NetResponseMessage } from '@shared/net-protocol'
+import type { NetErrorPayload, NetRequestMessage, NetResponseMessage } from '@shared/net-protocol'
+
+/** 带结构化字段的错误：跨进程的 code/status/retryAfter 原样带到调用方。 */
+export class NetError extends Error {
+  readonly code: NetErrorPayload['code']
+  readonly status?: number
+  readonly retryAfter?: string
+  constructor(message: string, code: NetErrorPayload['code'], status?: number, retryAfter?: string) {
+    super(message)
+    this.name = 'NetError'
+    this.code = code
+    this.status = status
+    this.retryAfter = retryAfter
+  }
+}
 
 interface Pending {
   resolve: (v: unknown) => void
   reject: (e: Error) => void
   onProgress?: (taskId: string, data: unknown) => void
-  timer: ReturnType<typeof setTimeout>
+  /** 绝对超时兜底（仅非流式请求使用）。 */
+  timer: ReturnType<typeof setTimeout> | null
+  /** 空闲看门狗（流式长任务使用）：超时后级联取消远端。 */
+  idleTimer: ReturnType<typeof setTimeout> | null
+  /** 流式任务的空闲阈值；0 表示不启用空闲看门狗。 */
+  idleTimeoutMs: number
   signal?: AbortSignal
   onAbort?: () => void
+  ref: number
+  method: string
 }
 
 let child: Electron.UtilityProcess | null = null
@@ -32,10 +53,20 @@ let seq = 0
 const pending = new Map<number, Pending>()
 
 /**
- * 请求级兜底超时。网络操作自身已有 10s 超时（AbortSignal.timeout），这里再兜一层，
- * 防止网络进程整体挂起时调用方（进而渲染层）永久 pending。
+ * 请求级兜底超时（**仅用于短请求**，如元数据 JSON / sidecar / 认证）。
+ * 网络操作自身已有 10s AbortSignal；这一层防止网络进程整体挂起时调用方永久 pending。
  */
 const REQUEST_TIMEOUT_MS = 45_000
+
+/**
+ * 流式下载的空闲超时阈值。
+ *
+ * 下载类长任务**不能**用「请求级绝对超时」：client.jar / 慢网模组包超过阈值是常态，
+ * 绝对超时会把正常下载判死（旧实现的 45s 绝对超时正是如此）。业界标准是 **idle timeout**
+ * ——只要进度还在推进就永不超时，连续 N 秒没有任何字节才判失败。
+ * 传输层已有 10s 停滞看门狗，这里留更宽的冗余，专门兜「网络进程整体卡死」。
+ */
+const DEFAULT_IDLE_TIMEOUT_MS = 90_000
 /** 崩溃恢复的连续崩溃阈值：10s 窗口内崩溃超过该次数则停用自动恢复。 */
 const MAX_CRASH = 3
 const RESPAWN_DELAY_MS = 800
@@ -50,13 +81,28 @@ function logErr(...args: unknown[]): void {
   console.error('[网络桥]', ...args)
 }
 
-function rejectAllPending(message: string): void {
-  const list = [...pending.entries()]
-  pending.clear()
-  for (const [, p] of list) {
+function clearPendingTimers(p: Pending): void {
+  if (p.timer) {
     clearTimeout(p.timer)
-    if (p.signal && p.onAbort) p.signal.removeEventListener('abort', p.onAbort)
-    p.reject(new Error(message))
+    p.timer = null
+  }
+  if (p.idleTimer) {
+    clearTimeout(p.idleTimer)
+    p.idleTimer = null
+  }
+}
+
+function detach(p: Pending): void {
+  clearPendingTimers(p)
+  if (p.signal && p.onAbort) p.signal.removeEventListener('abort', p.onAbort)
+}
+
+function rejectAllPending(message: string): void {
+  const list = [...pending.values()]
+  pending.clear()
+  for (const p of list) {
+    detach(p)
+    p.reject(new NetError(message, 'network'))
   }
 }
 
@@ -64,15 +110,37 @@ function handleMessage(msg: NetResponseMessage): void {
   if (msg.type === 'result') {
     const p = pending.get(msg.ref)
     if (!p) return
-    clearTimeout(p.timer)
-    if (p.signal && p.onAbort) p.signal.removeEventListener('abort', p.onAbort)
+    detach(p)
     pending.delete(msg.ref)
     if (msg.ok) p.resolve(msg.data)
-    else p.reject(new Error(msg.error))
+    else p.reject(new NetError(msg.error, msg.code ?? 'unknown', msg.status, msg.retryAfter))
   } else if (msg.type === 'progress') {
-    pending.get(msg.ref)?.onProgress?.(msg.taskId, msg.data)
+    const p = pending.get(msg.ref)
+    if (!p) return
+    // 进度到达即刷新空闲看门狗：长任务只要还在推进就永不超时。
+    if (p.idleTimer && p.idleTimeoutMs > 0) {
+      clearTimeout(p.idleTimer)
+      p.idleTimer = setTimeout(() => onIdleTimeout(p.ref, p.method, p.idleTimeoutMs), p.idleTimeoutMs)
+    }
+    p.onProgress?.(msg.taskId, msg.data)
   }
 }
+
+/** 空闲超时：级联向网络进程发 abort，消灭「本地已 reject、远端仍在下载」的孤儿任务。 */
+function onIdleTimeout(ref: number, method: string, idleMs: number): void {
+  const p = pending.get(ref)
+  if (!p) return
+  detach(p)
+  pending.delete(ref)
+  logErr(`网络请求空闲超时: ${method} (ref=${ref}, ${idleMs}ms 无进度)，已级联取消`)
+  try {
+    child?.postMessage({ type: 'abort', ref } satisfies NetRequestMessage)
+  } catch {
+    /* 忽略 */
+  }
+  p.reject(new NetError(`下载长时间无进展（${Math.round(idleMs / 1000)}s），已取消`, 'timeout'))
+}
+
 
 function spawn(): void {
   if (stopped) return
@@ -138,47 +206,70 @@ function ensureNetworkWorker(): void {
  * @param opts.taskId    进度按 taskId 汇总时的标识。
  * @param opts.signal    取消信号：取消时会向网络进程发 abort 并立刻 reject 本地。
  * @param opts.onProgress 进度事件回调（taskId, data）。
+ * @param opts.stream    流式长任务（下载）：启用「空闲看门狗」而非绝对超时。
+ * @param opts.idleTimeoutMs 空闲阈值（仅 stream=true 时生效）。
+ * @param opts.timeoutMs 绝对超时（仅 stream=false 时生效；下载类请勿使用）。
  */
 export function netRequest<T = unknown>(
   method: string,
   params?: unknown,
-  opts?: { signal?: AbortSignal; taskId?: string; onProgress?: (taskId: string, data: unknown) => void; timeoutMs?: number }
+  opts?: {
+    signal?: AbortSignal
+    taskId?: string
+    onProgress?: (taskId: string, data: unknown) => void
+    timeoutMs?: number
+    /** 长任务模式：不设绝对超时，只在「连续无进度」达到 idleTimeoutMs 时失败并级联取消。 */
+    stream?: boolean
+    idleTimeoutMs?: number
+  }
 ): Promise<T> {
   return new Promise<T>((resolve, reject) => {
     ensureNetworkWorker()
     if (!child) {
-      reject(new Error('网络进程不可用，请稍后重试'))
+      reject(new NetError('网络进程不可用，请稍后重试', 'network'))
       return
     }
 
     const ref = ++seq
-    const timer = setTimeout(() => {
-      const p = pending.get(ref)
-      if (!p) return
-      clearTimeout(p.timer)
-      if (p.signal && p.onAbort) p.signal.removeEventListener('abort', p.onAbort)
-      pending.delete(ref)
-      logErr(`网络请求超时: ${method} (ref=${ref})`)
-      reject(new Error(`网络请求超时 (${method})，请重试`))
-    }, opts?.timeoutMs ?? REQUEST_TIMEOUT_MS)
+    const isStream = opts?.stream === true
+    const idleTimeoutMs = isStream ? (opts?.idleTimeoutMs ?? DEFAULT_IDLE_TIMEOUT_MS) : 0
 
     const item: Pending = {
       resolve: resolve as (v: unknown) => void,
       reject,
       onProgress: opts?.onProgress,
-      timer
+      timer: null,
+      idleTimer: null,
+      idleTimeoutMs,
+      ref,
+      method
     }
+
+    // 长任务用空闲看门狗；短请求用绝对超时。二者互斥，绝不对下载叠加绝对超时。
+    if (isStream) {
+      item.idleTimer = setTimeout(() => onIdleTimeout(ref, method, idleTimeoutMs), idleTimeoutMs)
+    } else {
+      item.timer = setTimeout(() => {
+        const p = pending.get(ref)
+        if (!p) return
+        detach(p)
+        pending.delete(ref)
+        logErr(`网络请求超时: ${method} (ref=${ref})`)
+        reject(new NetError(`网络请求超时 (${method})，请重试`, 'timeout'))
+      }, opts?.timeoutMs ?? REQUEST_TIMEOUT_MS)
+    }
+
     pending.set(ref, item)
 
     const onAbort = (): void => {
-      clearTimeout(timer)
+      detach(item)
       pending.delete(ref)
       try {
         child?.postMessage({ type: 'abort', ref } satisfies NetRequestMessage)
       } catch {
         /* 忽略 */
       }
-      reject(new Error('网络请求已取消'))
+      reject(new NetError('网络请求已取消', 'cancelled'))
     }
     if (opts?.signal) {
       item.signal = opts.signal
@@ -193,10 +284,9 @@ export function netRequest<T = unknown>(
     try {
       child.postMessage({ type: 'request', ref, method, params, taskId: opts?.taskId } satisfies NetRequestMessage)
     } catch (err) {
-      clearTimeout(timer)
+      detach(item)
       pending.delete(ref)
-      if (item.signal && item.onAbort) item.signal.removeEventListener('abort', onAbort)
-      reject(new Error(`网络请求发送失败: ${err instanceof Error ? err.message : String(err)}`))
+      reject(new NetError(`网络请求发送失败: ${err instanceof Error ? err.message : String(err)}`, 'network'))
     }
   })
 }

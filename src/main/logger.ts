@@ -1,3 +1,4 @@
+import { app } from 'electron'
 import type { DebugLogEntry } from '@shared/types'
 
 /** 滚动缓冲上限（条）。 */
@@ -68,6 +69,29 @@ function push(entry: DebugLogEntry): void {
   }
 }
 
+/** 折叠换行 / 控制字符：单条外部日志绝不能伪造成多行（见 F-14 / D07）。 */
+function fold(text: string): string {
+  return String(text)
+    .replace(/[\r\n\u2028\u2029]+/g, ' ⏎ ')
+    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, '')
+    .slice(0, 8000)
+}
+
+/**
+ * 追加一条「外部来源」日志（渲染层转发 / 主页脚本等）。
+ *
+ * 主进程只 monkey-patch 了本进程的 console；渲染层的 console 与运行时错误不会自动进入
+ * 缓冲。调试密钥上传时需要完整的现场，因此渲染层经 IPC 把日志转发到这里统一入库。
+ * `source` 会作为前缀标注来源（如「渲染层」），`fold()` 折叠换行避免伪造多行。
+ */
+export function appendExternalLog(
+  level: DebugLogEntry['level'],
+  message: string,
+  source = '渲染层'
+): void {
+  push({ ts: Date.now(), level, message: `[${source}] ${fold(message)}` })
+}
+
 /**
  * 全局捕获主进程的 console 输出（monkey-patch），
  * 写入滚动缓冲并广播给订阅者（调试日志窗口）。幂等，可多次调用。
@@ -83,7 +107,14 @@ export function initLogger(): void {
       orig(...args)
     }
   }
-  push({ ts: Date.now(), level: 'info', message: '[logger] 主进程日志采集已启用' })
+  // 环境头：任何一次日志上传都能从首行拿到运行环境，省去来回追问。
+  push({
+    ts: Date.now(),
+    level: 'info',
+    message:
+      `[logger] 采集已启用 · 启动器 ${app.getVersion()} · ${process.platform} ${process.arch} · ` +
+      `Electron ${process.versions.electron} · Chrome ${process.versions.chrome} · Node ${process.versions.node}`
+  })
 }
 
 /** 读取当前滚动缓冲的快照。 */

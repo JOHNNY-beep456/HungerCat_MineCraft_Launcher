@@ -2,10 +2,17 @@ import { promises as fsp } from 'fs'
 import { join } from 'path'
 import type { ResourceFile, ResourceKind } from '@shared/types'
 import { withLocalTimeout } from './local-timeout'
+import { nativeScanFiles } from './native-downloader'
 
 function resourceDir(gameDir: string, versionId: string, isolated: boolean, kind: ResourceKind): string {
   const runDir = isolated ? join(gameDir, 'versions', versionId) : gameDir
   return join(runDir, kind)
+}
+
+/** 各资源类型允许的扩展名（与旧实现的正则一一对应）。 */
+const RESOURCE_EXTENSIONS: Record<ResourceKind, string[]> = {
+  resourcepacks: ['zip', 'jar', 'mcpack', 'mctemplate'],
+  shaderpacks: ['zip', 'fsb', 'shader', 'glsl']
 }
 
 /** 从 Modrinth / CurseForge 补来的那部分元数据。 */
@@ -42,6 +49,20 @@ export async function listResources(
   kind: ResourceKind
 ): Promise<ResourceFile[]> {
   const dir = resourceDir(gameDir, versionId, isolated, kind)
+  const extensions = RESOURCE_EXTENSIONS[kind]
+
+  // 优先走原生扫描（并行 stat，见 native-downloader.ts / scan.rs）。
+  // 返回 null 表示原生不可用或缺失该能力 —— 此时回退到下面的 TS 实现。
+  const scanned = await nativeScanFiles(dir, extensions, false)
+  if (scanned) {
+    return scanned
+      .map((f) => {
+        const meta = metaCache.get(metaKey(f.path, f.size))
+        return meta ? { name: f.name, size: f.size, path: f.path, ...meta } : { name: f.name, size: f.size, path: f.path }
+      })
+      .sort((a, b) => b.size - a.size)
+  }
+
   try {
     const entries = await fsp.readdir(dir, { withFileTypes: true })
     const files: ResourceFile[] = []

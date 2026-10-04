@@ -36,6 +36,19 @@ const MAX_SEGMENT_SIZE = 16 * 1024 * 1024 // 16 MB
 const SEGMENT_ATTEMPTS = 3
 /** 连续多少毫秒未收到任何字节即判定「网络连接超时」。统一为 10s，防止下载线程永久挂起。 */
 const STALL_TIMEOUT_MS = 10_000
+/**
+ * 自适应并发的**起步连接数**。
+ *
+ * 起点取小值：无线网络对「一上来就开大量连接」最敏感，保守起步可避免开局的拥塞崩溃；
+ * 链路有余量时会在运行中按实测速率快速增开（见 SEGMENT_GROWTH_GRACE_MS），
+ * 因此有线 / 光纤不会因此变慢，只是把「爆发」摊开成「爬坡」。
+ */
+const INITIAL_CONNECTIONS = 4
+/**
+ * 「增开一条连接」的判定阈值：某条连接在此时间内下完一整段，即认为链路仍有富余。
+ * 取 1.2s——比典型 RTT 高得多，避免把「正常但略慢」误判为富余而在 Wi-Fi 上过度加压。
+ */
+const SEGMENT_GROWTH_GRACE_MS = 1_200
 
 export interface StreamDownloadOptions {
   signal?: AbortSignal
@@ -92,8 +105,13 @@ async function readErrorBody(res: Response): Promise<string> {
 async function httpError(
   status: number,
   res: Response
-): Promise<Error & { status: number; retryAfter?: string }> {
-  const e = new Error(`下载失败 (HTTP ${status})`) as Error & { status: number; retryAfter?: string }
+): Promise<Error & { code: string; status: number; retryAfter?: string }> {
+  const e = new Error(`下载失败 (HTTP ${status})`) as Error & {
+    code: string
+    status: number
+    retryAfter?: string
+  }
+  e.code = 'http'
   e.status = status
   const ra = res.headers.get('retry-after')
   if (ra) e.retryAfter = ra
@@ -136,6 +154,13 @@ export async function streamDownload(url: string, dest: string, opts: StreamDown
 }
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms))
+
+/** 带结构化 code 的错误：跨进程后由 broker → 主进程按 code 决策，不靠文案正则。 */
+function tagged(code: string, message: string): Error & { code: string } {
+  const e = new Error(message) as Error & { code: string }
+  e.code = code
+  return e
+}
 
 /** 解析 `Content-Range: bytes <start>-<end>/<total>` 的起始偏移；解析不出返回 null。 */
 function parseContentRangeStart(value: string | null): number | null {
@@ -225,7 +250,7 @@ async function singleDownload(url: string, dest: string, opts: StreamDownloadOpt
     const out = createWriteStream(dest)
     try {
       for (;;) {
-        if (signal?.aborted) throw new Error('下载已取消')
+        if (signal?.aborted) throw tagged('cancelled', '下载已取消')
         const { done, value } = await reader.read()
         if (done) break
         lastBytesAt = Date.now()
@@ -242,8 +267,8 @@ async function singleDownload(url: string, dest: string, opts: StreamDownloadOpt
     }
   } catch (err) {
     // 用户主动取消优先；其次若因内部超时中断，统一报告网络连接超时。
-    if (signal?.aborted) throw new Error('下载已取消')
-    if (attempt.signal.aborted) throw new Error('网络连接超时')
+    if (signal?.aborted) throw tagged('cancelled', '下载已取消')
+    if (attempt.signal.aborted) throw tagged('timeout', '网络连接超时')
     throw err
   } finally {
     clearInterval(watchdog)
@@ -268,7 +293,7 @@ async function downloadSegment(
   let lastErr: Error | null = null
 
   for (let attempt = 0; attempt < SEGMENT_ATTEMPTS; attempt++) {
-    if (signal?.aborted) throw new Error('下载已取消')
+    if (signal?.aborted) throw tagged('cancelled', '下载已取消')
 
     // 每次尝试独立的中断控制器 + 停滯看门狗：单条连接假死只中断本次尝试，
     // 其余分段继续跑；本段随后从 pos 续传，不再整文件重下。
@@ -313,7 +338,7 @@ async function downloadSegment(
 
       const reader = res.body.getReader()
       for (;;) {
-        if (signal?.aborted) throw new Error('下载已取消')
+        if (signal?.aborted) throw tagged('cancelled', '下载已取消')
         const { done, value } = await reader.read()
         if (done) break
         lastBytesAt = Date.now()
@@ -332,11 +357,13 @@ async function downloadSegment(
       if (pos >= end) return true
       throw new Error(`分段下载不完整（${pos - start}/${end - start} 字节）`)
     } catch (err) {
-      if (signal?.aborted) throw new Error('下载已取消')
+      if (signal?.aborted) throw tagged('cancelled', '下载已取消')
       const status = (err as { status?: number } | null)?.status
       // 硬错误（4xx 等非瞬时状态）不重试，直接上抛，让上层走镜像回退等逻辑。
       if (status != null && !TRANSIENT_STATUS.has(status)) throw err
-      lastErr = attemptController.signal.aborted ? new Error('网络连接超时') : (err as Error)
+      lastErr = attemptController.signal.aborted
+        ? (tagged('timeout', '网络连接超时') as Error)
+        : (err as Error)
       if (attempt + 1 < SEGMENT_ATTEMPTS) await sleep(segmentDelayMs(err as { status?: number }, attempt))
     } finally {
       clearInterval(watchdog)
@@ -370,36 +397,74 @@ async function parallelDownload(
   if (signal?.aborted) forwardAbort()
   const workerOpts: StreamDownloadOptions = { ...opts, signal: inner.signal }
   try {
-    const connections = resolveConnections(opts)
-    const segSize = segmentSizeFor(size, connections)
+    const maxConnections = resolveConnections(opts)
+    // ── 自适应并发：为什么不能一上来就开满 ──────────────────────────────
+    // 无线网络（Wi-Fi）对「瞬间开大量 TCP 连接」极敏感：一次性 64 条并发会在空口
+    // 引发丢包 / 重传 / 拥塞崩溃，有效吞吐反而**下降**（越下越慢）。这里改为
+    // 「保守起步 → 按实测速率逐步增开」：
+    //   * 首轮只开 INITIAL_CONNECTIONS 条；
+    //   * 若某条连接在 GRACE 内就下完一段（说明链路有余量），再增开 1 条；
+    //   * 增开到 maxConnections 封顶；
+    //   * 任一连接出现停滞 / 报错则**停止增开**（链路已吃紧），避免雪上加霜。
+    // 这样有线 / 光纤能快速爬到高并发吃满带宽，Wi-Fi 则自然停在合适水位。
+    const segSize = segmentSizeFor(size, maxConnections)
     const total = Math.ceil(size / segSize)
     let next = 0
     let rangeUnsupported = false
     let failure: unknown = null
+    /** 是否允许继续增开连接：出现停滞 / 失败后置 false。 */
+    let mayGrow = true
+    /** 仍在运行的连接数（用于封顶判定）。 */
+    let running = 0
+    /** 所有已启动连接的 promise 集合（含运行中动态增开的）。 */
+    const live = new Set<Promise<void>>()
 
-    // 连接池：每个 worker 反复领取下一段，直到队列取空或发现服务器不支持 Range。
-    // 捕获自身错误（记录首个失败并中断其余连接）后正常返回，保证 handle 关闭前无人再写。
-    const runWorker = async (): Promise<void> => {
+    /** 启动一条连接并纳入 live 集合，退出后自动移除（函数声明，便于在 consumer 内前向引用）。 */
+    function spawn(): void {
+      const p = consumer()
+      live.add(p)
+      void p.finally(() => live.delete(p))
+    }
+
+    async function consumer(): Promise<void> {
+      running++
       try {
         for (;;) {
-          if (inner.signal.aborted) throw new Error('下载已取消')
+          if (inner.signal.aborted) throw tagged('cancelled', '下载已取消')
           if (rangeUnsupported) return
           const i = next++
           if (i >= total) return
           const start = i * segSize
           const end = Math.min(start + segSize, size)
+          const t0 = Date.now()
           const ok = await downloadSegment(url, start, end, handle, workerOpts, () => {
             rangeUnsupported = true
           })
           if (!ok) return
+          // 一段下得很快 → 认定链路仍有富余，尝试再增开一条连接。
+          // 慢段不发奖励，避免在拥堵链路上继续加压。
+          const elapsed = Date.now() - t0
+          if (mayGrow && elapsed < SEGMENT_GROWTH_GRACE_MS && !inner.signal.aborted) {
+            if (running < maxConnections && next < total) spawn()
+          }
         }
       } catch (err) {
+        // 失败即停止增开：链路或服务端已吃紧。
+        mayGrow = false
         if (failure === null) failure = err
         inner.abort()
+      } finally {
+        running--
       }
     }
 
-    await Promise.all(Array.from({ length: Math.min(connections, total) }, runWorker))
+    // 保守起步：Wi-Fi 友好，后续按实测速率爬升。
+    const initial = Math.min(INITIAL_CONNECTIONS, maxConnections, total)
+    for (let i = 0; i < initial; i++) spawn()
+    // 等到所有连接（含运行中动态增开的）全部结束。
+    while (live.size > 0) {
+      await Promise.all([...live])
+    }
     if (failure !== null) throw failure
     if (rangeUnsupported) return false
     await fsp.rename(tmp, dest)

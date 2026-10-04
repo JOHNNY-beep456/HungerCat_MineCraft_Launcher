@@ -4,17 +4,25 @@ import { createHash } from 'crypto'
 import { createReadStream, existsSync, promises as fsp } from 'fs'
 import { dirname, join } from 'path'
 import type { DownloadProgress, Library, VersionJson } from '@shared/types'
-import { OFFICIAL, bmclapiClientJarUrl, bmclapiUrl } from './mirror'
+import { OFFICIAL, candidateUrls, clientJarCandidates } from './mirror'
 import { streamDownload } from './stream-download'
 import { netRequest } from './broker'
 import { extractArchive } from './archive'
+import { ProgressReporter, computePercent } from './transfer-util'
 
 const UA = 'HungerCatLauncher/0.1'
 
 interface DownloadTask {
+  /** 主地址：候选列表的第一项（按当前「文件下载源」策略排序）。 */
   url: string
-  /** 回退地址：主用（官方）缺失 / 缓慢时自动切到此地址重下（通常是 BMCLAPI 镜像）。 */
-  fallbackUrl?: string
+  /**
+   * 备用候选地址（有序）：主地址缺失（404）/ 缓慢 / 不可达时逐个尝试。
+   *
+   * 这解决了「BMCLAPI 部分文件 404」的老问题：以前只有一个固定回退地址，
+   * 镜像 404 后就整任务失败；现在候选是**有序列表**，镜像缺什么就落回官方源，
+   * 反之（镜像优先策略下）官方慢就换镜像。
+   */
+  fallbackUrls?: string[]
   dest: string
   sha1?: string
   size?: number
@@ -34,31 +42,56 @@ const isMac = process.platform === 'darwin'
 const osName = isWindows ? 'windows' : isMac ? 'osx' : 'linux'
 
 /**
- * 构造「官方主用 + BMCLAPI 回退」的候选对。
- * 官方源缺失（HTTP 404）或缓慢（连接停滞超时）时，由 downloadFile 切到镜像重下。
- * 若该地址无法镜像（例如第三方 Maven 仓库），则不设置回退地址。
+ * 按当前「文件下载源」策略构造有序候选地址。
+ *
+ * 旧实现只产出「官方 + 一个固定镜像」两项，且镜像顺序写死。现在改为读取
+ * `mirror.ts` 的策略（用户可在设置里选「镜像优先 / 官方优先 / 自动」），
+ * 并把**所有**候选（可能只有一项）都带上，供下载层逐个回退。
  */
-function urlsFor(officialUrl: string): { url: string; fallbackUrl?: string } {
-  const mirrored = bmclapiUrl(officialUrl)
-  return mirrored !== officialUrl ? { url: officialUrl, fallbackUrl: mirrored } : { url: officialUrl }
+function urlsFor(officialUrl: string): { url: string; fallbackUrls?: string[] } {
+  const candidates = candidateUrls(officialUrl)
+  const [first, ...rest] = candidates
+  return rest.length > 0 ? { url: first, fallbackUrls: rest } : { url: first }
 }
 
 /**
- * 判断错误是否为 HTTP 404。网络进程只回传错误文案（错误对象不跨进程序列化），
- * 故从 `下载失败 (HTTP 404)` 这类文案中识别。
+ * 从错误中取结构化信息。网络进程现在回传 `{code, status, retryAfter}`（见 net-protocol.ts），
+ * broker 会把它还原成 `NetError` 实例，因此这里**不再依赖错误文案正则**。
+ * 旧实现用 `/HTTP[^\d]*404/` 匹配中文文案，改一个字就断链，是典型的隐式协议。
  */
+interface StructuredError {
+  code?: string
+  status?: number
+  retryAfter?: string
+}
+function structured(err: unknown): StructuredError {
+  const e = err as StructuredError & { name?: string }
+  return { code: e?.code, status: e?.status, retryAfter: e?.retryAfter }
+}
+
+/** 是否 HTTP 404（官方源缺文件）—— 按 status 判断，不再匹配文案。 */
 function isHttp404(err: unknown): boolean {
-  const msg = err instanceof Error ? err.message : String(err)
-  return /HTTP[^\d]*404/.test(msg)
+  return structured(err).status === 404
+}
+
+/** 是否「缓慢 / 挂起」（传输层停滞看门狗）：命中即切镜像回退。 */
+function isSlowOrTimeout(err: unknown): boolean {
+  const s = structured(err)
+  return s.code === 'timeout' || s.status === 408
 }
 
 /**
- * 判断错误是否为「缓慢 / 挂起」：网络进程的停滞看门狗在连续 10s 收不到任何字节时会抛出
- * 「网络连接超时」。命中即视为官方源缓慢，切到镜像回退。
+ * 服务端限流退避：优先尊重 Retry-After，其次按状态码给基数，最后指数退避。
+ * 旧实现固定 `500ms × attempt`，完全无视 429 的 Retry-After，会把限流打成持续 429。
  */
-function isSlowOrTimeout(err: unknown): boolean {
-  const msg = err instanceof Error ? err.message : String(err)
-  return /网络连接超时/.test(msg)
+function retryDelayMs(err: unknown, attempt: number): number {
+  const { status, retryAfter } = structured(err)
+  if (retryAfter) {
+    const sec = Number(retryAfter)
+    if (Number.isFinite(sec) && sec > 0) return Math.min(sec * 1000, 30_000)
+  }
+  const base = status === 429 ? 3000 : 500
+  return Math.min(base * Math.pow(2, attempt - 1), 20_000)
 }
 
 function sleep(ms: number): Promise<void> {
@@ -105,9 +138,10 @@ async function downloadFile(
     return
   }
   const tmp = task.dest + '.part'
-  // 候选源：官方源在前、BMCLAPI 镜像在后。官方源返回 HTTP 404（缺文件）或响应缓慢
-  // （停滞超时）时立刻切到镜像重下，不占用常规重试次数；其它错误仍按原逻辑重试。
-  const candidates = task.fallbackUrl && task.fallbackUrl !== task.url ? [task.url, task.fallbackUrl] : [task.url]
+  // 候选源：按设置里的「文件下载源」策略排序的有序列表（至少一项）。
+  // 任一候选 404（缺文件）或缓慢（停滞超时）时立刻切到下一个候选重下，
+  // 不占用常规重试次数 —— 这正是「镜像部分文件 404 时自动回退官方源」的实现。
+  const candidates = [task.url, ...(task.fallbackUrls ?? [])].filter(Boolean)
   let candidateIndex = 0
   let attempt = 0
   let sizeReported = false
@@ -138,21 +172,26 @@ async function downloadFile(
         await fsp.rm(tmp, { force: true }).catch(() => {})
         throw new Error('下载已取消')
       }
-      try {
-        await fsp.rm(tmp, { force: true })
-      } catch {
-        /* ignore */
-      }
-      // 官方源缺失（404）或缓慢（停滞超时）：立即切到镜像回退重下，不占用常规重试次数。
+      // 当前候选缺失（404）或缓慢（停滞超时）：立即切到下一个候选重下，不占用常规重试次数。
       const slow = isSlowOrTimeout(err)
       if (candidateIndex + 1 < candidates.length && (isHttp404(err) || slow)) {
+        // 换源必须丢弃旧源写入的分段数据（不同源同一文件的字节可能不一致）。
+        await fsp.rm(tmp, { force: true }).catch(() => {})
         candidateIndex++
-        console.warn(`[下载] 官方源${slow ? '响应缓慢' : '缺少该文件'}，回退镜像源：${task.label}`)
+        console.warn(
+          `[下载] 来源${slow ? '响应缓慢' : '缺少该文件'}，切换备用源：${task.label} → ${candidates[candidateIndex]}`
+        )
         continue
       }
-      if (attempt === retries) throw err
+      // 同源重试：**不删 .part** —— 传输层（Rust/TS）会从已写入偏移续传，
+      // 百 MB 级文件遇一次网络抖动不必从头再来（跨调用断点续传的第一层）。
+      // 仅在最终失败时才清理，避免残留垃圾文件持续占用磁盘。
+      if (attempt === retries) {
+        await fsp.rm(tmp, { force: true }).catch(() => {})
+        throw err
+      }
       attempt++
-      await sleep(500 * attempt)
+      await sleep(retryDelayMs(err, attempt))
     }
   }
 }
@@ -302,10 +341,12 @@ async function collectTasks(json: VersionJson, gameDir: string): Promise<Downloa
   const client = json.downloads?.client
   if (!client?.url) throw new Error(`版本 ${json.id} 缺少客户端 jar`)
   const baseVersion = json.clientVersion ?? json.id
-  const mirrorClient = bmclapiClientJarUrl(baseVersion)
+  // 客户端 jar 也走有序候选：官方 downloads.client.url 与镜像 /version/<id>/client，
+  // 顺序随「文件下载源」策略走，任一 404 / 缓慢都能自动落到另一个。
+  const clientCandidates = clientJarCandidates(client.url, baseVersion).filter(Boolean)
   tasks.push({
-    url: client.url,
-    ...(mirrorClient !== client.url ? { fallbackUrl: mirrorClient } : {}),
+    url: clientCandidates[0],
+    ...(clientCandidates.length > 1 ? { fallbackUrls: clientCandidates.slice(1) } : {}),
     dest: join(gameDir, 'versions', json.id, `${json.id}.jar`),
     sha1: client.sha1,
     size: client.size,
@@ -336,6 +377,86 @@ export interface InstallResult {
   assetIndexId: string
 }
 
+/**
+ * 版本级完整性指纹：**只用本地信息**（版本 JSON + 已落盘文件的 mtime/size）算出。
+ *
+ * 目的：让「已装好的版本再次启动」能走一个便宜的短路，跳过 collectTasks 里的
+ * `.sha1` sidecar 网络预取，以及数千个资源对象任务构造 + 逐个 stat。
+ *
+ * 为什么不把数千个资源对象也逐个 stat 进来：那正是要省掉的开销。资源对象由
+ * 「资源索引文件」唯一确定（索引不变 → 哈希集合不变），因此只在指纹里纳入索引
+ * 文件的 mtime/size 与对象数量即可，代价极低又能察觉索引变化。
+ */
+async function installStampFingerprint(json: VersionJson, gameDir: string): Promise<string> {
+  const parts: string[] = [`id=${json.id}`, `client=${json.clientVersion ?? json.inheritsFrom ?? json.id}`]
+
+  // 资源索引：id + sha1 + 索引文件自身的 mtime/size
+  const ai = json.assetIndex
+  if (ai) {
+    parts.push(`assetIndex=${ai.id}|${ai.sha1 ?? ''}|${ai.size ?? ''}`)
+    try {
+      const st = await fsp.stat(join(gameDir, 'assets', 'indexes', `${ai.id}.json`))
+      parts.push(`assetIndexFile=${st.mtimeMs}|${st.size}`)
+    } catch {
+      parts.push('assetIndexFile=missing')
+    }
+  }
+
+  // 库 / natives / 客户端 jar / 日志配置：逐个 stat（数量有限，通常几十个），
+  // 与 collectTasks 的落盘路径保持一致，但不触发任何网络请求。
+  const allLibs = json.libraries ?? []
+  for (const lib of allLibs) {
+    if (!libraryAllowed(lib)) continue
+    const { prefix, base } = libraryPaths(lib.name)
+    const dests: string[] = []
+    if (lib.downloads?.artifact) {
+      dests.push(join(gameDir, 'libraries', lib.downloads.artifact.path ?? `${prefix}/${base}.jar`))
+    } else if (!lib.downloads?.classifiers) {
+      dests.push(join(gameDir, 'libraries', prefix, `${base}.jar`))
+    }
+    if (lib.natives) {
+      const classifier = pickClassifier(lib)
+      if (classifier) {
+        const cd = lib.downloads?.classifiers?.[classifier]
+        dests.push(join(gameDir, 'libraries', cd?.path ?? `${prefix}/${base}-${classifier}.jar`))
+      }
+    }
+    for (const dest of dests) {
+      try {
+        const st = await fsp.stat(dest)
+        parts.push(`${dest}|${st.mtimeMs}|${st.size}`)
+      } catch {
+        parts.push(`${dest}|missing`)
+      }
+    }
+  }
+
+  const client = json.downloads?.client
+  if (client?.url) {
+    const dest = join(gameDir, 'versions', json.id, `${json.id}.jar`)
+    try {
+      const st = await fsp.stat(dest)
+      parts.push(`${dest}|${st.mtimeMs}|${st.size}`)
+    } catch {
+      parts.push(`${dest}|missing`)
+    }
+  }
+
+  const loggingFile = json.logging?.client?.file
+  if (loggingFile?.url) {
+    const dest = join(gameDir, 'assets', 'log_configs', loggingFile.id)
+    try {
+      const st = await fsp.stat(dest)
+      parts.push(`${dest}|${st.mtimeMs}|${st.size}`)
+    } catch {
+      // 日志配置是可选的：缺失不应让指纹失配，从而误触发一次完整安装。
+      parts.push(`${dest}|optional-missing`)
+    }
+  }
+
+  return createHash('sha1').update(parts.join('\n')).digest('hex')
+}
+
 export async function installVersion(
   json: VersionJson,
   gameDir: string,
@@ -349,6 +470,34 @@ export async function installVersion(
    */
   connections?: number
 ): Promise<InstallResult> {
+  const assetIndexEarly = json.assetIndex
+  const nativesDirEarly = join(gameDir, 'natives', json.id)
+  const librariesDir = join(gameDir, 'libraries')
+  const stampPath = join(gameDir, 'versions', json.id, '.install-stamp')
+
+  // 快路径：上次安装成功后写过指纹，且本次本地文件（库/客户端/资源索引）都没变，
+  // 就说明该版本仍然完整 —— 直接返回，跳过 collectTasks 的 sidecar 网络预取与数千次 stat。
+  // 这是「热启动」（已装好的版本再次启动）的主要加速点。
+  try {
+    const fingerprint = await installStampFingerprint(json, gameDir)
+    const prev = await fsp.readFile(stampPath, 'utf-8').catch(() => '')
+    if (prev.trim() === fingerprint) {
+      console.info(`[下载] 版本 ${json.id} 完整性指纹未变，跳过补齐校验`)
+      onProgress({
+        task: '完成',
+        current: 0,
+        total: 0,
+        currentBytes: 0,
+        totalBytes: 0,
+        phase: 'done',
+        percent: 100
+      })
+      return { nativesDir: nativesDirEarly, librariesDir, assetIndexId: assetIndexEarly.id }
+    }
+  } catch {
+    // 指纹计算过程中的任何异常都视为「无法短路」，退回完整安装流程，保证功能不退化。
+  }
+
   const tasks = await collectTasks(json, gameDir)
   console.info(`[下载] 开始安装版本 ${json.id}，共 ${tasks.length} 个下载任务`)
   const assetIndex = json.assetIndex
@@ -384,85 +533,51 @@ export async function installVersion(
   }
 
   const total = tasks.length
-  let done = 0
-  let doneBytes = 0
   let totalBytes = tasks.reduce((s, t) => s + (t.size ?? 0), 0)
-
-  // 实时速度统计：在上一次进度上报的基础上累计字节增量与时间差，据此算出
-  // 近似的下载速度（字节/秒）。时间戳跟随 sendProgress 记录，覆盖并发的多 worker。
-  let speed = 0
-  let lastSpeedAt = Date.now()
-  let lastSpeedBytes = 0
-
-  // 主进程同样节流进度上报：每个网络分块都会触发 onBytes，乘以并发工作线程后
-  // 会造成极高频的 IPC 序列化与发送。这里合并到约 80ms 一次，仅结束态强制立即
-  // 上报，既保持进度条流畅，又显著降低 IPC 与 CPU 占用。
-  const EMIT_INTERVAL = 80
-  let lastEmitAt = 0
-  let emitTimer: ReturnType<typeof setTimeout> | null = null
   let latestPhase: DownloadProgress['phase'] = 'assets'
   let latestLabel = ''
-  let finished = false
 
-  const sendProgress = (): void => {
-    // installVersion 一旦结束（成功 / 取消 / 失败），节流定时器或仍在后台运行的
-    // worker 触发的上报一律丢弃，避免渲染端清理进度条目之后又被过期事件「复活」，
-    // 导致下载结束后进度条卡住。
-    if (finished) return
-    emitTimer = null
-    const now = Date.now()
-    const delta = now - lastSpeedAt
-    const bytes = doneBytes - lastSpeedBytes
-    lastSpeedAt = now
-    lastSpeedBytes = doneBytes
-    // 只在有意义的时间窗口内更新速度（避免首帧瞬时峰值 / 结束前后抖动），
-    // 无字节增量时平滑衰减而非骤降。
-    if (delta > 0) {
-      const inst = bytes / delta // 字节/毫秒
-      speed = inst > 0 ? Math.max(0, Math.min(inst * 1000, 1024 * 1024 * 1024)) : speed * 0.5
+  // 速度统计 + 80ms 节流上报统一由 ProgressReporter 负责（与 modpack 共用同一实现，
+  // 避免两处逐行复制的编排代码各自漂移）。
+  const reporter = new ProgressReporter({
+    emit: (snap) => {
+      onProgress({
+        task: latestLabel,
+        current: snap.done,
+        total: snap.total,
+        currentBytes: snap.doneBytes,
+        totalBytes: snap.totalBytes,
+        phase: latestPhase,
+        percent: computePercent(snap),
+        speed: snap.speed
+      })
     }
-    lastEmitAt = now
-    // Byte-based percent whenever the total is known; fall back to task count
-    // while sizes are still being discovered.
-    const percent =
-      totalBytes > 0
-        ? Math.min(100, Math.round((doneBytes / totalBytes) * 100))
-        : total > 0
-          ? Math.min(100, Math.round((done / total) * 100))
-          : 0
-    onProgress({
-      task: latestLabel,
-      current: done,
-      total,
-      currentBytes: doneBytes,
-      totalBytes,
-      phase: latestPhase,
-      percent,
-      speed: Math.round(speed)
-    })
-  }
+  })
+  reporter.setTotals(0, total)
 
   const emit = (phase: DownloadProgress['phase'], label: string, force = false): void => {
     latestPhase = phase
     latestLabel = label
-    if (force) {
-      if (emitTimer != null) {
-        clearTimeout(emitTimer)
-        emitTimer = null
-      }
-      sendProgress()
-      return
-    }
-    const now = Date.now()
-    if (now - lastEmitAt >= EMIT_INTERVAL) {
-      sendProgress()
-    } else if (emitTimer == null) {
-      emitTimer = setTimeout(sendProgress, EMIT_INTERVAL)
-    }
+    reporter.report(force)
   }
 
   const queue = tasks
   let index = 0
+
+  /**
+   * 每个任务本次已计入的字节数。**按任务记账**而非全局累加：
+   * 重试 / 镜像回退时同一任务会从 0 重新下载，若仍全局 `doneBytes += n`，
+   * 之前的字节会重复累计 → 进度虚高、速度虚高（旧实现正是如此）。
+   * 这里改为「用任务当前总量覆盖该任务贡献的增量」，任何重下都自然回到正确口径。
+   */
+  const taskBytes = new Map<DownloadTask, number>()
+  /** 提交某任务的最新已下载字节，返回相对上次的增量（可能为负，表示重下回退）。 */
+  const accountBytes = (task: DownloadTask, bytes: number): number => {
+    const prev = taskBytes.get(task) ?? 0
+    if (bytes === prev) return 0
+    taskBytes.set(task, bytes)
+    return bytes - prev
+  }
 
   // 预校验（快路径）：先用高并发把「文件已存在且大小/哈希相符」的任务提前消化掉。
   //
@@ -489,8 +604,8 @@ export async function installVersion(
     // 把已完成任务计入进度统计，让进度条一开始就反映真实完成度。
     for (let i = 0; i < queue.length; i++) {
       if (verified[i]) {
-        done++
-        doneBytes += queue[i].size ?? 0
+        reporter.incDone()
+        reporter.addDoneBytes(queue[i].size ?? 0)
       }
     }
   }
@@ -502,28 +617,38 @@ export async function installVersion(
       if (i >= queue.length) return
       if (verified[i]) continue
       const task = queue[i]
+      // 本任务本次的累计字节：每次下载尝试从 0 起算，失败重下时用新值覆盖，
+      // 保证「进度口径 = 当前真实落盘量」而非历史累加。
+      let taskDownloaded = 0
       try {
         await downloadFile(
           task,
           (n) => {
-            doneBytes += n
+            taskDownloaded += n
+            reporter.addDoneBytes(accountBytes(task, taskDownloaded))
             emit(task.phase, task.label)
           },
           signal,
           3,
           (size) => {
-            totalBytes += size
+            // 该任务的预期总大小先撤回上一次的估算再加新值，避免重复计入 totalBytes。
+            const prevSize = taskBytes.get(task)
+            if (prevSize != null && task.size == null) {
+              reporter.addTotalBytes(-prevSize)
+            }
+            reporter.addTotalBytes(size)
             emit(task.phase, task.label)
           },
           connections
         )
-        done++
+        reporter.incDone()
+        taskBytes.set(task, taskDownloaded)
       } catch (err) {
         // 可选任务（单个资源对象）失败不中断整体安装：CDN 上缺失的个别资源
         // 不该让游戏无法启动。记一条警告便于排查，随后继续下一条。
         if (task.optional && !signal?.aborted) {
           console.warn(`[下载] 可选资源缺失，已跳过：${task.label}（${err instanceof Error ? err.message : String(err)}）`)
-          done++
+          reporter.incDone()
         } else {
           // 必选文件失败：把「是哪个文件」拼进错误信息，否则用户只看到裸 404，
           // 既无法判断原因也无从处理（对应启动时的 404 BlobNotFound 难以定位）。
@@ -562,16 +687,18 @@ export async function installVersion(
         queue.filter((t) => t.extract),
         nativesDir
       )
+
+      // 全部环节成功后写「版本完整性指纹」：下次启动若本地文件未变即可短路。
+      // 写失败不影响本次安装（只是下次不能走快路径），故 catch 掉。
+      await installStampFingerprint(json, gameDir)
+        .then((fp) => fsp.writeFile(stampPath, fp, 'utf-8'))
+        .catch(() => {})
     } finally {
       // 一旦结束（无论成功 / 取消 / 失败），标记 finished 并清除节流定时器，丢弃
       // 所有尚未发出的进度上报。此前仅在成功路径清除定时器，失败 / 取消 / 超时时
       // 残留的 setTimeout 会在 installVersion 返回后继续发送过期进度，把渲染端已
       // 清理的进度条目「复活」，导致补全结束后进度条卡住。
-      finished = true
-      if (emitTimer != null) {
-        clearTimeout(emitTimer)
-        emitTimer = null
-      }
+      reporter.finish()
     }
   } catch (err) {
     // 失败 / 取消 / worker 任务超时：补发 done 事件清掉渲染端残留的进度条目，
@@ -580,18 +707,18 @@ export async function installVersion(
     else console.error(`[下载] 版本 ${json.id} 安装失败: ${err instanceof Error ? err.message : String(err)}`)
     onProgress({
       task: latestLabel || '下载中断',
-      current: done,
+      current: 0,
       total,
-      currentBytes: doneBytes,
-      totalBytes,
+      currentBytes: 0,
+      totalBytes: 0,
       phase: 'done',
       percent: 0,
-      speed: Math.round(speed)
+      speed: 0
     })
     throw err
   }
   console.info(`[下载] 版本 ${json.id} 安装完成`)
-  onProgress({ task: '完成', current: total, total, currentBytes: doneBytes, totalBytes, phase: 'done', percent: 100 })
+  onProgress({ task: '完成', current: total, total, currentBytes: reporter.getDoneBytes(), totalBytes: 0, phase: 'done', percent: 100 })
   return { nativesDir, librariesDir: join(gameDir, 'libraries'), assetIndexId: assetIndex.id }
 }
 

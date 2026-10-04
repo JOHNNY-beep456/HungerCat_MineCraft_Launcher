@@ -22,12 +22,16 @@ import type {
   VersionDirKind,
   DebugLogEntry,
   DevModeStatus,
+  FeedbackSubmitPayload,
   ModrinthProjectDetail,
   ExternalVersion,
   ConflictPolicy,
   JavaRuntime,
   YggdrasilLoginOutcome,
-  MpMiniState
+  MpMiniState,
+  MpChatMessage,
+  MpHudState,
+  MpDanmaku
 } from '@shared/types'
 
 function subscribe<T>(channel: string): (cb: (payload: T) => void) => () => void {
@@ -46,7 +50,10 @@ const api: LauncherApi = {
     onLog: subscribe<DebugLogEntry>('debug:log'),
     openWindow: () => ipcRenderer.invoke('debug:open'),
     closeWindow: () => ipcRenderer.invoke('debug:close'),
-    isEnabled: () => ipcRenderer.invoke('debug:isEnabled')
+    isEnabled: () => ipcRenderer.invoke('debug:isEnabled'),
+    submitLogs: (key: string) => ipcRenderer.invoke('debug:submit', key),
+    reportLog: (level: DebugLogEntry['level'], message: string) =>
+      ipcRenderer.send('debug:rendererLog', level, message)
   },
   auth: {
     begin: () => ipcRenderer.invoke('auth:begin'),
@@ -138,7 +145,9 @@ const api: LauncherApi = {
     downloadTo: (fileUrl: string, destPath: string, sizeHint?: number) =>
       ipcRenderer.invoke('mods:downloadTo', fileUrl, destPath, sizeHint),
     installFabricApi: (mcVersion: string, versionId: string) =>
-      ipcRenderer.invoke('mods:installFabricApi', mcVersion, versionId)
+      ipcRenderer.invoke('mods:installFabricApi', mcVersion, versionId),
+    installOfflineTranslate: (versionId: string) =>
+      ipcRenderer.invoke('mods:installOfflineTranslate', versionId)
   },
   java: {
     detect: () => ipcRenderer.invoke('java:detect'),
@@ -153,6 +162,8 @@ const api: LauncherApi = {
     deleteMod: (path: string) => ipcRenderer.invoke('manage:deleteMod', path),
     installLocalMod: (versionId: string, sourcePath: string) =>
       ipcRenderer.invoke('manage:installLocalMod', versionId, sourcePath),
+    installLocalResource: (versionId: string, kind: 'mods' | 'resourcepacks' | 'shaderpacks', sourcePath: string) =>
+      ipcRenderer.invoke('manage:installLocalResource', versionId, kind, sourcePath),
     deleteWorld: (versionId: string, worldName: string) => ipcRenderer.invoke('manage:deleteWorld', versionId, worldName),
     schematics: (versionId: string) => ipcRenderer.invoke('manage:schematics', versionId),
     deleteFile: (path: string) => ipcRenderer.invoke('manage:deleteFile', path),
@@ -189,6 +200,7 @@ const api: LauncherApi = {
     setActive: (id: string) => ipcRenderer.invoke('homepage:setActive', id),
     block: (id: string, reason: string) => ipcRenderer.invoke('homepage:block', id, reason),
     openDir: () => ipcRenderer.invoke('homepage:openDir'),
+    securityEngine: () => ipcRenderer.invoke('homepage:securityEngine'),
     market: () => ipcRenderer.invoke('homepage:market'),
     checkUpdates: () => ipcRenderer.invoke('homepage:checkUpdates'),
     update: (update) => ipcRenderer.invoke('homepage:update', update),
@@ -199,6 +211,16 @@ const api: LauncherApi = {
       void ipcRenderer.invoke('homepage:log', level, message)
     },
     onNavBlocked: subscribe<string>('homepage:nav-blocked')
+  },
+  feedback: {
+    sendCode: (email: string) => ipcRenderer.invoke('feedback:send-code', email),
+    submit: (payload: FeedbackSubmitPayload) => ipcRenderer.invoke('feedback:submit', payload),
+    list: (email: string, code: string) => ipcRenderer.invoke('feedback:list', email, code),
+    withdraw: (email: string, code: string, id: string) =>
+      ipcRenderer.invoke('feedback:withdraw', email, code, id)
+  },
+  limits: {
+    get: () => ipcRenderer.invoke('limits:get')
   },
   devMode: {
     status: () => ipcRenderer.invoke('devmode:status'),
@@ -235,7 +257,9 @@ const api: LauncherApi = {
   },
   about: {
     list: () => ipcRenderer.invoke('about:list'),
-    agreement: () => ipcRenderer.invoke('about:agreement')
+    agreement: () => ipcRenderer.invoke('about:agreement'),
+    agreementStatus: () => ipcRenderer.invoke('about:agreementStatus'),
+    announcements: () => ipcRenderer.invoke('announcement:list')
   },
   update: {
     check: () => ipcRenderer.invoke('update:check'),
@@ -286,10 +310,23 @@ const api: LauncherApi = {
     getMicEnabled: () => ipcRenderer.invoke('mp:getMicEnabled'),
     setGlobalMuted: (muted: boolean) => ipcRenderer.invoke('mp:setGlobalMuted', muted),
     getGlobalMuted: () => ipcRenderer.invoke('mp:getGlobalMuted'),
+    onGlobalMutedChanged: (cb) => {
+      const listener = (_e: unknown, muted: boolean): void => cb(muted)
+      ipcRenderer.on('mp:globalMutedChanged', listener)
+      return () => ipcRenderer.removeListener('mp:globalMutedChanged', listener)
+    },
     mutePlayer: (playerId: string, muted: boolean) => ipcRenderer.invoke('mp:mutePlayer', playerId, muted),
     isPlayerMuted: (playerId: string) => ipcRenderer.invoke('mp:isPlayerMuted', playerId),
     parseVirtualIp: (text: string) => ipcRenderer.invoke('mp:parseVirtualIp', text),
     openExternal: (url: string) => ipcRenderer.invoke('mp:openExternal', url),
+    // 局域网桥：扫描 / 注入 MC 世界，解决「看得到人却连不上」。
+    scanWorlds: () => ipcRenderer.invoke('mp:scanWorlds'),
+    getWorlds: () => ipcRenderer.invoke('mp:getWorlds'),
+    getWorldPort: () => ipcRenderer.invoke('mp:getWorldPort'),
+    setWorldPort: (port: number) => ipcRenderer.invoke('mp:setWorldPort', port),
+    getAutoLan: () => ipcRenderer.invoke('mp:getAutoLan'),
+    setAutoLan: (enabled: boolean) => ipcRenderer.invoke('mp:setAutoLan', enabled),
+    getLanBroadcastCount: () => ipcRenderer.invoke('mp:getLanBroadcastCount'),
     // 大厅悬浮窗（类似 MCTier 的迷你窗）。
     openMiniWindow: () => ipcRenderer.invoke('mp:openMiniWindow'),
     closeMiniWindow: () => ipcRenderer.invoke('mp:closeMiniWindow'),
@@ -311,7 +348,57 @@ const api: LauncherApi = {
       const listener = (_e: unknown, enabled: boolean): void => cb(enabled)
       ipcRenderer.on('mp:micChanged', listener)
       return () => ipcRenderer.removeListener('mp:micChanged', listener)
-    }
+    },
+    // ---- 消息收发 ----
+    sendChat: (content: string) => ipcRenderer.invoke('mp:sendChat', content),
+    getMessages: () => ipcRenderer.invoke('mp:getMessages'),
+    onChat: (cb) => {
+      const listener = (_e: unknown, msg: unknown): void => cb(msg as MpChatMessage)
+      ipcRenderer.on('mp:chat', listener)
+      return () => ipcRenderer.removeListener('mp:chat', listener)
+    },
+    // ---- 语音 ----
+    setSpeaking: (speaking: boolean) => ipcRenderer.invoke('mp:setSpeaking', speaking),
+    /** 上报语音引擎错误（麦克风被拒 / 设备占用等），主进程再广播给界面显示。 */
+    reportVoiceError: (message: string) => ipcRenderer.invoke('mp:reportVoiceError', message),
+    onVoiceError: (cb) => {
+      const listener = (_e: unknown, message: unknown): void => cb(String(message ?? ''))
+      ipcRenderer.on('mp:voiceError', listener)
+      return () => ipcRenderer.removeListener('mp:voiceError', listener)
+    },
+    // ---- 语音音频中继（经 EasyTier UDP 端口转发）----
+    /** 同步成员：主进程为每个成员建立/回收一条到其虚拟 IP 的 UDP 转发。 */
+    voiceRelaySync: (peers: Array<{ id: string; virtualIp: string }>) =>
+      ipcRenderer.invoke('mp:voiceRelaySync', peers),
+    /** 停止中继（退出大厅）。 */
+    voiceRelayStop: () => ipcRenderer.invoke('mp:voiceRelayStop'),
+    /** 发送一帧已编码音频给指定成员。 */
+    sendVoiceAudio: (peerId: string, data: Uint8Array) =>
+      ipcRenderer.invoke('mp:voiceAudio', peerId, data),
+    /** 订阅「收到某成员的音频帧」。 */
+    onVoiceAudio: (cb: (payload: { from: string; data: Uint8Array }) => void) => {
+      const listener = (_e: unknown, payload: unknown): void =>
+        cb(payload as { from: string; data: Uint8Array })
+      ipcRenderer.on('mp:voiceAudio', listener)
+      return () => ipcRenderer.removeListener('mp:voiceAudio', listener)
+    },
+    // ---- 浮层窗口（HUD / 弹幕）----
+    openHudWindow: () => ipcRenderer.invoke('mp:openHudWindow'),
+    closeHudWindow: () => ipcRenderer.invoke('mp:closeHudWindow'),
+    onHudState: (cb) => {
+      const listener = (_e: unknown, state: unknown): void => cb(state as MpHudState)
+      ipcRenderer.on('mp:hudState', listener)
+      return () => ipcRenderer.removeListener('mp:hudState', listener)
+    },
+    openDanmakuWindow: () => ipcRenderer.invoke('mp:openDanmakuWindow'),
+    closeDanmakuWindow: () => ipcRenderer.invoke('mp:closeDanmakuWindow'),
+    syncOverlays: () => ipcRenderer.invoke('mp:syncOverlays'),
+    onDanmaku: (cb) => {
+      const listener = (_e: unknown, d: unknown): void => cb(d as MpDanmaku)
+      ipcRenderer.on('mp:danmaku', listener)
+      return () => ipcRenderer.removeListener('mp:danmaku', listener)
+    },
+    danmakuConfig: () => ipcRenderer.invoke('mp:danmakuConfig')
   }
 }
 

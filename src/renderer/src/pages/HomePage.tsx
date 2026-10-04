@@ -181,6 +181,7 @@ export function HomePage(): JSX.Element {
             <Icon name="folder" size={15} className="shrink-0 opacity-60" />
             <span className="caption shrink-0">{t('home.versionDir')}</span>
             <Select
+              variant="seamless"
               className="min-w-0 flex-1"
               value={activeDirId}
               onChange={(v) => void selectDir(v)}

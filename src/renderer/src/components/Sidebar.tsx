@@ -12,6 +12,7 @@ export type PageId =
   | 'downloads'
   | 'accounts'
   | 'settings'
+  | 'feedback'
   | 'about'
 
 /** 侧栏条目；实验性 Win10 桌面也用它生成桌面图标与开始菜单。
@@ -25,6 +26,7 @@ export const NAV: Array<{ id: PageId; label: string; icon: string }> = [
   { id: 'downloads', label: '进度', icon: 'download' },
   { id: 'accounts', label: '账号', icon: 'user' },
   { id: 'settings', label: '设置', icon: 'settings' },
+  { id: 'feedback', label: '反馈', icon: 'message' },
   { id: 'about', label: '关于', icon: 'info' }
 ]
 

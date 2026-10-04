@@ -1,8 +1,25 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { AnimatePresence, motion } from 'motion/react'
 import type { MpMiniState } from '@shared/types'
 import { useApp } from '../store'
 import { Button, Icon } from './ui'
+import { MultiplayerChat } from './MultiplayerChat'
+import { VoiceControls } from './VoiceControls'
+
+/** 悬浮窗宽度（固定）。 */
+const WIN_WIDTH = 300
+/** 折叠态高度：仅容下标题栏。 */
+const COLLAPSED_HEIGHT = 56
+/** 标题栏高度（与下方 px-3 py-2.5 + 两行文字保持一致），用于换算内容区可用高度。 */
+const HEADER_HEIGHT = 52
+/** 展开态高度上下限：下限保证基本可读，上限避免超出屏幕。 */
+const MIN_EXPANDED_HEIGHT = 320
+const MAX_EXPANDED_HEIGHT = 760
+
+/** 把目标高度夹到合法区间并取整。 */
+function clampHeight(h: number): number {
+  return Math.max(MIN_EXPANDED_HEIGHT, Math.min(MAX_EXPANDED_HEIGHT, Math.round(h)))
+}
 
 /**
  * 大厅悬浮窗（类似 MCTier 的迷你窗）。
@@ -18,6 +35,22 @@ export function MiniWindow(): JSX.Element {
   const [copiedIp, setCopiedIp] = useState<string | null>(null)
   /** 退出大厅进行中：置灰按钮，避免连点重复调用。 */
   const [leaving, setLeaving] = useState(false)
+  /** 麦克风开关状态（主进程持有，这里镜像展示）。 */
+  const [micEnabled, setMicEnabled] = useState(false)
+  /** 内容区 DOM 引用：用于按实际内容高度自适应窗口高度。 */
+  const bodyRef = useRef<HTMLDivElement | null>(null)
+
+  useEffect(() => {
+    let alive = true
+    void window.api.mp.getMicEnabled().then((v) => {
+      if (alive) setMicEnabled(v)
+    })
+    const off = window.api.mp.onMicChanged((v) => setMicEnabled(v))
+    return () => {
+      alive = false
+      off()
+    }
+  }, [])
 
   useEffect(() => {
     let alive = true
@@ -30,6 +63,30 @@ export function MiniWindow(): JSX.Element {
       off()
     }
   }, [])
+
+  const inLobby = !!state?.lobby
+
+  /**
+   * 兜底轮询：成员加入/离开主要靠主进程推送，但推送可能在「窗口刚创建、渲染进程繁忙、
+   * 或广播恰好错过」时丢失。这里按 2 秒拉一次快照，保证成员列表一定会自动刷新，
+   * 不依赖单次推送必达（主界面 MultiplayerPage 同样有此兜底）。
+   */
+  useEffect(() => {
+    if (!inLobby) return
+    let alive = true
+    const timer = setInterval(() => {
+      void window.api.mp
+        .miniState()
+        .then((s) => {
+          if (alive) setState(s)
+        })
+        .catch(() => undefined)
+    }, 2000)
+    return () => {
+      alive = false
+      clearInterval(timer)
+    }
+  }, [inLobby])
 
   /**
    * 退出大厅。
@@ -56,14 +113,38 @@ export function MiniWindow(): JSX.Element {
   }
 
   // 折叠时把窗口高度收窄（宽度保持不变），展开时恢复。
+  //
+  // 展开高度不再写死：内容（地址卡 + 成员列表 + 聊天 + 语音控制条 + 退出按钮）
+  // 会随成员数量与虚拟域名开关变化，固定高度必然「要么留白、要么截断」。
+  // 这里按实测内容高度自适应，并夹在 [MIN, MAX] 之间；超出上限时由内容区
+  // 自己的滚动兜底（见下方 overflow-y-auto），保证任何情况下都够看、够点。
   useEffect(() => {
-    void window.api.mp.miniResize(300, collapsed ? 56 : 420)
-  }, [collapsed])
+    if (collapsed) {
+      void window.api.mp.miniResize(WIN_WIDTH, COLLAPSED_HEIGHT)
+      return
+    }
+    const el = bodyRef.current
+    if (!el) return
+    // 高度 = 标题栏 + 内容自然高度；scrollHeight 已包含内边距。
+    // 用 rAF 等一帧再测：成员列表 / 域名行是在本次 state 更新后才渲染出来的，
+    // 立刻测量会拿到旧高度，导致窗口偏短（这正是「内容显示不全」的成因之一）。
+    let raf = 0
+    const measure = (): void => {
+      const h = clampHeight(HEADER_HEIGHT + el.scrollHeight)
+      void window.api.mp.miniResize(WIN_WIDTH, h)
+    }
+    raf = requestAnimationFrame(measure)
+    return () => cancelAnimationFrame(raf)
+    // 依赖用 state?.players?.length（而非下面的 players）：players 在本行之后才声明。
+  }, [collapsed, state, state?.players?.length])
+
 
   const lobby = state?.lobby ?? null
   const players = state?.players ?? []
   // 人数 = 自己 + 其他人；后端 players 已含自己（isSelf 标记）。
   const count = players.length
+  /** 自己的虚拟域名（仅开启「虚拟域名」时存在）。 */
+  const selfDomain = players.find((p) => p.isSelf)?.virtualDomain ?? ''
 
   const copy = async (text: string): Promise<void> => {
     try {
@@ -102,6 +183,14 @@ export function MiniWindow(): JSX.Element {
         </div>
         <button
           className="no-drag opacity-70 transition-opacity hover:opacity-100"
+          title={micEnabled ? t('mp.voice.micOn') : t('mp.voice.micOff')}
+          style={{ color: micEnabled ? 'var(--fill-success, #5fd39a)' : undefined }}
+          onClick={() => void window.api.mp.setMicEnabled(!micEnabled)}
+        >
+          <Icon name="mic" size={15} />
+        </button>
+        <button
+          className="no-drag opacity-70 transition-opacity hover:opacity-100"
           title={collapsed ? t('mp.mini.expand') : t('mp.mini.collapse')}
           onClick={() => setCollapsed((v) => !v)}
         >
@@ -119,11 +208,15 @@ export function MiniWindow(): JSX.Element {
       <AnimatePresence initial={false}>
         {!collapsed && (
           <motion.div
+            ref={bodyRef}
             initial={{ opacity: 0, height: 0 }}
             animate={{ opacity: 1, height: 'auto' }}
             exit={{ opacity: 0, height: 0 }}
             transition={{ duration: 0.2 }}
-            style={{ overflow: 'hidden' }}
+            // 内容区整体可滚动：窗口高度已按内容自适应，但当内容超出屏幕上限
+            // （MAX_EXPANDED_HEIGHT）时，这里负责让「退出大厅」等底部控件仍可达，
+            // 而不是被 overflow-hidden 直接切掉。
+            style={{ overflowY: 'auto', overflowX: 'hidden' }}
             className="flex min-h-0 flex-1 flex-col"
           >
             {!lobby ? (
@@ -151,6 +244,28 @@ export function MiniWindow(): JSX.Element {
                         </button>
                       )}
                     </div>
+
+                    {/* 虚拟域名：开启后可直接在 MC「直接连接」里用域名进入 */}
+                    {selfDomain && (
+                      <div className="mt-2 border-t pt-2" style={{ borderColor: 'var(--divider)' }}>
+                        <div className="mb-1 flex items-center gap-1.5">
+                          <Icon name="globe" size={12} style={{ color: 'var(--fill-primary)' }} />
+                          <span className="caption">{t('mp.mini.domain')}</span>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <span className="selectable flex-1 truncate text-[12.5px] font-medium">
+                            {selfDomain}
+                          </span>
+                          <button
+                            className="no-drag opacity-70 transition-opacity hover:opacity-100"
+                            title={t('mp.set.tools.copy')}
+                            onClick={() => void copy(selfDomain)}
+                          >
+                            <Icon name={copiedIp === selfDomain ? 'check' : 'copy'} size={14} />
+                          </button>
+                        </div>
+                      </div>
+                    )}
                   </div>
                 </div>
 
@@ -158,7 +273,10 @@ export function MiniWindow(): JSX.Element {
                 <div className="caption shrink-0 px-3 pb-1">
                   {t('mp.mini.players')} ({count})
                 </div>
-                <div className="min-h-0 flex-1 space-y-1.5 overflow-y-auto px-3 pb-3">
+                {/* 玩家列表：不再自行滚动 / 不再 flex-1 撑高。
+                    成员多时按内容自然增高，由外层内容区统一滚动；否则内层滚动会
+                    把高度压成 0（flex 收缩），反而看不到成员。 */}
+                <div className="shrink-0 space-y-1.5 px-3 pb-3">
                   {players.map((p) => {
                     const addr = p.virtualIp ? `${p.virtualIp}:25565` : ''
                     return (
@@ -177,6 +295,11 @@ export function MiniWindow(): JSX.Element {
                           <div className="caption selectable truncate">
                             {addr || t('mp.mini.assigning')}
                           </div>
+                          {p.virtualDomain && (
+                            <div className="caption selectable truncate" style={{ color: 'var(--fill-primary)' }}>
+                              {p.virtualDomain}
+                            </div>
+                          )}
                         </div>
                         {addr && (
                           <button
@@ -190,6 +313,24 @@ export function MiniWindow(): JSX.Element {
                       </div>
                     )
                   })}
+                </div>
+
+                {/* 聊天：悬浮窗内也能收发（消息流与主界面共用同一份） */}
+                <div className="shrink-0 px-3 pb-2 [&_.headline]:text-[12px] [&_.max-h-64]:max-h-32">
+                  <MultiplayerChat />
+                </div>
+
+                {/* 语音与浮层：麦克风 / 全局静音 / 变声器 / HUD 浮层 / 消息弹幕。
+                    与主界面同一套共享状态，游戏时无需切回主窗口即可调节。
+                    位置按设计置于「退出大厅」上方。 */}
+                <div className="shrink-0 px-3 pb-2">
+                  <div className="glass-soft rounded-xl p-2.5">
+                    <div className="mb-2 flex items-center gap-1.5">
+                      <Icon name="mic" size={13} style={{ color: 'var(--fill-primary)' }} />
+                      <span className="text-[12px] font-semibold">{t('mp.voice.title')}</span>
+                    </div>
+                    <VoiceControls compact />
+                  </div>
                 </div>
 
                 {/* 退出大厅 */}

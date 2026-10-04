@@ -7,7 +7,8 @@ import { netRequest } from './broker'
  * 版本清单 / 版本 JSON 的【远程获取核心执行】已迁到网络进程（out/main/network.js）。
  * 本模块仅保留调用方视角的封装：本地磁盘解析、inheritsFrom 合并仍在主进程完成。
  *
- * 下载源固定为「官方优先 + BMCLAPI 回退」，不再有镜像源设置，故无需传 kind。
+ * 下载源由设置在「版本列表源 / 文件下载源」里选择，实际选源与自动回退都在网络进程
+ * 内完成，故这里无需传 kind（主进程只关心「拿到清单 / 版本 JSON」这个结果）。
  */
 export function fetchVersionManifest(): Promise<VersionManifest> {
   return netRequest<VersionManifest>('versions:manifest', {})

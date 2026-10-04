@@ -201,6 +201,12 @@ const ICON_PATHS: Record<string, ReactNode> = {
       <path d="M7.5 10.5L12 15l4.5-4.5" />
       <path d="M4 19h16" />
     </>
+  ),
+  file: (
+    <>
+      <path d="M13 3H7a2 2 0 00-2 2v14a2 2 0 002 2h10a2 2 0 002-2V9z" />
+      <path d="M13 3v6h6" />
+    </>
   )
 }
 
@@ -564,6 +570,7 @@ export function Select({
   options,
   disabled,
   placeholder,
+  variant = 'default',
   className = ''
 }: {
   value: string
@@ -571,6 +578,11 @@ export function Select({
   options: Array<{ value: string; label: string }>
   disabled?: boolean
   placeholder?: string
+  /**
+   * `seamless`：去掉触发器底色/描边/内阴影，与所在行融为一体，仅在悬停时浮出淡底。
+   * 用于「行内选择器」（如版本目录那一行），避免灰底在三套皮肤下观感不一且偏突兀。
+   */
+  variant?: 'default' | 'seamless'
   className?: string
 }): JSX.Element {
   const { t } = useApp()
@@ -649,7 +661,9 @@ export function Select({
         onClick={() => setOpen((v) => !v)}
         aria-haspopup="listbox"
         aria-expanded={open}
-        className="input flex w-full items-center justify-between gap-2 no-drag"
+        className={`input flex w-full items-center justify-between gap-2 no-drag ${
+          variant === 'seamless' ? 'select-seamless' : ''
+        }`}
         style={{ opacity: disabled ? 0.5 : 1, cursor: disabled ? 'default' : 'pointer' }}
       >
         <span className="truncate">{current ? current.label : placeholder ?? t('cmp.select.placeholder')}</span>
@@ -914,20 +928,26 @@ export const MARKDOWN_PROSE_CLASS =
 /**
  * 把 Markdown 文本渲染为富文本。
  * 传入 `text`（原文）或 `html`（已渲染并清理过的 HTML）之一；空内容时渲染 `fallback`。
+ *
+ * `breaks`：把正文里的**单个换行**也渲染为换行（`<br>`）。默认的 Markdown 规则把单换行
+ * 视作「软换行」，浏览器会折叠成一个空格 —— 公告这类由人手写多行的文本就会变成一整行
+ * （即「服务端输入时正常，启动器里却显示成一行」）。需要保留手动换行时传入 `breaks`。
  */
 export function Markdown({
   text,
   html: htmlProp,
   fallback,
-  className = ''
+  className = '',
+  breaks = false
 }: {
   text?: string
   html?: string
   fallback?: ReactNode
   className?: string
+  breaks?: boolean
 }): JSX.Element {
   const src = (text ?? '').trim()
-  const html = htmlProp ?? (src ? sanitizeHtml(marked.parse(src) as string) : '')
+  const html = htmlProp ?? (src ? sanitizeHtml(marked.parse(src, { breaks }) as string) : '')
   if (!html) return <>{fallback ?? null}</>
   return (
     <div

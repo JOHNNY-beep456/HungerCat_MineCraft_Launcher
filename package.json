@@ -1,7 +1,7 @@
 {
   "name": "hunger-cat-minecraft-launcher",
-  "version": "0.6.0-dev3",
-  "description": "HungerCat MineCraft Launcher — cross-platform (Windows/macOS), iOS 26 Liquid Glass UI, PCL-CE-class features",
+  "version": "0.6.3-dev1",
+  "description": "新一代我的世界启动器",
   "main": "./out/main/index.js",
   "author": "Hunger Cat",
   "license": "SEE LICENSE IN LICENSE",

@@ -1,4 +1,17 @@
-import { app, BrowserWindow, ipcMain, shell, dialog, nativeTheme, screen, type WebContents } from 'electron'
+import {
+  app,
+  BrowserWindow,
+  ipcMain,
+  shell,
+  dialog,
+  nativeTheme,
+  screen,
+  session,
+  Tray,
+  Menu,
+  nativeImage,
+  type WebContents
+} from 'electron'
 import { join, basename } from 'path'
 import { totalmem, freemem } from 'os'
 import type { ChildProcessWithoutNullStreams } from 'child_process'
@@ -16,13 +29,17 @@ import type {
   DebugLogEntry,
   HomepageSubmitPayload,
   HomepageUpdate,
+  FeedbackSubmitPayload,
   DevModeStatus,
   ConflictPolicy,
   DownloadPhase,
   ResourceUpdateInfo,
   ModSource,
   SourceFilter,
-  JavaRuntime
+  JavaRuntime,
+  MpChatMessage,
+  MpDanmaku,
+  MpHudState
 } from '@shared/types'
 import {
   accounts,
@@ -35,7 +52,8 @@ import {
   invalidateSettingsCache
 } from './store'
 import { clearUapisKey, getUapisKey, setUapisKey } from './secret'
-import { initLogger, getLogBuffer, subscribeLogs } from './logger'
+import { initLogger, getLogBuffer, subscribeLogs, appendExternalLog } from './logger'
+import { submitDebugLogs } from './debug-report'
 import { startNetworkWorker, stopNetworkWorker, netRequest } from './broker'
 import { DedupCache } from './ipc-cache'
 import { DeviceCodeSession, refreshAccount } from './auth'
@@ -44,13 +62,14 @@ import { fetchVersionManifest, resolveVersionJson, createVanillaInstance } from 
 import { listInstalled } from './installed'
 import { scanExternalVersions, importExternalVersion } from './import-version'
 import { installVersion } from './downloader'
-import { nativeDownloaderStatus } from './native-downloader'
+import { effectiveConcurrency } from './network-profile'
+import { homepageSecurityUsesNative, nativeDownloaderStatus } from './native-downloader'
 import { detectJava, installJava, invalidateJavaCache, isJavaSuitable, javaVersionAt, pickJava, pickInstallerJava, requiredJavaForMc } from './java'
 import { spawnGame } from './launcher'
-import { registerMultiplayerIpc, forceStopMultiplayer, getMultiplayerLobby, getMultiplayerPlayers, getMultiplayerAppState } from './multiplayer'
+import { registerMultiplayerIpc, forceStopMultiplayer, getMultiplayerLobby, getMultiplayerPlayers, getMultiplayerAppState, getMultiplayerHudPlayers } from './multiplayer'
 import { loaderVersions, installLoader } from './loaders'
 import { forgeVersions, installForge } from './forge'
-import { installMod, downloadTo, findFabricApi } from './modrinth'
+import { installMod, downloadTo, findFabricApi, installOfflineTranslate } from './modrinth'
 import { resolveProjectDetail, resolveVersionsFor, searchResources } from './sources'
 import { listResources, removeResource, openResourceDir } from './resources'
 import { applyResourceUpdate, checkResourceUpdates } from './resource-updates'
@@ -67,7 +86,7 @@ import {
 } from './files'
 import { clearWallpaper, pickWallpaper, wallpaperData } from './wallpaper'
 import { probeModpack, importModpack, importModpackFromUrl, exportModpack, collectExportInventory, downloadModpack } from './modpack'
-import { fetchAbout, fetchAgreement, fetchUpdateInfo, downloadUpdate, runUpdate, compareVersions, isPrerelease, updateFileExists, updateFileName } from './server'
+import { fetchAbout, fetchAgreement, agreementVersion, fetchAnnouncements, fetchUpdateInfo, downloadUpdate, runUpdate, compareVersions, updateFileExists, updateFileName } from './server'
 import {
   devModeStatus,
   enforceDevModeExpiry,
@@ -97,6 +116,7 @@ import {
   sendEmailCode,
   installNumbered
 } from './homepage'
+import { sendFeedbackCode, submitFeedback, fetchServerLimits, listFeedback, withdrawFeedback } from './feedback'
 import {
   enrichMods,
   enrichResources,
@@ -104,6 +124,7 @@ import {
   toggleMod,
   deleteMod,
   installLocalMod,
+  installLocalResource,
   deleteWorld,
   listSchematics,
   deleteFile,
@@ -131,7 +152,7 @@ let desktopShellOn = false
 let desktopShellTimer: ReturnType<typeof setInterval> | null = null
 // 高频重复读取通道的去抖 + 结果缓存：多个页面挂载时会独立调用同一 channel，
 // 并发重复请求合并为一次底层执行；版本变更时显式失效保证即时刷新。
-const versionsCache = new DedupCache(5 * 60 * 1000) // 原版版本清单：TTL 5min（mirror 固定，清单很少变）
+const versionsCache = new DedupCache(5 * 60 * 1000) // 原版版本清单：TTL 5min（清单很少变；key 含来源策略）
 // 已安装版本/世界/服务器列表缓存：本地扫描很重（几十个版本 × 存档 / 服务器 / version JSON），
 // 原先 TTL 仅 5s —— 用户在多个版本目录间来回切换时，每次超过 5s 都要重新全量扫描，
 // 这是「切换版本目录卡顿 / 未响应」的直接原因之一。
@@ -284,6 +305,40 @@ function createWindow(): void {
     mainWindow.loadFile(join(__dirname, '../renderer/index.html'))
   }
 
+  // 关窗拦截：联机进行中时询问「退出 / 放置后台」，避免误关导致掉线与残留进程。
+  mainWindow.on('close', (event) => {
+    if (isQuitting) return
+    // 仅联机进行中才拦截；平时关窗即正常退出，不打扰用户。
+    if (getMultiplayerAppState() !== 'in-lobby') return
+    event.preventDefault()
+    const win = mainWindow
+    if (!win || win.isDestroyed()) return
+    void (async () => {
+      const { response } = await dialog.showMessageBox(win, {
+        type: 'question',
+        buttons: ['确认退出', '放置后台', '取消'],
+        defaultId: 0,
+        cancelId: 2,
+        // 中文按钮；noLink 避免 Windows 把按钮渲染成命令链接样式。
+        noLink: true,
+        title: '退出启动器',
+        message: '当前正在联机中',
+        detail:
+          '「确认退出」将关闭所有联机进程（含虚拟网络）并退出程序；\n' +
+          '「放置后台」将隐藏窗口并最小化到系统托盘，联机继续保持。'
+      })
+      if (response === 0) {
+        // 确认退出：关闭所有进程后退出。
+        void quitAppCompletely()
+      } else if (response === 1) {
+        // 放置后台：隐藏窗口 + 建托盘，联机不中断。
+        ensureTray()
+        win.hide()
+      }
+      // 取消：什么都不做。
+    })()
+  })
+
   mainWindow.on('closed', () => {
     mainWindow = null
   })
@@ -425,6 +480,227 @@ function closeMiniWindow(): void {
   if (miniWindow && !miniWindow.isDestroyed()) miniWindow.close()
 }
 
+/* ------------------------------------------------------------------ */
+/* 联机浮层窗口：HUD（成员状态）与弹幕                                    */
+/* ------------------------------------------------------------------ */
+
+/**
+ * HUD 浮层 / 弹幕窗口。
+ *
+ * 二者都是「透明 + 无边框 + 置顶 + 跳过任务栏 + 鼠标穿透」的覆盖窗，与 MCTier 的
+ * `gamehud` / `danmaku` 窗口对应：游戏全屏时也能看到，且不抢鼠标焦点。
+ * 鼠标穿透用 `setIgnoreMouseEvents(true, { forward: true })`——`forward` 让
+ * 点击仍能穿透到下面的游戏，同时本窗口仍能收到 mousemove（用于将来做交互）。
+ */
+let hudWindow: BrowserWindow | null = null
+let danmakuWindow: BrowserWindow | null = null
+
+/**
+ * 系统托盘。
+ *
+ * 「联机时关闭窗口放置后台」用它承载：主窗口隐藏后仍能通过托盘重新唤起或真正退出。
+ */
+let tray: Tray | null = null
+/** 是否正在执行「真正退出」（区分「关闭窗口»隐藏到后台」与「退出程序」）。 */
+let isQuitting = false
+
+/**
+ * 创建系统托盘（幂等）。
+ *
+ * 仅在「联机时选择放置后台」后创建：平时不需要托盘，避免常驻占位。
+ * 菜单提供「显示主界面 / 退出程序」，双击托盘图标同样唤回主界面。
+ */
+function ensureTray(): void {
+  if (tray) return
+  const icon = nativeImage.createFromPath(iconPathForWindows())
+  tray = new Tray(icon.isEmpty() ? nativeImage.createEmpty() : icon)
+  tray.setToolTip('饥饿猫我的世界启动器')
+  const menu = Menu.buildFromTemplate([
+    {
+      label: '显示主界面',
+      click: () => showMainWindow()
+    },
+    { type: 'separator' },
+    {
+      label: '退出程序',
+      click: () => {
+        // 从托盘退出等同于「确认退出」：关闭所有子进程后再退出。
+        void quitAppCompletely()
+      }
+    }
+  ])
+  tray.setContextMenu(menu)
+  tray.on('double-click', () => showMainWindow())
+}
+
+/** 销毁托盘（退出时清理）。 */
+function destroyTray(): void {
+  if (!tray) return
+  tray.destroy()
+  tray = null
+}
+
+/** 唤回并聚焦主窗口（从托盘 / 二次启动时调用）。 */
+function showMainWindow(): void {
+  const win = mainWindow
+  if (!win || win.isDestroyed()) {
+    createWindow()
+    return
+  }
+  if (win.isMinimized()) win.restore()
+  if (!win.isVisible()) win.show()
+  win.focus()
+}
+
+/**
+ * 真正退出程序：停止联机（关闭 EasyTier 等子进程）后退出。
+ *
+ * 与「关闭窗口放置后台」相对；托盘菜单的「退出程序」与关闭确认框的「确认退出」都走这里。
+ */
+async function quitAppCompletely(): Promise<void> {
+  if (isQuitting) return
+  isQuitting = true
+  destroyTray()
+  try {
+    await forceStopMultiplayer()
+  } catch {
+    /* 联机可能未启动，忽略 */
+  }
+  app.quit()
+}
+
+function iconPathForWindows(): string {
+  return app.isPackaged
+    ? join(process.resourcesPath, 'icon.png')
+    : join(app.getAppPath(), 'build', 'icon.png')
+}
+
+/** 创建一个浮层窗口（透明 / 置顶 / 穿透），并挂载指定 `?window=` 入口。 */
+function createOverlayWindow(kind: 'hud' | 'danmaku'): BrowserWindow {
+  const workArea = screen.getPrimaryDisplay().workArea
+  const isHud = kind === 'hud'
+  const win = new BrowserWindow({
+    width: isHud ? 360 : workArea.width,
+    height: isHud ? 300 : workArea.height,
+    x: isHud ? workArea.x + workArea.width - 380 : workArea.x,
+    y: isHud ? workArea.y + 20 : workArea.y,
+    show: false,
+    frame: false,
+    transparent: true,
+    resizable: isHud,
+    maximizable: false,
+    fullscreenable: false,
+    skipTaskbar: true,
+    alwaysOnTop: true,
+    hasShadow: false,
+    focusable: false,
+    backgroundColor: '#00000000',
+    icon: iconPathForWindows(),
+    webPreferences: {
+      preload: join(__dirname, '../preload/index.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: false
+    }
+  })
+  // 鼠标穿透：游戏里点击不会被浮层吃掉。
+  win.setIgnoreMouseEvents(true, { forward: true })
+  // 置顶等级：屏幕保护之上，保证全屏游戏也可见。
+  win.setAlwaysOnTop(true, 'screen-saver')
+
+  win.once('ready-to-show', () => win.show())
+  win.webContents.once('did-finish-load', () => {
+    win.show()
+    // HUD 是「只订阅、不拉取」的展示窗：加载完成时主动补推一次，
+    // 否则若窗口是在已有成员之后才创建，会出现「打开了却一直空白」。
+    if (kind === 'hud') pushHudState()
+  })
+  win.webContents.on('did-fail-load', (_e, code, desc) => {
+    console.error(`[${kind}] 页面加载失败 code=${code} ${desc}`)
+  })
+  win.on('closed', () => {
+    if (kind === 'hud') hudWindow = null
+    else danmakuWindow = null
+  })
+
+  const rendererUrl = process.env['ELECTRON_RENDERER_URL']
+  if (rendererUrl) {
+    void win.loadURL(`${rendererUrl}?window=${kind}`)
+  } else {
+    void win.loadFile(join(__dirname, '../renderer/index.html'), { query: { window: kind } })
+  }
+  return win
+}
+
+function createHudWindow(): void {
+  if (hudWindow && !hudWindow.isDestroyed()) {
+    hudWindow.show()
+    return
+  }
+  hudWindow = createOverlayWindow('hud')
+}
+
+function closeHudWindow(): void {
+  if (hudWindow && !hudWindow.isDestroyed()) hudWindow.close()
+}
+
+function createDanmakuWindow(): void {
+  if (danmakuWindow && !danmakuWindow.isDestroyed()) {
+    danmakuWindow.show()
+    return
+  }
+  danmakuWindow = createOverlayWindow('danmaku')
+}
+
+function closeDanmakuWindow(): void {
+  if (danmakuWindow && !danmakuWindow.isDestroyed()) danmakuWindow.close()
+}
+
+/** 按设置同步两个浮层窗口的存续（进入大厅且开关开启时创建，否则关闭）。 */
+function syncOverlayWindows(): void {
+  const s = settings.get()
+  const inLobby = !!getMultiplayerLobby()
+  if (inLobby && s.multiplayerHudEnabled) createHudWindow()
+  else closeHudWindow()
+  if (inLobby && s.multiplayerDanmakuEnabled) createDanmakuWindow()
+  else closeDanmakuWindow()
+}
+
+/** 向 HUD 浮层推送最新成员状态。 */
+function pushHudState(): void {
+  if (!hudWindow || hudWindow.isDestroyed()) return
+  const s = settings.get()
+  const payload: MpHudState = {
+    enabled: s.multiplayerHudEnabled,
+    opacity: s.multiplayerHudOpacity,
+    players: getMultiplayerHudPlayers()
+  }
+  hudWindow.webContents.send('mp:hudState', payload)
+}
+
+/** 把一条聊天消息推给弹幕窗口（按弹幕设置渲染）。 */
+function pushDanmaku(msg: MpChatMessage): void {
+  if (!danmakuWindow || danmakuWindow.isDestroyed()) return
+  const s = settings.get()
+  if (!s.multiplayerDanmakuEnabled) return
+  const payload: MpDanmaku = {
+    id: msg.id,
+    text: msg.isSelf ? `我：${msg.content}` : `${msg.playerName}：${msg.content}`,
+    fontSize: s.multiplayerDanmakuFontSize,
+    speed: s.multiplayerDanmakuSpeed,
+    opacity: s.multiplayerDanmakuOpacity,
+    tracks: s.multiplayerDanmakuTracks
+  }
+  danmakuWindow.webContents.send('mp:danmaku', payload)
+}
+
+/** 向所有渲染层广播事件（聊天 / 语音信令等）。 */
+function broadcastToRenderers(channel: string, payload: unknown): void {
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (!win.isDestroyed()) win.webContents.send(channel, payload)
+  }
+}
+
 /** 是否为主界面（用于「主界面是否存在」判断，悬浮窗按此决定自己的行为）。 */
 function isMainWindow(win: BrowserWindow): boolean {
   return !!mainWindow && !mainWindow.isDestroyed() && win.id === mainWindow.id
@@ -450,6 +726,10 @@ function broadcastLobbyChanged(): void {
     win.webContents.send('mp:lobbyChanged')
   }
   pushMiniWindowState()
+  // HUD 浮层与大厅成员状态同步（含说话指示）。
+  pushHudState()
+  // 进入 / 离开大厅时按设置增删浮层窗口（创建/关闭均为幂等）。
+  syncOverlayWindows()
 }
 
 /** 组装悬浮窗所需的大厅快照。 */
@@ -671,8 +951,9 @@ function registerIpc(): void {
 
   // ---- Versions ----
   ipcMain.handle('versions:list', () =>
-    // 下载源固定（官方优先 + BMCLAPI 回退），无用户可选镜像，故不再把 mirror 计入缓存 key。
-    versionsCache.get('manifest', () => fetchVersionManifest())
+    // 缓存 key 带上「版本列表源」：来源现在由用户可选，切换来源后必须重新拉取，
+    // 否则会一直返回旧来源的清单（表现为「改了来源没生效」）。
+    versionsCache.get(`manifest:${settings.get().versionListSource}`, () => fetchVersionManifest())
   )
   ipcMain.handle('versions:get', (_e, id: string) => {
     const s = settings.get()
@@ -798,9 +1079,11 @@ function registerIpc(): void {
     const controller = new AbortController()
     downloadAborts.set(id, controller)
     try {
-      await installVersion(json, dir, s.maxDownloadConcurrency, (p) => {
+      // 按「下载加速档位」换算实际并发：无线网络下自动收敛连接数，避免拥塞反而更慢。
+      const eff = effectiveConcurrency(s.downloadAcceleration, s.downloadConnections, s.maxDownloadConcurrency)
+      await installVersion(json, dir, eff.fileConcurrency, (p) => {
         sendToSender(event.sender, 'download:progress', { ...p, taskId: id })
-      }, controller.signal, s.downloadConnections)
+      }, controller.signal, eff.connections)
     } finally {
       downloadAborts.delete(id)
     }
@@ -924,6 +1207,46 @@ function registerIpc(): void {
       return dest
     } finally {
       downloadAborts.delete(file.filename)
+    }
+  })
+  // 游戏内离线翻译模组：固定直链下载到实例 mods 目录（仅 Fabric + 指定 MC 版本区间提供）。
+  ipcMain.handle('mods:installOfflineTranslate', async (event, versionId: string) => {
+    const filename = 'MCAutoTranslationTool-1.3.11-fabric-all.jar'
+    const s = settings.get()
+    const controller = new AbortController()
+    downloadAborts.set(filename, controller)
+    const emit = (received: number, total: number): void =>
+      sendToSender(event.sender, 'download:progress', {
+        taskId: filename,
+        task: filename,
+        current: 0,
+        total: 1,
+        currentBytes: received,
+        totalBytes: total,
+        phase: 'mod',
+        percent: total > 0 ? Math.round((received / total) * 100) : 0
+      })
+    try {
+      const dest = await installOfflineTranslate(
+        activeGameDir(s),
+        versionId,
+        isIsolated(versionId),
+        emit,
+        controller.signal
+      )
+      sendToSender(event.sender, 'download:progress', {
+        taskId: filename,
+        task: filename,
+        current: 1,
+        total: 1,
+        currentBytes: 0,
+        totalBytes: 0,
+        phase: 'done',
+        percent: 100
+      })
+      return dest
+    } finally {
+      downloadAborts.delete(filename)
     }
   })
   ipcMain.handle('mods:downloadTo', async (event, fileUrl: string, destPath: string, sizeHint?: number) => {
@@ -1093,6 +1416,14 @@ function registerIpc(): void {
     const s = settings.get()
     return installLocalMod(activeGameDir(s), versionId, isIsolated(versionId), sourcePath)
   })
+  // 资源包 / 光影的本地导入：与模组同一套编排，仅目标目录不同。
+  ipcMain.handle(
+    'manage:installLocalResource',
+    (_e, versionId: string, kind: 'mods' | 'resourcepacks' | 'shaderpacks', sourcePath: string) => {
+      const s = settings.get()
+      return installLocalResource(activeGameDir(s), versionId, isIsolated(versionId), kind, sourcePath)
+    }
+  )
   ipcMain.handle('manage:deleteWorld', (_e, versionId: string, worldName: string) => {
     const s = settings.get()
     return deleteWorld(activeGameDir(s), versionId, isIsolated(versionId), worldName)
@@ -1278,6 +1609,12 @@ function registerIpc(): void {
     emit({ state: 'downloading' })
     const installDir = activeGameDir(s)
     const json = await resolveVersionJson(options.versionId, installDir)
+    // 按「下载加速档位」换算实际并发：无线网络下自动收敛连接数，避免拥塞反而更慢。
+    const effConcurrency = effectiveConcurrency(
+      s.downloadAcceleration,
+      s.downloadConnections,
+      s.maxDownloadConcurrency
+    )
     const runDir = isIsolated(options.versionId)
       ? join(installDir, 'versions', options.versionId)
       : installDir
@@ -1286,9 +1623,9 @@ function registerIpc(): void {
     const downloadKey = options.versionId
     const controller = new AbortController()
     downloadAborts.set(downloadKey, controller)
-    const result = await installVersion(json, installDir, s.maxDownloadConcurrency, (p) => {
+    const result = await installVersion(json, installDir, effConcurrency.fileConcurrency, (p) => {
       sendToSender(event.sender, 'download:progress', { ...p, taskId: options.versionId })
-    }, controller.signal, s.downloadConnections).finally(() => {
+    }, controller.signal, effConcurrency.connections).finally(() => {
       downloadAborts.delete(downloadKey)
     })
 
@@ -1372,13 +1709,16 @@ function registerIpc(): void {
   // ---- Settings ----
   ipcMain.handle('settings:get', () => settings.get())
   ipcMain.handle('settings:set', (_e, partial: Partial<LauncherSettings>) => {
+    const prevKey = settings.get().debugKey
     const next = settings.set(partial)
     // 主题 / 背景预设变化后同步窗口底色
     if (partial.theme !== undefined || partial.background !== undefined) applyWindowBackground()
-    // Debug 模式开关联动独立日志窗口（开启即创建，关闭即释放）
-    if (typeof partial.debugMode === 'boolean') {
-      if (partial.debugMode) createDebugWindow()
-      else closeDebugWindow()
+    // Debug 模式只控制「是否记录启动日志」，不再自动弹出日志窗口（需要时到设置里手动打开）。
+    // 填入新的调试密钥 → 自动收集诊断日志上传到服务端（免去用户手动导出 / 粘贴日志）。
+    if (typeof partial.debugKey === 'string' && partial.debugKey.trim() && partial.debugKey !== prevKey) {
+      void submitDebugLogs(partial.debugKey).catch((err) => {
+        console.warn('[调试密钥] 自动上传日志失败：', err instanceof Error ? err.message : String(err))
+      })
     }
     return next
   })
@@ -1420,17 +1760,28 @@ function registerIpc(): void {
   // 运行时检测到危险代码：封锁脚本并立即停用（渲染层负责弹全屏提示）。
   ipcMain.handle('homepage:block', (_e, id: string, reason: string) => blockHomepage(id, reason))
   ipcMain.handle('homepage:openDir', () => openHomepageDir())
+  // 主页安全检测当前是否由原生（Rust）内核承担；供界面在未使用 Rust 时给出顶部提示。
+  ipcMain.handle('homepage:securityEngine', () => ({
+    native: homepageSecurityUsesNative()
+  }))
   ipcMain.handle('homepage:market', () => fetchMarket())
   ipcMain.handle('homepage:checkUpdates', () => checkHomepageUpdates())
   ipcMain.handle('homepage:update', (_e, update: HomepageUpdate) => updateHomepage(update))
   ipcMain.handle('homepage:send-email-code', (_e, email: string) => sendEmailCode(email))
   ipcMain.handle('homepage:submit', (_e, payload: HomepageSubmitPayload) => submitHomepage(payload))
+  ipcMain.handle('feedback:send-code', (_e, email: string) => sendFeedbackCode(email))
+  ipcMain.handle('feedback:submit', (_e, payload: FeedbackSubmitPayload) => submitFeedback(payload))
+  ipcMain.handle('feedback:list', (_e, email: string, code: string) => listFeedback(email, code))
+  ipcMain.handle('feedback:withdraw', (_e, email: string, code: string, id: string) =>
+    withdrawFeedback(email, code, id)
+  )
+  ipcMain.handle('limits:get', () => fetchServerLimits())
   ipcMain.handle(
     'homepage:installNumbered',
     (_e, input: { filename: string; contentBase64: string; replaceId?: string }) => installNumbered(input)
   )
   ipcMain.handle('homepage:log', (_e, level: DebugLogEntry['level'], message: string) => {
-    // 脚本日志只在 Debug 模式落地：调试日志窗口仅在 Debug 模式存在。
+    // 主页脚本日志只在 Debug 模式落地：非调试时脚本输出不进日志缓冲，避免噪声。
     if (!settings.get().debugMode) return
     // 折叠换行 / 控制字符：一条脚本日志绝不能伪造出多行「启动器日志」（F-14 / D07）。
     const text = String(message)
@@ -1476,6 +1827,30 @@ function registerIpc(): void {
     return { ok: true, message: '已删除本机保存的 API KEY，已回到访客额度' }
   })
   ipcMain.handle('about:agreement', () => fetchAgreement())
+  // 协议版本核对：内容指纹与当前不一致（或从未同意）时需要（重新）同意。
+  // 离线 / 不可达时回落本地判断：仅在从未同意过时要求同意，避免断网把老用户拦在门外。
+  ipcMain.handle('about:agreementStatus', async () => {
+    const s = settings.get()
+    // 本地模式不联网：仅按「从未同意」判断，正文留空由界面提示离线。
+    if (s.mode === 'local') return { version: '', needsConsent: !s.agreementAcceptedAt, content: null }
+    try {
+      const content = await fetchAgreement()
+      const version = agreementVersion(content)
+      let acceptedVersion = s.agreementAcceptedVersion
+      // 迁移：老版本用户此前没有记录协议版本，首次核对时把当前版本补记为已同意，
+      // 不打断使用；此后协议再变更即会触发重新同意。
+      if (version && !acceptedVersion && s.agreementAcceptedAt > 0) {
+        settings.set({ agreementAcceptedVersion: version })
+        acceptedVersion = version
+      }
+      const needsConsent = version ? acceptedVersion !== version : !s.agreementAcceptedAt
+      return { version, needsConsent, content }
+    } catch {
+      return { version: '', needsConsent: !s.agreementAcceptedAt, content: null }
+    }
+  })
+  // 公告列表：本地模式不联网，返回空数组。
+  ipcMain.handle('announcement:list', () => (settings.get().mode === 'local' ? [] : fetchAnnouncements()))
   ipcMain.handle('update:check', async () => {
     const currentVersion = app.getVersion()
     let latest: UpdateInfo | null = null
@@ -1488,8 +1863,8 @@ function registerIpc(): void {
       currentVersion,
       latest,
       hasUpdate: latest ? compareVersions(latest.version, currentVersion) > 0 : false,
-      // 测试版（带 - 后缀）：启动自动检查据此静默，避免打扰普通用户。
-      latestIsPrerelease: latest ? isPrerelease(latest.version) : false
+      // 是否为预发布版由服务端后台勾选决定：启动自动检查据此静默，避免打扰普通用户。
+      latestIsPrerelease: latest ? !!latest.prerelease : false
     }
   })
   ipcMain.handle('update:download', async (event, info: UpdateInfo) => {
@@ -1511,7 +1886,7 @@ function registerIpc(): void {
     return path
   })
 
-  // ---- Debug 日志窗口 ----
+  // ---- Debug 日志 ----
   ipcMain.handle('debug:getLogs', () => getLogBuffer())
   ipcMain.handle('debug:open', () => {
     createDebugWindow()
@@ -1520,6 +1895,12 @@ function registerIpc(): void {
     closeDebugWindow()
   })
   ipcMain.handle('debug:isEnabled', () => settings.get().debugMode)
+  // 用调试密钥上传诊断日志（设置页手动重传 / 填写后自动上传共用）。
+  ipcMain.handle('debug:submit', (_e, key: string) => submitDebugLogs(String(key ?? '')))
+  // 渲染层日志转发：汇入同一缓冲，上传时一并带走。
+  ipcMain.on('debug:rendererLog', (_e, level: DebugLogEntry['level'], message: string) => {
+    appendExternalLog(level, String(message ?? ''))
+  })
 
   // ---- 开发模式（Development Mode）----
   // 授权由服务端签发：邮箱须在后台白名单内，验证码通过后获得 1 天授权；
@@ -1729,6 +2110,11 @@ function registerIpc(): void {
 
 app.setName('HungerCatLauncher')
 
+// 远端语音通过 <audio> 播放 WebRTC 轨道。Chromium 默认的自动播放策略会拦截
+// 「无用户手势」的音频播放，表现为：连接已建立、说话指示也正常，但**听不到对方说话**。
+// 语音是大厅里的显式交互功能（由用户主动开麦触发），这里放开自动播放限制。
+app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required')
+
 // 进程级兜底：主进程出现未处理拒绝 / 未捕获异常时先落日志（进 debug 窗口），避免
 // “静默退到命令提示符”（无异常日志、无从排查）。拿到具体堆栈后可再根治对应模块。
 process.on('unhandledRejection', (reason) => {
@@ -1740,10 +2126,44 @@ process.on('uncaughtException', (err) => {
 
 app.whenReady().then(() => {
   initLogger()
+  // 联机语音需要麦克风。必须**显式**放行 media 权限：
+  // 未设置该处理函数时，是否放行取决于 Electron 版本（部分版本对 media 默认拒绝），
+  // 被拒后 getUserMedia 会直接抛 NotAllowedError，而渲染层只写进控制台 ——
+  // 界面上毫无反应，表现正是「语音聊天无法使用」。这里只放行媒体类权限，其余一律拒绝。
+  // 注意：麦克风 / 摄像头的权限名就是 'media'（'audioCapture' / 'videoCapture' 是
+  // macOS 上 systemPreferences.askForMediaAccess 的媒体类型，不属于该枚举）。
+  session.defaultSession.setPermissionRequestHandler((_wc, permission, callback) => {
+    callback(permission === 'media')
+  })
+  // 同步权限检查：`enumerateDevices` 读取设备名（label）、以及部分版本下 getUserMedia
+  // 的前置校验都会走这里。若不放行，设备下拉只能显示「麦克风 1」这类占位名，且个别
+  // Electron 版本会因此拒绝采集。这里只放行媒体类，其余保持默认拒绝。
+  session.defaultSession.setPermissionCheckHandler((_wc, permission) => permission === 'media')
   registerIpc()
   // 联机板块（MCTier 移植）：注册 mp:* 通道。组网资源在首次调用时才真正使用，
   // 这里只挂 IPC，不产生额外启动开销。
-  registerMultiplayerIpc(broadcastLobbyChanged)
+  registerMultiplayerIpc({
+    onLobbyChanged: broadcastLobbyChanged,
+    // 说话状态：只刷新 HUD 浮层。交谈中该状态每秒可切换多次，
+    // 若走 broadcastLobbyChanged（全窗口广播 + 同步浮层窗口）会造成持续卡顿。
+    onSpeakingChanged: pushHudState,
+    openHudWindow: createHudWindow,
+    closeHudWindow,
+    openDanmakuWindow: createDanmakuWindow,
+    closeDanmakuWindow,
+    syncOverlays: () => {
+      syncOverlayWindows()
+      pushHudState()
+    },
+    // 新消息：广播给所有渲染层（主界面 / 悬浮窗据此处提示音、聊天面板），并推给弹幕窗口。
+    broadcastChat: (msg) => {
+      broadcastToRenderers('mp:chat', msg)
+      pushDanmaku(msg)
+    },
+    // 语音音频：收到某成员的 UDP 音频帧后推给渲染层解码播放。
+    broadcastVoiceAudio: (peerId, data) =>
+      broadcastToRenderers('mp:voiceAudio', { from: peerId, data: new Uint8Array(data) })
+  })
   // 联机悬浮窗：创建 / 关闭 / 读取快照。
   ipcMain.handle('mp:openMiniWindow', () => {
     createMiniWindow()
@@ -1761,7 +2181,12 @@ app.whenReady().then(() => {
   ipcMain.handle('mp:miniResize', (_e, width: number, height: number) => {
     if (!miniWindow || miniWindow.isDestroyed()) return
     const w = Math.max(240, Math.round(width))
-    const h = Math.max(120, Math.round(height))
+    // 高度上限取「当前显示器工作区」减去一点边距：渲染层按内容自适应高度，
+    // 但内容很多时可能超过屏幕，这里兜底夹住，避免窗口超出屏幕导致底部控件点不到。
+    // 超出部分由渲染层内容区的滚动承接。
+    const bounds = screen.getDisplayNearestPoint(screen.getCursorScreenPoint()).workAreaSize
+    const maxH = Math.max(320, bounds.height - 40)
+    const h = Math.min(maxH, Math.max(120, Math.round(height)))
     miniWindow.setContentSize(w, h)
   })
   // 注意：不再在启动关键路径上 fork 网络进程。netRequest 首次调用时会经 ensureNetworkWorker
@@ -1770,8 +2195,6 @@ app.whenReady().then(() => {
   createWindow()
   // 用户在系统里切换明暗模式时，同步窗口底色（主题为「跟随系统」时才实际变化）。
   nativeTheme.on('updated', applyWindowBackground)
-  // Debug 模式开启时，启动即创建独立日志窗口；默认关闭则不创建，零成本。
-  if (settings.get().debugMode) createDebugWindow()
   // 开发模式：注册状态广播 + 到期兜底检查（到期自动关闭并回收开发者工具窗口）。
   setDevModeBroadcaster((s) => {
     for (const w of BrowserWindow.getAllWindows()) {
@@ -1788,10 +2211,14 @@ app.whenReady().then(() => {
 })
 
 app.on('window-all-closed', () => {
+  // 托盘后台模式下不退出：窗口虽全部关闭，程序仍在托盘常驻（联机继续）。
+  if (tray) return
   if (process.platform !== 'darwin') app.quit()
 })
 
 app.on('will-quit', () => {
+  isQuitting = true
+  destroyTray()
   // 回收网络进程并拒绝所有在途网络请求。
   stopNetworkWorker()
   // 把在途的设置 / 账号异步写盘刷完，避免退出时丢掉最后一次修改。

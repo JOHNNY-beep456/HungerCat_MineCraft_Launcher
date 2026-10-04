@@ -130,7 +130,10 @@ export const messages: LocaleDict = {
     'hp.sec.note2':
       '为确保你能看到本提示，启动器已被切到系统全屏（连 Windows 任务栏一起盖住）； 点「我已了解」后会恢复成原来的窗口大小。',
     'hp.sec.openDir': '打开脚本目录',
-    'hp.sec.gotIt': '我已了解'
+    'hp.sec.gotIt': '我已了解',
+    'hp.engine.tsFallback':
+      '主页安全检测未使用原生（Rust）内核，已回退到内置实现；功能正常但性能较低。',
+    'hp.engine.dismiss': '关闭提示'
   },
   'zh-TW': {
     'hp.title': '主頁',
@@ -260,7 +263,10 @@ export const messages: LocaleDict = {
     'hp.sec.note2':
       '為確保你能看到本提示，啟動器已被切到系統全螢幕（連 Windows 工作列一起蓋住）； 點「我已瞭解」後會還原成原本的視窗大小。',
     'hp.sec.openDir': '開啟腳本目錄',
-    'hp.sec.gotIt': '我已瞭解'
+    'hp.sec.gotIt': '我已瞭解',
+    'hp.engine.tsFallback':
+      '主頁安全檢測未使用原生（Rust）核心，已回退到內建實作；功能正常但效能較低。',
+    'hp.engine.dismiss': '關閉提示'
   },
   en: {
     'hp.title': 'Homepage',
@@ -390,6 +396,9 @@ export const messages: LocaleDict = {
     'hp.sec.note2':
       'To make sure you see this notice, the launcher was switched to system fullscreen (covering the Windows taskbar as well); it returns to its previous window size after you click "Got it".',
     'hp.sec.openDir': 'Open script folder',
-    'hp.sec.gotIt': 'Got it'
+    'hp.sec.gotIt': 'Got it',
+    'hp.engine.tsFallback':
+      'Homepage security checks are not using the native (Rust) kernel and have fallen back to the built-in implementation; it works but is slower.',
+    'hp.engine.dismiss': 'Dismiss'
   }
 }

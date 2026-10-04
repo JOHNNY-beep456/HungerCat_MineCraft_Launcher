@@ -5,6 +5,7 @@ import { cpus, totalmem } from 'os'
 import { join } from 'path'
 import type { LauncherSettings, MinecraftAccount, SystemHardwareInfo, VersionDir } from '@shared/types'
 import { hasUapisKey, setUapisKey } from './secret'
+import { setSourceStrategies } from './mirror'
 
 /** Offline-mode UUID, derived deterministically from the player name (MD5). */
 function offlineUuid(name: string): string {
@@ -118,7 +119,14 @@ export function getDefaultSettings(): LauncherSettings {
     language: 'zh-CN',
     memoryMb: 4096,
     maxDownloadConcurrency: 8,
-    downloadConnections: 64,
+    // 单文件连接数默认降到 16：64 连接在无线网络下会引发拥塞 / 丢包，反而更慢；
+    // 需要更高并发的稳定网络可在设置里调高，或把加速档位设为「极速」。
+    downloadConnections: 16,
+    downloadAcceleration: 'auto',
+    downloadSource: 'auto',
+    versionListSource: 'auto',
+    communitySource: 'auto',
+    modTitleStyle: 'translated-first',
     gameDir: join(app.getPath('documents'), 'HungerCatMC'),
     versionDirs: [],
     selectedVersionDirId: '',
@@ -141,8 +149,13 @@ export function getDefaultSettings(): LauncherSettings {
     disabledVersions: [],
     isolatedVersions: [],
     agreementAcceptedAt: 0,
+    agreementAcceptedVersion: '',
+    announcementDisplay: 'all',
+    announcementSeen: {},
     onboardingDone: false,
     debugMode: false,
+    debugKey: '',
+    feedbackLogConsent: false,
     metadataOnlyMods: false,
     homepageId: '',
     selectedVersionId: '',
@@ -168,6 +181,9 @@ export function getDefaultSettings(): LauncherSettings {
     multiplayerLobbyPassword: '',
     multiplayerCustomNodes: [],
     multiplayerSoundVolume: 0.8,
+    multiplayerSoundNewMsg: true,
+    multiplayerSoundJoined: true,
+    multiplayerSoundLeft: true,
     multiplayerDndEnabled: false,
     multiplayerDndStart: 1320,
     multiplayerDndEnd: 480,
@@ -183,6 +199,8 @@ export function getDefaultSettings(): LauncherSettings {
     multiplayerHudEnabled: false,
     multiplayerHudOpacity: 0.8,
     multiplayerVoiceChanger: 'off',
+    multiplayerMicDeviceId: '',
+    multiplayerSpeakerDeviceId: '',
     multiplayerTheme: 'system',
     multiplayerStatsMinutes: 0,
     multiplayerJoinCount: 0,
@@ -238,6 +256,13 @@ export const settings = {
     if (s.selectedVersionDirId && !dirs.some((d) => d.id === s.selectedVersionDirId)) {
       s.selectedVersionDirId = ''
     }
+    // 把来源策略同步给下载层：mirror.ts 是「当前策略」的唯一持有者，
+    // 下载/版本列表都从这里取候选顺序，避免每处调用都去读设置（也便于测试）。
+    setSourceStrategies({
+      download: s.downloadSource,
+      versionList: s.versionListSource,
+      community: s.communitySource
+    })
     cachedSettings = s
     return s
   },
@@ -248,6 +273,11 @@ export const settings = {
     // 内存缓存先行：渲染层立刻拿到新值（乐观更新），落盘在后台异步完成，
     // 不再让「切换版本 / 切换版本目录」此类高频写入同步阻塞主进程事件循环。
     cachedSettings = { ...next, uapisApiKeySet: hasUapisKey() }
+    setSourceStrategies({
+      download: next.downloadSource,
+      versionList: next.versionListSource,
+      community: next.communitySource
+    })
     writeJsonAsync('settings.json', next)
     return cachedSettings
   }

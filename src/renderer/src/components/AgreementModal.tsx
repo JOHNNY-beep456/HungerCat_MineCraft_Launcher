@@ -1,34 +1,32 @@
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import { motion } from 'motion/react'
-import type { AgreementContent } from '@shared/types'
 import { useApp } from '../store'
 import { Button, Icon, LoadingState } from './ui'
 
+/**
+ * 协议同意弹窗。
+ *
+ * 正文与版本来自启动时的协议核对（agreementStatus）：
+ *   - content 为 null 表示联网失败，展示离线提示（仍可同意，按服务端已公布内容为准）；
+ *   - 若此前已同意过（agreementAcceptedAt > 0）而仍弹窗，说明协议内容发生变更，
+ *     此时顶部给出「协议已更新」的提醒，要求玩家重新同意。
+ *
+ * 同意时同时记录「同意时间」与「协议版本指纹」，此后版本不变则不再打扰。
+ */
 export function AgreementModal(): JSX.Element {
-  const { t, updateSettings } = useApp()
-  const [content, setContent] = useState<AgreementContent | null>(null)
-  const [error, setError] = useState(false)
+  const { t, settings, agreementStatus, updateSettings } = useApp()
   const [agreeing, setAgreeing] = useState(false)
 
-  useEffect(() => {
-    let alive = true
-    void (async () => {
-      try {
-        const c = await window.api.about.agreement()
-        if (alive) setContent(c)
-      } catch {
-        if (alive) setError(true)
-      }
-    })()
-    return () => {
-      alive = false
-    }
-  }, [])
+  const content = agreementStatus?.content ?? null
+  const changed = settings.agreementAcceptedAt > 0
 
   const agree = async (): Promise<void> => {
     setAgreeing(true)
     try {
-      await updateSettings({ agreementAcceptedAt: Date.now() })
+      await updateSettings({
+        agreementAcceptedAt: Date.now(),
+        agreementAcceptedVersion: agreementStatus?.version ?? ''
+      })
     } finally {
       setAgreeing(false)
     }
@@ -51,22 +49,26 @@ export function AgreementModal(): JSX.Element {
       >
         <div className="mb-2 flex items-center gap-2">
           <Icon name="box" size={20} />
-          <span className="title">{t('cmp.agreement.welcome')}</span>
+          <span className="title">
+            {changed ? t('cmp.agreement.changedTitle') : t('cmp.agreement.welcome')}
+          </span>
         </div>
-        <p className="caption mb-4">{t('cmp.agreement.intro')}</p>
+        <p className="caption mb-4">
+          {changed ? t('cmp.agreement.changedIntro') : t('cmp.agreement.intro')}
+        </p>
 
         <div className="min-h-0 flex-1 space-y-4 overflow-y-auto rounded-2xl p-1 pr-2">
-          {content === null && !error ? (
+          {agreementStatus === null ? (
             <LoadingState text={t('cmp.agreement.loading')} />
-          ) : error ? (
+          ) : content === null ? (
             <div className="space-y-3 text-[13px] leading-relaxed opacity-80">
               <p>{t('cmp.agreement.error1')}</p>
               <p>{t('cmp.agreement.error2')}</p>
             </div>
           ) : (
             <>
-              <AgreementBlock title={t('cmp.agreement.privacy')} body={content?.privacy ?? ''} />
-              <AgreementBlock title={t('cmp.agreement.terms')} body={content?.terms ?? ''} />
+              <AgreementBlock title={t('cmp.agreement.privacy')} body={content.privacy} />
+              <AgreementBlock title={t('cmp.agreement.terms')} body={content.terms} />
             </>
           )}
         </div>

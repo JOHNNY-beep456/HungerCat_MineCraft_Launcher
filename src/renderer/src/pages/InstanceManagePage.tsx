@@ -9,6 +9,7 @@ import type {
   SchematicEntry
 } from '@shared/types'
 import { activeGameDir, useApp } from '../store'
+import { modListTitles } from '../mod-title'
 import { useRuntimeActions } from '../runtime'
 import { Button, Icon, LoadingState, Segmented, Spinner } from '../components/ui'
 import { ExportPage } from './ExportPage'
@@ -220,6 +221,8 @@ export function InstanceManagePage({
   const [results, setResults] = useState<ModrinthProject[]>([])
   const [searching, setSearching] = useState(false)
   const [dragOver, setDragOver] = useState(false)
+  /** 资源包 / 光影页的拖拽高亮（与模组页的 dragOver 分开，避免跨分栏串扰）。 */
+  const [resDragOver, setResDragOver] = useState(false)
   const [notice, setNotice] = useState<string | null>(null)
 
   const [loaderSel, setLoaderSel] = useState<string>('fabric')
@@ -514,6 +517,45 @@ export function InstanceManagePage({
     if (paths.length > 0) await installLocals(paths)
   }
 
+  /**
+   * 资源包 / 光影的本地导入：与模组同一个「逐个导入 + 汇总结果」的编排，
+   * 只是目标目录按 kind 区分（resourcepacks / shaderpacks）。
+   */
+  const installLocalResources = async (
+    paths: string[],
+    kind: 'resourcepacks' | 'shaderpacks'
+  ): Promise<void> => {
+    const list = paths.filter(Boolean)
+    if (list.length === 0) return
+    setNotice(null)
+    let ok = 0
+    const errors: string[] = []
+    for (const p of list) {
+      try {
+        await window.api.manage.installLocalResource(versionId, kind, p)
+        ok++
+      } catch (err) {
+        const name = p.split(/[\\/]/).pop() ?? p
+        errors.push(`${name}：${err instanceof Error ? err.message : String(err)}`)
+      }
+    }
+    await reload()
+    setNotice(
+      errors.length > 0
+        ? t('ins.installedModsPartial', { ok, fail: errors.length, errors: errors.join('；') })
+        : t('ins.installedMods', { n: ok })
+    )
+  }
+
+  const onResDrop = async (e: DragEvent<HTMLDivElement>, kind: 'resourcepacks' | 'shaderpacks'): Promise<void> => {
+    e.preventDefault()
+    setResDragOver(false)
+    const paths = Array.from(e.dataTransfer.files ?? [])
+      .map((f) => window.api.shell.getPathForFile(f))
+      .filter(Boolean)
+    if (paths.length > 0) await installLocalResources(paths, kind)
+  }
+
   const searchMods = async (): Promise<void> => {
     if (!query.trim()) return
     setSearching(true)
@@ -669,6 +711,69 @@ export function InstanceManagePage({
 
         {tab === 'mods' && (
           <div className="space-y-4">
+            {settings.mode !== 'local' && (
+            <div>
+              <div className="mb-2 flex items-center gap-2">
+                <span className="headline">{t('ins.onlineInstall')}</span>
+                <span className="caption">{t('ins.matching', { target: `${mcSel} + ${loaderSel}` })}</span>
+              </div>
+              <div className="mb-2 flex gap-2">
+                <div className="relative flex-1">
+                  <Icon name="search" size={15} className="absolute left-3 top-1/2 -translate-y-1/2 opacity-50" />
+                  <input
+                    value={query}
+                    onChange={(e) => setQuery(e.target.value)}
+                    onKeyDown={(e) => e.key === 'Enter' && void searchMods()}
+                    placeholder={t('ins.searchModsPlaceholder')}
+                    className="input w-full pl-9"
+                  />
+                </div>
+                <Button variant="primary" icon="search" disabled={searching} onClick={() => void searchMods()}>
+                  {t('ins.search')}
+                </Button>
+              </div>
+              <div className="mb-2 flex items-center gap-2">
+                <span className="caption">{t('ins.version')}</span>
+                <input value={mcSel} onChange={(e) => setMcSel(e.target.value)} className="input w-28" />
+                <span className="caption ml-2">{t('ins.loader')}</span>
+                <Segmented
+                  value={loaderSel}
+                  onChange={setLoaderSel}
+                  options={[
+                    { value: 'fabric', label: 'Fabric' },
+                    { value: 'quilt', label: 'Quilt' },
+                    { value: 'forge', label: 'Forge' },
+                    { value: 'neoforge', label: 'NeoForge' }
+                  ]}
+                />
+              </div>
+              {searching ? (
+                <LoadingState text={t('ins.searching')} />
+              ) : (
+                results.length > 0 && (
+                  <div className="space-y-1.5">
+                    {results.map((p) => (
+                      <button
+                        key={p.slug}
+                        onClick={() => void installOnline(p)}
+                        disabled={busyId === p.slug}
+                        className="glass-soft flex w-full items-center gap-3 rounded-xl px-3 py-2 text-left no-drag"
+                      >
+                        {p.icon_url ? (
+                          <img src={p.icon_url} width={28} height={28} alt="" className="rounded-lg" />
+                        ) : (
+                          <Icon name="box" size={18} className="opacity-50" />
+                        )}
+                        <span className="min-w-0 flex-1 truncate text-[13px] font-medium">{p.title}</span>
+                        {busyId === p.slug && <Spinner size={16} />}
+                      </button>
+                    ))}
+                  </div>
+                )
+              )}
+            </div>
+            )}
+
             <div
               className={`rounded-2xl border-2 border-dashed p-5 text-center transition-colors ${dragOver ? 'opacity-80' : ''}`}
               style={{ borderColor: dragOver ? 'var(--fill-primary)' : 'var(--divider)' }}
@@ -733,16 +838,19 @@ export function InstanceManagePage({
                           onClick={() => setModDetail(m)}
                           className="min-w-0 flex-1 text-left no-drag"
                         >
-                          {m.displayName ? (
-                            <>
-                              <div className={`truncate text-[13px] font-medium leading-tight ${m.enabled ? '' : 'opacity-40 line-through'}`}>
-                                {m.displayName}
-                              </div>
-                              <div className={`caption truncate leading-tight ${m.enabled ? '' : 'opacity-40'}`}>{m.name}</div>
-                            </>
-                          ) : (
-                            <div className={`truncate text-[13px] leading-tight ${m.enabled ? '' : 'opacity-40 line-through'}`}>{m.name}</div>
-                          )}
+                          {(() => {
+                            const pair = modListTitles(m, settings.modTitleStyle)
+                            return (
+                              <>
+                                <div className={`truncate text-[13px] font-medium leading-tight ${m.enabled ? '' : 'opacity-40 line-through'}`}>
+                                  {pair.title}
+                                </div>
+                                {pair.detail && (
+                                  <div className={`caption truncate leading-tight ${m.enabled ? '' : 'opacity-40'}`}>{pair.detail}</div>
+                                )}
+                              </>
+                            )
+                          })()}
                         </button>
                         {up && (
                           <span className="caption shrink-0" title={`${up.title} · ${up.slug}`}>
@@ -779,69 +887,6 @@ export function InstanceManagePage({
                 </div>
               )}
             </div>
-
-            {settings.mode !== 'local' && (
-            <div>
-              <div className="mb-2 flex items-center gap-2">
-                <span className="headline">{t('ins.onlineInstall')}</span>
-                <span className="caption">{t('ins.matching', { target: `${mcSel} + ${loaderSel}` })}</span>
-              </div>
-              <div className="mb-2 flex gap-2">
-                <div className="relative flex-1">
-                  <Icon name="search" size={15} className="absolute left-3 top-1/2 -translate-y-1/2 opacity-50" />
-                  <input
-                    value={query}
-                    onChange={(e) => setQuery(e.target.value)}
-                    onKeyDown={(e) => e.key === 'Enter' && void searchMods()}
-                    placeholder={t('ins.searchModsPlaceholder')}
-                    className="input w-full pl-9"
-                  />
-                </div>
-                <Button variant="primary" icon="search" disabled={searching} onClick={() => void searchMods()}>
-                  {t('ins.search')}
-                </Button>
-              </div>
-              <div className="mb-2 flex items-center gap-2">
-                <span className="caption">{t('ins.version')}</span>
-                <input value={mcSel} onChange={(e) => setMcSel(e.target.value)} className="input w-28" />
-                <span className="caption ml-2">{t('ins.loader')}</span>
-                <Segmented
-                  value={loaderSel}
-                  onChange={setLoaderSel}
-                  options={[
-                    { value: 'fabric', label: 'Fabric' },
-                    { value: 'quilt', label: 'Quilt' },
-                    { value: 'forge', label: 'Forge' },
-                    { value: 'neoforge', label: 'NeoForge' }
-                  ]}
-                />
-              </div>
-              {searching ? (
-                <LoadingState text={t('ins.searching')} />
-              ) : (
-                results.length > 0 && (
-                  <div className="space-y-1.5">
-                    {results.map((p) => (
-                      <button
-                        key={p.slug}
-                        onClick={() => void installOnline(p)}
-                        disabled={busyId === p.slug}
-                        className="glass-soft flex w-full items-center gap-3 rounded-xl px-3 py-2 text-left no-drag"
-                      >
-                        {p.icon_url ? (
-                          <img src={p.icon_url} width={28} height={28} alt="" className="rounded-lg" />
-                        ) : (
-                          <Icon name="box" size={18} className="opacity-50" />
-                        )}
-                        <span className="min-w-0 flex-1 truncate text-[13px] font-medium">{p.title}</span>
-                        {busyId === p.slug && <Spinner size={16} />}
-                      </button>
-                    ))}
-                  </div>
-                )
-              )}
-            </div>
-            )}
           </div>
         )}
 
@@ -880,6 +925,43 @@ export function InstanceManagePage({
 
         {tab === 'resourcepacks' && (
           <div className="space-y-3">
+            {settings.mode !== 'local' && (
+              <OnlineInstaller
+                type="resourcepack"
+                versionId={versionId}
+                mcVersion={mcSel}
+                onMcVersionChange={setMcSel}
+                onDone={handleInstalled}
+              />
+            )}
+
+            <div
+              className={`rounded-2xl border-2 border-dashed p-5 text-center transition-colors ${resDragOver ? 'opacity-80' : ''}`}
+              style={{ borderColor: resDragOver ? 'var(--fill-primary)' : 'var(--divider)' }}
+              onDragOver={(e) => {
+                e.preventDefault()
+                setResDragOver(true)
+              }}
+              onDragLeave={() => setResDragOver(false)}
+              onDrop={(e) => void onResDrop(e, 'resourcepacks')}
+            >
+              <Icon name="download" size={22} className="mx-auto mb-1 opacity-60" />
+              <p className="text-[13px] opacity-80">{t('ins.dropResourceFiles')}</p>
+              <Button
+                size="sm"
+                icon="folder"
+                className="mt-2"
+                onClick={async () => {
+                  const paths = await window.api.shell.pickFiles([
+                    { name: t('ins.filterResourcepacks'), extensions: ['zip'] }
+                  ])
+                  if (paths.length > 0) await installLocalResources(paths, 'resourcepacks')
+                }}
+              >
+                {t('ins.selectLocalFiles')}
+              </Button>
+            </div>
+
             <div className="flex items-center justify-between">
               <span className="headline">{t('ins.resourcepacksCount', { n: resourcePacks.length })}</span>
               <Button
@@ -897,6 +979,7 @@ export function InstanceManagePage({
             ) : (
               visiblePacks.map((p) => {
                 const up = updates[p.path]
+                const pair = modListTitles(p, settings.modTitleStyle)
                 return (
                   <div key={p.path} className="glass-soft flex items-center gap-2 rounded-xl px-3 py-2">
                     {p.iconUrl ? (
@@ -912,8 +995,8 @@ export function InstanceManagePage({
                       <Icon name="image" size={15} className="shrink-0 opacity-60" />
                     )}
                     <div className="min-w-0 flex-1" title={p.description ?? p.name}>
-                      <div className="truncate text-[13px] font-medium leading-tight">{p.displayName ?? p.name}</div>
-                      {p.displayName && <div className="caption truncate leading-tight">{p.name}</div>}
+                      <div className="truncate text-[13px] font-medium leading-tight">{pair.title}</div>
+                      {pair.detail && <div className="caption truncate leading-tight">{pair.detail}</div>}
                     </div>
                     {up && (
                       <span className="caption shrink-0" title={`${up.title} · ${up.slug}`}>
@@ -960,21 +1043,54 @@ export function InstanceManagePage({
                 )
               })
             )}
-
-            {settings.mode !== 'local' && (
-              <OnlineInstaller
-                type="resourcepack"
-                versionId={versionId}
-                mcVersion={mcSel}
-                onMcVersionChange={setMcSel}
-                onDone={handleInstalled}
-              />
-            )}
           </div>
         )}
 
         {tab === 'shaders' && (
           <div className="space-y-3">
+            {settings.mode !== 'local' && (
+              <OnlineInstaller
+                type="shader"
+                versionId={versionId}
+                mcVersion={mcSel}
+                onMcVersionChange={setMcSel}
+                loaders={[
+                  { value: 'iris', label: 'Iris' },
+                  { value: 'optifine', label: 'OptiFine' }
+                ]}
+                loader={shaderLoader}
+                onLoaderChange={setShaderLoader}
+                onDone={handleInstalled}
+              />
+            )}
+
+            <div
+              className={`rounded-2xl border-2 border-dashed p-5 text-center transition-colors ${resDragOver ? 'opacity-80' : ''}`}
+              style={{ borderColor: resDragOver ? 'var(--fill-primary)' : 'var(--divider)' }}
+              onDragOver={(e) => {
+                e.preventDefault()
+                setResDragOver(true)
+              }}
+              onDragLeave={() => setResDragOver(false)}
+              onDrop={(e) => void onResDrop(e, 'shaderpacks')}
+            >
+              <Icon name="download" size={22} className="mx-auto mb-1 opacity-60" />
+              <p className="text-[13px] opacity-80">{t('ins.dropShaderFiles')}</p>
+              <Button
+                size="sm"
+                icon="folder"
+                className="mt-2"
+                onClick={async () => {
+                  const paths = await window.api.shell.pickFiles([
+                    { name: t('ins.filterShaders'), extensions: ['zip'] }
+                  ])
+                  if (paths.length > 0) await installLocalResources(paths, 'shaderpacks')
+                }}
+              >
+                {t('ins.selectLocalFiles')}
+              </Button>
+            </div>
+
             <div className="flex items-center justify-between">
               <span className="headline">{t('ins.shadersCount', { n: shaders.length })}</span>
               <Button size="sm" icon="folder" onClick={() => void window.api.manage.openDir(versionId, 'shaderpacks').then(openFileManager)}>
@@ -988,6 +1104,7 @@ export function InstanceManagePage({
             ) : (
               visibleShaders.map((s) => {
                 const up = updates[s.path]
+                const pair = modListTitles(s, settings.modTitleStyle)
                 return (
                   <div key={s.path} className="glass-soft flex items-center gap-2 rounded-xl px-3 py-2">
                     {s.iconUrl ? (
@@ -1003,8 +1120,8 @@ export function InstanceManagePage({
                       <Icon name="palette" size={15} className="shrink-0 opacity-60" />
                     )}
                     <div className="min-w-0 flex-1" title={s.description ?? s.name}>
-                      <div className="truncate text-[13px] font-medium leading-tight">{s.displayName ?? s.name}</div>
-                      {s.displayName && <div className="caption truncate leading-tight">{s.name}</div>}
+                      <div className="truncate text-[13px] font-medium leading-tight">{pair.title}</div>
+                      {pair.detail && <div className="caption truncate leading-tight">{pair.detail}</div>}
                     </div>
                     {up && (
                       <span className="caption shrink-0" title={`${up.title} · ${up.slug}`}>
@@ -1050,22 +1167,6 @@ export function InstanceManagePage({
                   </div>
                 )
               })
-            )}
-
-            {settings.mode !== 'local' && (
-              <OnlineInstaller
-                type="shader"
-                versionId={versionId}
-                mcVersion={mcSel}
-                onMcVersionChange={setMcSel}
-                loaders={[
-                  { value: 'iris', label: 'Iris' },
-                  { value: 'optifine', label: 'OptiFine' }
-                ]}
-                loader={shaderLoader}
-                onLoaderChange={setShaderLoader}
-                onDone={handleInstalled}
-              />
             )}
           </div>
         )}
@@ -1159,7 +1260,7 @@ export function InstanceManagePage({
 }
 
 function ModDetailSheet({ mod, onClose }: { mod: ModEntry; onClose: () => void }): JSX.Element {
-  const { t } = useApp()
+  const { t, settings } = useApp()
   const [versions, setVersions] = useState<ModrinthVersion[]>([])
   const [loading, setLoading] = useState(true)
 
@@ -1187,7 +1288,7 @@ function ModDetailSheet({ mod, onClose }: { mod: ModEntry; onClose: () => void }
     }
   }, [mod.slug])
 
-  const title = mod.displayName ?? mod.name
+  const { title, detail } = modListTitles(mod, settings.modTitleStyle)
 
   return (
     <motion.div
@@ -1232,7 +1333,7 @@ function ModDetailSheet({ mod, onClose }: { mod: ModEntry; onClose: () => void }
           )}
           <div className="min-w-0 flex-1">
             <h2 className="title selectable">{title}</h2>
-            {mod.displayName && <p className="caption mt-0.5 truncate">{mod.name}</p>}
+            {detail && <p className="caption mt-0.5 truncate">{detail}</p>}
           </div>
           <div className="flex shrink-0 items-center gap-2">
             {mod.slug && (

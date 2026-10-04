@@ -232,16 +232,6 @@ export function MultiplayerSettings({ onBack }: { onBack: () => void }): JSX.Ele
           </div>
         </Card>
 
-        {/* ============ 应用启动 ============ */}
-        <Card icon="play" color="var(--fill-primary)" title={t('mp.set.card.app')} desc={t('mp.set.card.appDesc')}>
-          <Toggle label={t('mp.set.autoStartup')} desc={t('mp.set.autoStartupDesc')} checked={false} onChange={() => undefined} disabled />
-          <Toggle label={t('mp.set.alwaysOnTop')} desc={t('mp.set.alwaysOnTopDesc')} checked={false} onChange={() => undefined} disabled />
-          <Toggle label={t('mp.set.rememberPos')} desc={t('mp.set.rememberPosDesc')} checked={false} onChange={() => undefined} disabled />
-          <Toggle label={t('mp.set.closeToTray')} desc={t('mp.set.closeToTrayDesc')} checked={false} onChange={() => undefined} disabled />
-          <Toggle label={t('mp.set.startMinimized')} desc={t('mp.set.startMinimizedDesc')} checked={false} onChange={() => undefined} disabled />
-          <Toggle label={t('mp.set.gpu')} desc={t('mp.set.gpuDesc')} checked={false} onChange={() => undefined} disabled />
-        </Card>
-
         {/* ============ 自动大厅 ============ */}
         <Card icon="users" color="var(--fill-primary)" title={t('mp.set.card.autoLobby')} desc={t('mp.set.card.autoLobbyDesc')}>
           <Toggle
@@ -547,11 +537,17 @@ export function MultiplayerSettings({ onBack }: { onBack: () => void }): JSX.Ele
             />
           </div>
           <div className="mt-2 space-y-2">
-            {(['soundNewMsg', 'soundJoined', 'soundLeft'] as const).map((k) => (
-              <div key={k} className="glass-soft flex items-center gap-3 rounded-2xl p-2.5">
-                <span className="flex-1 text-[13px] font-medium">{t(`mp.set.${k}`)}</span>
-                <span className="chip">{t('mp.set.soundDefault')}</span>
-                <Switch checked onChange={() => undefined} disabled />
+            {([
+              ['soundNewMsg', 'multiplayerSoundNewMsg'],
+              ['soundJoined', 'multiplayerSoundJoined'],
+              ['soundLeft', 'multiplayerSoundLeft']
+            ] as const).map(([labelKey, settingKey]) => (
+              <div key={labelKey} className="glass-soft flex items-center gap-3 rounded-2xl p-2.5">
+                <span className="flex-1 text-[13px] font-medium">{t(`mp.set.${labelKey}`)}</span>
+                <Switch
+                  checked={s[settingKey]}
+                  onChange={(v) => set(settingKey, v)}
+                />
               </div>
             ))}
           </div>
