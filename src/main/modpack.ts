@@ -16,10 +16,12 @@ import type {
 } from '@shared/types'
 import { streamDownload } from './stream-download'
 import { netRequest } from './broker'
+import { ProgressReporter, computePercent } from './transfer-util'
 import { CLASS_DIR, cfClassIds, cfFileById, cfFilesByIds, type CfFile } from './curseforge'
 import { defaultCurseforgeKey } from './curseforge-key'
 import { resolveVersionJson, createVanillaInstance } from './versions'
 import { installVersion } from './downloader'
+import { effectiveConcurrency } from './network-profile'
 import { loaderVersions, installLoader } from './loaders'
 import { forgeVersions, installForge } from './forge'
 import { pickInstallerJava, requiredJavaForMc } from './java'
@@ -525,9 +527,11 @@ async function downloadInstance(
 ): Promise<void> {
   const s = settings.get()
   const json = await resolveVersionJson(id, gameDir)
-  await installVersion(json, gameDir, s.maxDownloadConcurrency, (p) => {
+  // 按「下载加速档位」换算实际并发：无线网络下自动收敛连接数，避免拥塞反而更慢。
+  const eff = effectiveConcurrency(s.downloadAcceleration, s.downloadConnections, s.maxDownloadConcurrency)
+  await installVersion(json, gameDir, eff.fileConcurrency, (p) => {
     onProgress({ ...p, taskId: 'modpack' })
-  }, signal, s.downloadConnections)
+  }, signal, eff.connections)
 }
 
 async function installInstance(
@@ -623,74 +627,55 @@ async function applyModpackFiles(
   const files = parsed.files
   const total = files.length
   // 清单声明的模组文件按目标路径去重；在下载结束（CurseFile 改名完成后）据此校验落盘。
-  let done = 0
-  let doneBytes = 0
-  let totalBytes = 0
-
-  let speed = 0
-  let lastSpeedAt = Date.now()
-  let lastSpeedBytes = 0
-  const EMIT_INTERVAL = 80
-  let lastEmitAt = 0
-  let emitTimer: ReturnType<typeof setTimeout> | null = null
   let latestLabel = ''
-  let finished = false
 
-  const sendProgress = (): void => {
-    if (finished) return
-    emitTimer = null
-    const now = Date.now()
-    const delta = now - lastSpeedAt
-    const bytes = doneBytes - lastSpeedBytes
-    lastSpeedAt = now
-    lastSpeedBytes = doneBytes
-    if (delta > 0) {
-      const inst = bytes / delta
-      speed = inst > 0 ? Math.max(0, Math.min(inst * 1000, 1024 * 1024 * 1024)) : speed * 0.5
+  // 速度统计 + 80ms 节流上报统一走 ProgressReporter（与 downloader.ts 共用同一实现）。
+  const reporter = new ProgressReporter({
+    emit: (snap) => {
+      onProgress({
+        taskId: 'modpack',
+        task: latestLabel || '整合包文件',
+        current: snap.done,
+        total: snap.total,
+        currentBytes: snap.doneBytes,
+        totalBytes: snap.totalBytes,
+        phase: 'mod',
+        percent: computePercent(snap),
+        speed: snap.speed
+      })
     }
-    lastEmitAt = now
-    const percent =
-      totalBytes > 0
-        ? Math.min(100, Math.round((doneBytes / totalBytes) * 100))
-        : total > 0
-          ? Math.min(100, Math.round((done / total) * 100))
-          : 0
-    onProgress({
-      taskId: 'modpack',
-      task: latestLabel || '整合包文件',
-      current: done,
-      total,
-      currentBytes: doneBytes,
-      totalBytes,
-      phase: 'mod',
-      percent,
-      speed: Math.round(speed)
-    })
-  }
+  })
+  reporter.setTotals(0, total)
 
   const emit = (label: string, force = false): void => {
     latestLabel = label
-    if (force) {
-      if (emitTimer != null) {
-        clearTimeout(emitTimer)
-        emitTimer = null
-      }
-      sendProgress()
-      return
-    }
-    const now = Date.now()
-    if (now - lastEmitAt >= EMIT_INTERVAL) {
-      sendProgress()
-    } else if (emitTimer == null) {
-      emitTimer = setTimeout(sendProgress, EMIT_INTERVAL)
-    }
+    reporter.report(force)
   }
 
-  const concurrency = Math.max(1, settings.get().maxDownloadConcurrency || 1)
+  const concurrency = Math.max(
+    1,
+    effectiveConcurrency(
+      settings.get().downloadAcceleration,
+      settings.get().downloadConnections,
+      settings.get().maxDownloadConcurrency
+    ).fileConcurrency || 1
+  )
   // CurseForge 文件先用官方 API 批量解析（文件名 / 下载地址 / 校验信息 / 落点目录），
   // 剩下的漏网条目由下面的老兜底逐个处理。
   await preResolveCurseFiles(files, signal)
   let index = 0
+  /**
+   * 按文件记账：每个文件的字节贡献用「当前总量覆盖」而非累加。
+   * 校验失败会 `rm` 后重下（最多 3 轮 × 多候选源），若全局 `doneBytes += n`，
+   * 同一文件的字节会被重复计入 → 进度/速度虚高。
+   */
+  const fileBytes = new Map<(typeof files)[number], number>()
+  const accountBytes = (f: (typeof files)[number], bytes: number): number => {
+    const prev = fileBytes.get(f) ?? 0
+    if (bytes === prev) return 0
+    fileBytes.set(f, bytes)
+    return bytes - prev
+  }
   const workers = Array.from({ length: Math.min(concurrency, Math.max(1, total)) }, async () => {
     for (;;) {
       if (signal?.aborted) return
@@ -708,21 +693,21 @@ async function applyModpackFiles(
         }
       }
       if (!f.url) {
-        done++
+        reporter.incDone()
         emit(latestLabel)
         continue
       }
       // 路径安全：去除首尾分隔符、拒绝目录穿越
       const rel = normRelPath(f.path)
       if (!rel || rel.split('/').some((s) => s === '..' || s === '')) {
-        done++
+        reporter.incDone()
         emit(latestLabel)
         continue
       }
       const dest = join(runDir, ...rel.split('/'))
       // 可选文件（MCBBS AddonFile）以 overrides 为准：已存在则跳过，避免重复下载
       if (f.optional && existsSync(dest)) {
-        done++
+        reporter.incDone()
         emit(rel)
         continue
       }
@@ -740,19 +725,27 @@ async function applyModpackFiles(
       // 避免把损坏的模组留在实例里（对应「最后几个模组不完整」）。
       let lastErr: unknown = null
       for (let attempt = 1; attempt <= 3 && !signal?.aborted; attempt++) {
+        // 每轮（含候选源切换）从 0 起算本文件的字节，用覆盖口径写回。
+        let fileDownloaded = 0
         for (const candidate of candidates) {
           await fsp.rm(dest, { force: true }).catch(() => {})
           try {
             await streamDownload(candidate, dest, {
               signal,
               headers: f.headers,
-              connections: settings.get().downloadConnections,
+              // 按加速档位换算连接数：无线网络下自动收敛，避免拥塞拖慢。
+              connections: effectiveConcurrency(
+                settings.get().downloadAcceleration,
+                settings.get().downloadConnections,
+                settings.get().maxDownloadConcurrency
+              ).connections,
               onBytes: (n) => {
-                doneBytes += n
+                fileDownloaded += n
+                reporter.addDoneBytes(accountBytes(f, fileDownloaded))
                 emit(rel)
               },
               onSize: (s) => {
-                totalBytes += s
+                reporter.addTotalBytes(s)
                 emit(rel)
               }
             })
@@ -760,6 +753,9 @@ async function applyModpackFiles(
             break
           } catch (e) {
             lastErr = e
+            // 候选源失败：本次尝试的字节清零，避免把上一次残留计入下一轮。
+            reporter.addDoneBytes(accountBytes(f, 0))
+            fileDownloaded = 0
           }
         }
         if (lastErr) continue
@@ -780,13 +776,13 @@ async function applyModpackFiles(
         // 可选文件（MCBBS AddonFile）下载失败不中断导入：overrides 里通常已包含该文件
         if (f.optional) {
           onLog(`[整合包] 下载 ${rel} 失败，已跳过：${(e as Error).message}`)
-          done++
+          reporter.incDone()
           emit(rel)
           continue
         }
         throw e
       }
-      done++
+      reporter.incDone()
       emit(rel)
     }
   })
@@ -812,11 +808,7 @@ async function applyModpackFiles(
     if (expectedMods.size > 0) onLog(`[整合包] 模组数量校验通过：${expectedMods.size}/${expectedMods.size}`)
   } finally {
     // 结束后丢弃所有尚未发出的节流上报，避免残留定时器在返回后「复活」渲染端进度条。
-    finished = true
-    if (emitTimer != null) {
-      clearTimeout(emitTimer)
-      emitTimer = null
-    }
+    reporter.finish()
   }
 }
 
@@ -958,7 +950,12 @@ export async function downloadModpack(
   try {
     await streamDownload(url, tmp, {
       signal,
-      connections: settings.get().downloadConnections,
+      // 按加速档位换算连接数：无线网络下自动收敛，避免拥塞拖慢。
+      connections: effectiveConcurrency(
+        settings.get().downloadAcceleration,
+        settings.get().downloadConnections,
+        settings.get().maxDownloadConcurrency
+      ).connections,
       onSize: (size) => {
         total = size
         emit()

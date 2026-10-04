@@ -8,8 +8,9 @@ import {
   useState,
   type ReactNode
 } from 'react'
-import type { HomepageUpdate, LauncherSettings, MinecraftAccount, UpdateInfo, VersionDir } from '@shared/types'
+import type { AgreementStatus, Announcement, HomepageUpdate, LauncherSettings, MinecraftAccount, UpdateInfo, VersionDir } from '@shared/types'
 import { dataUrlToBlobUrl, detectWallpaperTone } from './wallpaper'
+import { selectPendingAnnouncements, seenPatch } from './announcement'
 import { createTranslator, isLocale, type Locale, type TFunction } from './i18n'
 
 /**
@@ -74,6 +75,22 @@ interface AppState {
    */
   launcherUpdateNotice: UpdateInfo | null
   dismissLauncherUpdateNotice: () => void
+  /**
+   * 主页安全检测是否由原生（Rust）内核承担：true=原生、false=回退 TS、null=尚未探测。
+   * 为 false 时由外层在顶部显示非侵入式提示。
+   */
+  homepageSecurityNative: boolean | null
+  /**
+   * 是否需要（重新）同意协议：首次使用，或服务端协议内容发生变化。
+   * 由启动时的协议版本核对（agreementStatus）决定；核对完成前按「从未同意」判断。
+   */
+  needAgreement: boolean
+  /** 协议版本核对结果（含正文与版本指纹）；null 表示尚未完成核对。 */
+  agreementStatus: AgreementStatus | null
+  /** 本次启动要展示的公告（已按展示范围与时机筛选、排序）；空数组表示无。 */
+  announcements: Announcement[]
+  /** 关闭公告弹窗：把已展示的公告记入 announcementSeen 并清空待展示列表。 */
+  dismissAnnouncements: () => Promise<void>
   reloadAccounts: () => Promise<void>
   selectAccount: (id: string) => Promise<void>
   removeAccount: (id: string) => Promise<void>
@@ -113,10 +130,23 @@ export function AppProvider({ children }: { children: ReactNode }): JSX.Element 
   const [lowUsageNotice, setLowUsageNotice] = useState(false)
   const [homepageUpdates, setHomepageUpdates] = useState<HomepageUpdate[]>([])
   const [launcherUpdateNotice, setLauncherUpdateNotice] = useState<UpdateInfo | null>(null)
+  /**
+   * 主页安全检测是否由原生（Rust）内核承担：true=原生、false=回退 TS、null=尚未探测。
+   * 为 false 时顶部给出非侵入式提示（缺原生产物 / 旧版原生库 / 加载失败）。
+   */
+  const [homepageSecurityNative, setHomepageSecurityNative] = useState<boolean | null>(null)
+  /** 协议版本核对结果；null 表示尚未完成核对。 */
+  const [agreementStatus, setAgreementStatus] = useState<AgreementStatus | null>(null)
+  /** 本次启动要展示的公告。 */
+  const [announcements, setAnnouncements] = useState<Announcement[]>([])
   // 启动自动检查只跑一次：React 严格模式下 effect 会重复触发，用 ref 兜底。
   const startupCheckStarted = useRef(false)
+  // 公告拉取只跑一次（同上，避免严格模式重复请求）。
+  const announcementStarted = useRef(false)
   // 首次启动的硬件检测只跑一次：React 严格模式下 effect 会重复触发，用 ref 兜底。
   const hardwareProbeStarted = useRef(false)
+  // 主页安全检测引擎探测只跑一次（同上，避免严格模式重复请求）。
+  const securityEngineProbeStarted = useRef(false)
   /**
    * 壁纸整体色调（实验性「背景自适应明暗」用）：'light' / 'dark'；未设壁纸、采样失败
    * 或功能关闭时为 null（此时仍由 theme 决定明暗）。
@@ -354,6 +384,56 @@ export function AppProvider({ children }: { children: ReactNode }): JSX.Element 
     }
   }, [settings, refreshHomepageUpdates])
 
+  /**
+   * 启动时（设置就绪后）核对协议版本并拉取公告，各跑一次：
+   *   1. 协议版本核对 → 决定是否需要（重新）同意；
+   *   2. 公告拉取 → 按「展示范围 + 时机」筛选出本次要弹出的公告。
+   * 本地模式不联网：协议仅按「从未同意」判断，公告直接跳过。
+   */
+  useEffect(() => {
+    if (!settings || announcementStarted.current) return
+    announcementStarted.current = true
+    void window.api.about
+      .agreementStatus()
+      .then(setAgreementStatus)
+      .catch(() =>
+        setAgreementStatus({ version: '', needsConsent: !settings.agreementAcceptedAt, content: null })
+      )
+    if (settings.mode === 'local') return
+    void window.api.about
+      .announcements()
+      .then((list) =>
+        setAnnouncements(
+          selectPendingAnnouncements(list, {
+            display: settings.announcementDisplay,
+            seen: settings.announcementSeen ?? {}
+          })
+        )
+      )
+      .catch(() => undefined)
+  }, [settings])
+
+  /**
+   * 探测主页安全检测引擎（是否使用原生 Rust 内核），设置就绪后只跑一次。
+   * 探测失败按「未使用 Rust」处理并给出提示，避免静默降级（与安全相关的降级不应被隐藏）。
+   */
+  useEffect(() => {
+    if (!settings || securityEngineProbeStarted.current) return
+    securityEngineProbeStarted.current = true
+    void window.api.homepage
+      .securityEngine()
+      .then((r) => setHomepageSecurityNative(r.native === true))
+      .catch(() => setHomepageSecurityNative(false))
+  }, [settings])
+
+  /** 关闭公告弹窗：把本次展示的公告记入 seen（避免「发布后首次开启」重复弹出）并清空列表。 */
+  const dismissAnnouncements = useCallback(async () => {
+    const patch = seenPatch(announcements)
+    setAnnouncements([])
+    if (Object.keys(patch).length === 0) return
+    await updateSettings({ announcementSeen: { ...(settings?.announcementSeen ?? {}), ...patch } })
+  }, [announcements, settings, updateSettings])
+
   const value = useMemo<AppState>(
     () => ({
       ready: settings !== null,
@@ -364,7 +444,12 @@ export function AppProvider({ children }: { children: ReactNode }): JSX.Element 
         language: 'zh-CN',
         memoryMb: 4096,
         maxDownloadConcurrency: 8,
-        downloadConnections: 64,
+        downloadConnections: 16,
+        downloadAcceleration: 'auto',
+        downloadSource: 'auto',
+        versionListSource: 'auto',
+        communitySource: 'auto',
+        modTitleStyle: 'translated-first',
         gameDir: '',
         versionDirs: [],
         selectedVersionDirId: '',
@@ -386,8 +471,13 @@ export function AppProvider({ children }: { children: ReactNode }): JSX.Element 
         disabledVersions: [],
         isolatedVersions: [],
         agreementAcceptedAt: 0,
+        agreementAcceptedVersion: '',
+        announcementDisplay: 'all',
+        announcementSeen: {},
         onboardingDone: false,
         debugMode: false,
+        debugKey: '',
+        feedbackLogConsent: false,
         metadataOnlyMods: false,
         homepageId: '',
         selectedVersionId: '',
@@ -413,6 +503,9 @@ export function AppProvider({ children }: { children: ReactNode }): JSX.Element 
         multiplayerLobbyPassword: '',
         multiplayerCustomNodes: [],
         multiplayerSoundVolume: 0.8,
+        multiplayerSoundNewMsg: true,
+        multiplayerSoundJoined: true,
+        multiplayerSoundLeft: true,
         multiplayerDndEnabled: false,
         multiplayerDndStart: 1320,
         multiplayerDndEnd: 480,
@@ -428,6 +521,8 @@ export function AppProvider({ children }: { children: ReactNode }): JSX.Element 
         multiplayerHudEnabled: false,
         multiplayerHudOpacity: 0.8,
         multiplayerVoiceChanger: 'off',
+        multiplayerMicDeviceId: '',
+        multiplayerSpeakerDeviceId: '',
         multiplayerTheme: 'system',
         multiplayerStatsMinutes: 0,
         multiplayerJoinCount: 0,
@@ -451,11 +546,17 @@ export function AppProvider({ children }: { children: ReactNode }): JSX.Element 
       refreshHomepageUpdates,
       launcherUpdateNotice,
       dismissLauncherUpdateNotice,
+      homepageSecurityNative,
+      // 协议核对完成前，按「从未同意过」判断（新用户立即弹窗；老用户核对完成前不弹）。
+      needAgreement: agreementStatus ? agreementStatus.needsConsent : !(settings?.agreementAcceptedAt),
+      agreementStatus,
+      announcements,
+      dismissAnnouncements,
       reloadAccounts,
       selectAccount,
       removeAccount
     }),
-    [settings, locale, t, accounts, selectedAccount, theme, securityAlert, raiseSecurityAlert, clearSecurityAlert, fileManagerPath, fileManagerSeq, openFileManager, closeFileManager, reloadSettings, updateSettings, lowUsageNotice, dismissLowUsageNotice, homepageUpdates, refreshHomepageUpdates, launcherUpdateNotice, dismissLauncherUpdateNotice, reloadAccounts, selectAccount, removeAccount]
+    [settings, locale, t, accounts, selectedAccount, theme, securityAlert, raiseSecurityAlert, clearSecurityAlert, fileManagerPath, fileManagerSeq, openFileManager, closeFileManager, reloadSettings, updateSettings, lowUsageNotice, dismissLowUsageNotice, homepageUpdates, refreshHomepageUpdates, launcherUpdateNotice, dismissLauncherUpdateNotice, homepageSecurityNative, agreementStatus, announcements, dismissAnnouncements, reloadAccounts, selectAccount, removeAccount]
   )
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>

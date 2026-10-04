@@ -1213,6 +1213,27 @@ textarea.input {
   box-shadow: 0 0 0 3px rgba(10, 132, 255, 0.25);
 }
 
+/* --- 行内下拉触发器（.select-seamless）：去掉底色，与所在行融为一体 ---
+   版本目录等「行内选择器」原先在「原毛玻璃 / 仿 Mac」是 --fill-secondary 灰底、在
+   「3D 云母 / Win10」又与行底同色 —— 三套皮肤观感不一，且灰底在这一行偏突兀。
+   这里统一改成无缝：不设底色/描边/内阴影，只靠文字与右侧箭头指示，悬停时才浮出
+   一层极淡底色提示可点。未分层，优先级高于 @layer components 里的 .input 基础样式，
+   并排在皮肤复位规则之后，三套皮肤表现一致。 */
+.glass-soft .select-seamless,
+.glass-soft .select-seamless:focus {
+  background-color: transparent;
+  background-image: none;
+  border-color: transparent;
+  box-shadow: none;
+  backdrop-filter: none;
+}
+.glass-soft .select-seamless:hover {
+  background-color: var(--fill-secondary);
+}
+.glass-soft .select-seamless:focus-visible {
+  box-shadow: 0 0 0 3px rgba(10, 132, 255, 0.25);
+}
+
 /* --- Win10 桌面：Segoe UI + 扁平化配色 + 桌面/任务栏/窗口变量 --- */
 [data-skin='win10'] body {
   font-family: 'Segoe UI Variable Text', 'Segoe UI', 'Microsoft YaHei', system-ui, sans-serif;

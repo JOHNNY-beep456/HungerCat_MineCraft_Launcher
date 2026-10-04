@@ -6,6 +6,7 @@ import type { ModrinthProject, ModrinthProjectDetail, ModrinthSearchResult, Modr
 import { netRequest } from './broker'
 import { settings } from './store'
 import { streamDownload } from './stream-download'
+import { effectiveConcurrency } from './network-profile'
 
 /**
  * Modrinth API client. Modrinth provides a keyless REST API;
@@ -175,7 +176,12 @@ export async function installMod(
   await streamDownload(fileUrl, dest, {
     signal,
     sizeHint,
-    connections: settings.get().downloadConnections,
+    // 按加速档位换算连接数：无线网络下自动收敛，避免拥塞拖慢。
+    connections: effectiveConcurrency(
+      settings.get().downloadAcceleration,
+      settings.get().downloadConnections,
+      settings.get().maxDownloadConcurrency
+    ).connections,
     onBytes: (n) => {
       received += n
       onProgress?.(received, total)
@@ -201,7 +207,12 @@ export async function downloadTo(
   await streamDownload(fileUrl, destPath, {
     signal,
     sizeHint,
-    connections: settings.get().downloadConnections,
+    // 按加速档位换算连接数：无线网络下自动收敛，避免拥塞拖慢。
+    connections: effectiveConcurrency(
+      settings.get().downloadAcceleration,
+      settings.get().downloadConnections,
+      settings.get().maxDownloadConcurrency
+    ).connections,
     onBytes: (n) => {
       received += n
       onProgress?.(received, total)
@@ -212,4 +223,45 @@ export async function downloadTo(
     }
   })
   return destPath
+}
+
+/**
+ * 游戏内离线翻译模组（MCAutoTranslationTool）的固定下载地址与文件名。
+ *
+ * 与 Fabric API 不同，该模组不在 Modrinth 上，站长要求从固定直链下载，
+ * 因此这里硬编码地址；文件名由 URL 末段推导，便于后续版本号替换。
+ */
+export const OFFLINE_TRANSLATE_URL =
+  'https://test13121314.cn-nb2.rains3.com/MCAutoTranslationTool-1.3.11-fabric-all.jar'
+
+/** 从下载地址推导文件名（取路径末段，去掉查询串）。 */
+function filenameFromUrl(url: string): string {
+  const noQuery = url.split('?')[0]
+  const seg = noQuery.split('/').pop() || ''
+  return seg || 'MCAutoTranslationTool.jar'
+}
+
+/**
+ * 安装游戏内离线翻译模组到指定实例的 mods 目录。
+ *
+ * 复用 installMod 的目录编排与下载逻辑（与 Fabric API 落入同一 mods 目录）；
+ * 该模组依赖 Fabric + Fabric API，调用方需自行保证前置条件。
+ */
+export async function installOfflineTranslate(
+  gameDir: string,
+  versionId: string,
+  isolated: boolean,
+  onProgress?: (received: number, total: number) => void,
+  signal?: AbortSignal
+): Promise<string> {
+  return installMod(
+    OFFLINE_TRANSLATE_URL,
+    filenameFromUrl(OFFLINE_TRANSLATE_URL),
+    gameDir,
+    versionId,
+    isolated,
+    'mod',
+    onProgress,
+    signal
+  )
 }

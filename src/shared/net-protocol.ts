@@ -19,10 +19,27 @@ export type NetRequestMessage =
   /** 按 ref 取消一个在途操作（Abort 传播） */
   | { type: 'abort'; ref: number }
 
+/**
+ * 结构化错误载荷：跨进程传递的错误必须是**结构**而非文案。
+ *
+ * 早先只传 `err.message`，主进程只能靠 `/HTTP[^\d]*404/` 之类的正则去猜语义，
+ * 改一个文案就断链。这里把决策真正需要的字段显式带过边界：
+ *   - `code`     稳定枚举（mirror 回退 / 取消 / 超时 / 未知）
+ *   - `status`   HTTP 状态码（若适用）
+ *   - `retryAfter` 服务端 Retry-After（秒，若适用）
+ * `message` 仍保留，仅用于日志 / UI 展示，**不再参与任何逻辑判断**。
+ */
+export interface NetErrorPayload {
+  code: 'http' | 'cancelled' | 'timeout' | 'network' | 'unknown'
+  message: string
+  status?: number
+  retryAfter?: string
+}
+
 /** 网络进程 → 后端(broker) */
 export type NetResponseMessage =
   | { type: 'result'; ref: number; ok: true; data?: unknown }
-  | { type: 'result'; ref: number; ok: false; error: string }
+  | { type: 'result'; ref: number; ok: false; error: string; code?: NetErrorPayload['code']; status?: number; retryAfter?: string }
   | { type: 'progress'; ref: number; taskId: string; data: unknown }
 
 /** 网络进程内某个网络操作执行时获得的上下文。 */

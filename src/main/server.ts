@@ -1,9 +1,10 @@
 // 远程服务端 JSON 请求（about/agreement/update）已迁至网络进程（server:api）；
 // 更新文件网络下载走 streamDownload（broker 代理网络进程）。runUpdate/spawn 仍为本进程编排。
 import { existsSync, promises as fsp } from 'fs'
+import { createHash } from 'crypto'
 import { join } from 'path'
 import { spawn } from 'child_process'
-import type { AboutGroup, AgreementContent, DownloadProgress, UpdateInfo } from '@shared/types'
+import type { AboutGroup, AgreementContent, Announcement, DownloadProgress, UpdateInfo } from '@shared/types'
 import { netRequest } from './broker'
 import { streamDownload } from './stream-download'
 
@@ -28,6 +29,26 @@ export async function fetchAbout(): Promise<AboutGroup[]> {
 /** 获取隐私政策与用户协议（服务端下发）。 */
 export function fetchAgreement(): Promise<AgreementContent> {
   return apiGet<AgreementContent>('agreement')
+}
+
+/**
+ * 计算协议内容的版本指纹：隐私政策 + 用户协议的 SHA256。
+ *
+ * 用「内容指纹」而非服务端时间戳，是为了任何一处文字改动都能触发重新同意；
+ * 时间戳可能因未更新而漏判。正文全为空时返回空串（视为「无内容」，不强制同意）。
+ */
+export function agreementVersion(content: AgreementContent | null | undefined): string {
+  const privacy = content?.privacy ?? ''
+  const terms = content?.terms ?? ''
+  if (!privacy.trim() && !terms.trim()) return ''
+  return createHash('sha256').update(`${privacy}\u0000${terms}`).digest('hex').slice(0, 32)
+}
+
+/** 拉取服务端公告列表（服务端返回 { announcements: [...] } 或直接数组）。 */
+export async function fetchAnnouncements(): Promise<Announcement[]> {
+  const data = await apiGet<{ announcements?: Announcement[] } | Announcement[]>('announcement')
+  if (Array.isArray(data)) return data
+  return Array.isArray(data?.announcements) ? data.announcements : []
 }
 
 /** 获取服务端发布的最新版本信息。 */
@@ -81,11 +102,6 @@ export function compareVersions(a: string, b: string): number {
   if (!pb.pre) return -1
   if (pa.pre.tag !== pb.pre.tag) return pa.pre.tag > pb.pre.tag ? 1 : -1
   return pa.pre.num - pb.pre.num
-}
-
-/** 判断版本号是否为预发布（测试）版：主版本后带 `-`，如 0.5.0-dev1、0.5.0-beta12。 */
-export function isPrerelease(version: string): boolean {
-  return /^\s*v?\d+(?:\.\d+)*-\S/.test(version.trim())
 }
 
 function filenameFrom(info: UpdateInfo): string {

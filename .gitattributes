@@ -1,0 +1,16 @@
+# 换行符策略：Windows 批处理文件必须使用 CRLF。
+#
+# 背景：cmd.exe 解析 .bat 时按「行」读取，且只认 CRLF 换行。
+# 若 .bat 被存成 LF（例如 core.autocrlf 归一、或在 Linux 侧提交后检出），
+# cmd 会把多行粘在一起，导致 chcp / setlocal / goto / 标签 全部解析失败，
+# 表现为「双击一闪而过、什么都不执行」。
+#
+# 因此这里强制 .bat/.cmd 一律以 CRLF 检出，避免该问题复发。
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# PowerShell 脚本保持 LF 即可（PowerShell 两种换行都能正确解析）。
+*.ps1 text eol=lf
+
+# 其余文本文件统一按 LF 存放（跨平台友好）；二进制由 Git 自行识别。
+* text=auto

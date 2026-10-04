@@ -6,7 +6,9 @@ import { useRuntimeActions } from '../runtime'
 import { Button, Icon, LoadingState, Markdown, Segmented, Select, Spinner } from '../components/ui'
 import { VersionsPage } from './VersionsPage'
 import { useAutoTranslate } from '../translate'
+import { compileMarkdown } from '../markdown-translate'
 import { useApp } from '../store'
+import { modTitlePair } from '../mod-title'
 import type { TFunction } from '../i18n'
 
 export type Tab = 'mod' | 'resourcepack' | 'shader' | 'modpack' | 'versions'
@@ -282,7 +284,13 @@ function Browser({ type }: { type: BrowseTab }): JSX.Element {
         ) : (
           <>
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3">
-              {results.map((p, i) => (
+              {results.map((p, i) => {
+                // 标题/详情：优先用 MC百科 中文名按「Mod 管理样式」呈现；
+                // 没有中文名时退回原有的「可选机器翻译」。
+                const pair = p.translatedName
+                  ? modTitlePair(p.title, p.translatedName, settings.modTitleStyle)
+                  : { title: settings.translateResourceNames ? tr(p.title) : p.title }
+                return (
                 <motion.button
                   key={`${p.source ?? 'modrinth'}:${p.slug}`}
                   initial={{ opacity: 0, y: 8 }}
@@ -293,7 +301,8 @@ function Browser({ type }: { type: BrowseTab }): JSX.Element {
                 >
                   <ModIcon url={p.icon_url} />
                   <div className="min-w-0 flex-1">
-                    <div className="truncate text-[14px] font-semibold">{settings.translateResourceNames ? tr(p.title) : p.title}</div>
+                    <div className="truncate text-[14px] font-semibold">{pair.title}</div>
+                    {pair.detail && <div className="caption truncate">{pair.detail}</div>}
                     <p className="caption mt-0.5 line-clamp-2">{tr(p.description)}</p>
                     <div className="mt-2 flex items-center gap-2">
                       <span className="chip">{t('res.downloadsCount', { n: formatCount(p.downloads) })}</span>
@@ -310,7 +319,8 @@ function Browser({ type }: { type: BrowseTab }): JSX.Element {
                     </div>
                   </div>
                 </motion.button>
-              ))}
+                )
+              })}
             </div>
             {loadingMore && (
               <div className="flex items-center justify-center gap-2 py-4">
@@ -464,7 +474,16 @@ function ProjectDetail({
       <div className="glass flex items-start gap-4 rounded-[24px] p-5">
         <ModIcon url={project.icon_url} size={72} />
         <div className="min-w-0 flex-1">
-          <h2 className="title">{settings.translateResourceNames ? trDetail(project.title) : project.title}</h2>
+          <h2 className="title">
+            {project.translatedName && settings.modTitleStyle === 'translated-first'
+              ? project.translatedName
+              : settings.translateResourceNames
+                ? trDetail(project.title)
+                : project.title}
+          </h2>
+          {project.translatedName && (
+            <p className="caption selectable mt-0.5 truncate">{project.title}</p>
+          )}
           <p className="caption mt-1 line-clamp-3 selectable">{trDetail(project.description)}</p>
           <div className="mt-2 flex items-center gap-2">
             <span className="chip">{t('res.downloadsCount', { n: formatCount(project.downloads) })}</span>
@@ -582,22 +601,6 @@ function ProjectDetail({
   )
 }
 
-/** 「完整介绍」正文按空行切段，并标记哪些段落需要翻译（代码块段落跳过）。 */
-function splitIntro(body: string): Array<{ text: string; translate: boolean }> {
-  if (!body.trim()) return []
-  const out: Array<{ text: string; translate: boolean }> = []
-  let inCode = false
-  for (const raw of body.split(/\n{2,}/)) {
-    const text = raw.trim()
-    if (!text) continue
-    const fences = (text.match(/```/g) ?? []).length
-    const inside = inCode
-    if (fences % 2 === 1) inCode = !inCode
-    out.push({ text, translate: !inside && fences === 0 })
-  }
-  return out
-}
-
 /** 资源「完整介绍」弹窗：打开时拉取 Modrinth 详情，按段落翻译后渲染 Markdown。 */
 function ProjectIntroModal({ project, onClose }: { project: ModrinthProject; onClose: () => void }): JSX.Element {
   const { t, settings } = useApp()
@@ -627,22 +630,23 @@ function ProjectIntroModal({ project, onClose }: { project: ModrinthProject; onC
     }
   }, [project.slug, attempt])
 
-  // 逐段翻译：标题与简介一并交给同一 hook，代码块段落跳过。
-  // 关闭「翻译资源名」时标题传空串（hook 会跳过），只翻译简介与正文。
-  const segments = useMemo(() => splitIntro(detail?.body ?? ''), [detail?.body])
+  // Markdown 感知的翻译：只翻译纯文本片段，代码块 / 行内代码 / 链接 URL / 行首标记原样保留，
+  // 避免通用翻译引擎改写 Markdown 语法导致「翻译后渲染成纯文本」。
+  // 标题与简介一并交给同一 hook；关闭「翻译资源名」时标题传空串（hook 会跳过）。
+  const built = useMemo(() => compileMarkdown(detail?.body ?? ''), [detail?.body])
   const translatables = useMemo(
     () => [
       settings.translateResourceNames ? project.title : '',
       project.description,
-      ...segments.filter((s) => s.translate).map((s) => s.text)
+      ...built.texts
     ],
-    [segments, project.title, project.description, settings.translateResourceNames]
+    [built, project.title, project.description, settings.translateResourceNames]
   )
   const tr = useAutoTranslate(translatables)
 
   const body = (detail?.body ?? '').trim()
-  // Markdown 的渲染与清理交给共享的 Markdown 组件；这里只负责把段落翻译结果拼成原文。
-  const mdText = body ? segments.map((s) => (s.translate ? tr(s.text) : s.text)).join('\n\n') : ''
+  // 回填译文后交给共享 Markdown 组件渲染：结构片段原样，只有文字被替换。
+  const mdText = body ? built.rebuild((s) => tr(s)) : ''
 
   return (
     <motion.div
@@ -665,7 +669,16 @@ function ProjectIntroModal({ project, onClose }: { project: ModrinthProject; onC
         <div className="mb-4 flex items-start gap-3">
           <ModIcon url={project.icon_url} size={56} />
           <div className="min-w-0 flex-1">
-            <h2 className="title truncate">{settings.translateResourceNames ? tr(project.title) : project.title}</h2>
+            <h2 className="title truncate">
+              {project.translatedName && settings.modTitleStyle === 'translated-first'
+                ? project.translatedName
+                : settings.translateResourceNames
+                  ? tr(project.title)
+                  : project.title}
+            </h2>
+            {project.translatedName && (
+              <p className="caption selectable truncate">{project.title}</p>
+            )}
             <p className="caption mt-0.5 line-clamp-2">{tr(project.description)}</p>
           </div>
           <button

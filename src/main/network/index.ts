@@ -10,12 +10,13 @@
 // 结果/进度（主进程在 child.on('message') 收到）。协议见 shared/net-protocol.ts。
 // ---------------------------------------------------------------------------
 
-import { BMCLAPI, OFFICIAL } from '../mirror'
+import { BMCLAPI, OFFICIAL, getVersionListStrategy, manifestUrls } from '../mirror'
 import { streamDownload } from './stream-download'
 import { nativeStreamDownload } from '../native-downloader'
 import { translateTexts, testUapisKey } from './translate'
 import type {
   LoaderKind,
+  McmodHit,
   ModrinthProject,
   ModrinthProjectDetail,
   ModrinthSearchResult,
@@ -24,7 +25,7 @@ import type {
   VersionJson,
   VersionManifest
 } from '@shared/types'
-import type { NetHandler, NetHandlerCtx, NetRequestMessage, NetResponseMessage } from '@shared/net-protocol'
+import type { NetErrorPayload, NetHandler, NetHandlerCtx, NetRequestMessage, NetResponseMessage } from '@shared/net-protocol'
 
 const UA = { 'User-Agent': 'HungerCatLauncher/0.1' }
 
@@ -50,8 +51,11 @@ interface RawManifestVersion {
 }
 
 /**
- * 拉取版本清单：**官方源优先**，官方不可达 / 出错时回退 BMCLAPI 镜像。
- * 原先由用户选择的镜像源设置已移除，改为自动策略。
+ * 拉取版本清单：按「版本列表源」策略给出有序候选，逐个尝试。
+ *
+ * `manifestUrls()` 已按策略排序（镜像优先 / 官方优先 / 自动），这里只需顺序试：
+ * 任一来源不可达或返回异常就落到下一个 —— 既满足「加载缓慢时换镜像」，
+ * 也满足「镜像缺少刚更新的版本时落回官方」。
  */
 async function fetchVersionManifest(): Promise<VersionManifest> {
   const parse = (raw: unknown): VersionManifest => {
@@ -67,13 +71,25 @@ async function fetchVersionManifest(): Promise<VersionManifest> {
         }))
     }
   }
-  try {
-    // 统一 10s 超时：避免版本清单请求挂起导致启动器卡死。
-    return parse(await fetchJson(OFFICIAL.manifest, AbortSignal.timeout(10_000)))
-  } catch (err) {
-    console.warn(`[网络] 官方源版本清单不可用，回退 BMCLAPI：${err instanceof Error ? err.message : String(err)}`)
-    return parse(await fetchJson(BMCLAPI.manifest, AbortSignal.timeout(10_000)))
+  const urls = manifestUrls()
+  let lastErr: unknown = null
+  for (let i = 0; i < urls.length; i++) {
+    try {
+      // 统一 10s 超时：避免版本清单请求挂起导致启动器卡死。
+      const data = parse(await fetchJson(urls[i], AbortSignal.timeout(10_000)))
+      // 清单可能为空 / 缺 latest（镜像同步未完成的典型症状）：视为该来源不可用。
+      if (!data.latest?.release || data.versions.length === 0) throw new Error('清单内容为空')
+      return data
+    } catch (err) {
+      lastErr = err
+      if (i + 1 < urls.length) {
+        console.warn(
+          `[网络] 版本清单来源不可用，切换下一个：${err instanceof Error ? err.message : String(err)}`
+        )
+      }
+    }
   }
+  throw lastErr instanceof Error ? lastErr : new Error('版本清单获取失败')
 }
 
 /** 通过指定源的版本清单定位并拉取版本 JSON（清单里的 entry.url 为该源的版本 JSON 地址）。 */
@@ -89,21 +105,122 @@ function fetchVersionJsonFromManifest(id: string, manifestUrl: string): Promise<
 
 /**
  * 获取单个原版版本 JSON（不含 inheritsFrom 合并；合并仍由主进程 resolveVersionJson 承担）。
- * 策略：**官方源优先**（经官方清单定位 entry.url），失败后再回退 BMCLAPI
- * （先用其直连版本 JSON 接口，失败再经 BMCLAPI 清单）。
+ *
+ * 候选按「版本列表源」策略排序：
+ *   - 官方项只能经清单定位（`versionJsonCandidates` 里官方传 null 时这里补齐）；
+ *   - 镜像项有 `/version/<id>/json` 直连接口，取不到时再退回镜像清单。
+ * 任一候选失败即尝试下一个，全部失败才报错。
  */
 async function fetchRawVersionJson(id: string): Promise<VersionJson> {
-  try {
-    return await fetchVersionJsonFromManifest(id, OFFICIAL.manifest)
-  } catch (err) {
-    console.warn(`[网络] 官方源缺少版本 ${id} 的 JSON，回退 BMCLAPI：${err instanceof Error ? err.message : String(err)}`)
+  const strategy = getVersionListStrategy()
+  // 官方候选：只有「经清单定位」这一条路，故其 URL 以清单表示；镜像候选可直接取 JSON。
+  const ordered: Array<() => Promise<VersionJson>> = []
+  if (strategy === 'mirror-first') {
+    ordered.push(() => fetchJson(BMCLAPI.versionJson!(id), AbortSignal.timeout(10_000)) as Promise<VersionJson>)
+    ordered.push(() => fetchVersionJsonFromManifest(id, BMCLAPI.manifest))
+    ordered.push(() => fetchVersionJsonFromManifest(id, OFFICIAL.manifest))
+  } else if (strategy === 'official-first') {
+    ordered.push(() => fetchVersionJsonFromManifest(id, OFFICIAL.manifest))
+  } else {
+    ordered.push(() => fetchVersionJsonFromManifest(id, OFFICIAL.manifest))
+    ordered.push(() => fetchJson(BMCLAPI.versionJson!(id), AbortSignal.timeout(10_000)) as Promise<VersionJson>)
+    ordered.push(() => fetchVersionJsonFromManifest(id, BMCLAPI.manifest))
   }
-  // BMCLAPI 快速接口：直连 version/<id>/json（尚未同步时再退回其清单路径）。
-  try {
-    return (await fetchJson(BMCLAPI.versionJson(id), AbortSignal.timeout(10_000))) as VersionJson
-  } catch {
-    return fetchVersionJsonFromManifest(id, BMCLAPI.manifest)
+
+  let lastErr: unknown = null
+  for (let i = 0; i < ordered.length; i++) {
+    try {
+      return await ordered[i]()
+    } catch (err) {
+      lastErr = err
+      if (i + 1 < ordered.length) {
+        console.warn(`[网络] 版本 JSON 来源不可用，切换下一个：${err instanceof Error ? err.message : String(err)}`)
+      }
+    }
   }
+  throw lastErr instanceof Error ? lastErr : new Error(`版本 ${id} 的 JSON 获取失败`)
+}
+
+/* ------------------------------------------------------------------ */
+/* MC百科（mcmod.cn）：中文名 / 译名来源                                 */
+/*                                                                     */
+/* 为什么自己抓页面：MC百科没有公开 API，但搜索页 `search.mcmod.cn/s` 是  */
+/* 免登录可访问的静态 HTML（实测 200），解析成本低、稳定性可接受。        */
+/* 抓到的条目提供：中文名（译名）、原文名（英文名）、条目地址。          */
+/* 网络 IO 一律留在网络进程，主进程只做编排。                            */
+/* ------------------------------------------------------------------ */
+
+/** 浏览器 UA：MC百科对默认 UA 可能返回不同页面，固定一个桌面 UA 更稳。 */
+const MCMOD_UA =
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
+
+/** 解码 HTML 实体里我们可能遇到的少量字符。 */
+function decodeEntities(s: string): string {
+  return s
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#0?39;|&apos;/g, "'")
+}
+
+/**
+ * 解析 MC百科搜索结果页。
+ *
+ * 页面结构（实测）：
+ * ```html
+ * <div class="result-item">
+ *   <div class="head">
+ *     <div class="class-category">…</div>
+ *     <a target="_blank" href="https://www.mcmod.cn/class/2785.html">钠 (<em>Sodium</em>)</a>
+ *   </div>
+ *   <div class="body">…</div>
+ *   <div class="foot">…</div>
+ * </div>
+ * ```
+ * 中文名在 `<a>` 文本的主干，英文名在其中的 `<em>` 里。
+ */
+export function parseMcmodSearch(html: string): McmodHit[] {
+  const out: McmodHit[] = []
+  // 以 result-item 切分，逐条解析；限制条数避免异常页面产生海量结果。
+  const items = html.split('<div class="result-item">').slice(1, 41)
+  for (const raw of items) {
+    const seg = raw.split('<div class="result-item">')[0]
+    const m = /href="https:\/\/www\.mcmod\.cn\/(class|modpack)\/(\d+)\.html"[^>]*>([\s\S]*?)<\/a>/.exec(seg)
+    if (!m) continue
+    const kind = m[1] as 'class' | 'modpack'
+    const id = m[2]
+    const inner = m[3]
+    // 去掉所有标签后的纯文本，形如「钠 · 扩展 ( Sodium Extra )」。
+    // 用空串拼接（而非空格）：搜索页会把命中的关键词用标签包起来
+    // （实测「机械动力」渲染成 `机械<em>动力</em>`），若用空格替换会得到
+    // 「机械 动力」这种被插了空格的错误译名。
+    const plain = decodeEntities(inner.replace(/<[^>]+>/g, '')).replace(/\s+/g, ' ').trim()
+    // 中文名 = 括号前的主干；英文名 = 括号内。
+    // 注意**不能**只取 <em> 内容：`钠 · 扩展 (<em>Sodium</em> Extra)` 里只有首词被 <em> 包住，
+    // 取整个括号内容才能得到完整的 "Sodium Extra"。
+    const zh = plain.split(/[（(]/)[0].trim()
+    const paren = /[（(]([^）)]*)[）)]\s*$/.exec(plain)
+    const en = (paren?.[1] ?? '').trim() || decodeEntities((/<em>([\s\S]*?)<\/em>/.exec(inner)?.[1] ?? '').replace(/<[^>]+>/g, '')).trim()
+    if (!zh && !en) continue
+    out.push({ id, kind, nameZh: zh || en, nameEn: en || zh, url: `https://www.mcmod.cn/${kind}/${id}.html` })
+  }
+  return out
+}
+
+/** 搜索 MC百科（结果页免登录）。返回空数组表示无结果；网络异常时抛错由调用方兜底。 */
+async function mcmodSearch(query: string): Promise<McmodHit[]> {
+  const q = query.trim()
+  if (!q) return []
+  const url = `https://search.mcmod.cn/s?key=${encodeURIComponent(q)}&filter=0`
+  const res = await fetch(url, {
+    headers: { 'User-Agent': MCMOD_UA, Accept: 'text/html' },
+    signal: AbortSignal.timeout(8000),
+    redirect: 'follow'
+  })
+  if (!res.ok) throw new Error(`MC百科搜索失败 (HTTP ${res.status})`)
+  return parseMcmodSearch(await res.text())
 }
 
 /* ------------------------------------------------------------------ */
@@ -381,6 +498,43 @@ async function yggdrasilMeta(server: string): Promise<string | undefined> {
   const data = (await res.json()) as { meta?: { serverName?: unknown } }
   const name = data.meta?.serverName
   return typeof name === 'string' && name.trim() ? name.trim() : undefined
+}
+
+/* ------------------------------------------------------------------ */
+/* 全局连接预算                                                        */
+/*                                                                     */
+/* 问题：installVersion / modpack / java / modrinth 等队列各自为政，    */
+/* 每个文件又各开 connections 条连接，8 文件 × 64 连接 = 512 并发 TCP，  */
+/* 对 CDN 是打爆（触发 429），对本机是端口/内存浪费。                    */
+/* 做法：在网络进程（唯一的网络出口）用一个全局信号量统一发放连接预算，   */
+/* 所有下载任务共享同一上限，跨队列协调。                               */
+/* ------------------------------------------------------------------ */
+
+/** 进程内总连接预算：所有并发下载共享。128 是「够快但不会打爆 CDN」的折中。 */
+const GLOBAL_CONNECTION_BUDGET = 128
+let budgetUsed = 0
+const budgetWaiters: Array<() => void> = []
+
+/** 申请 n 条连接预算，返回实际获批数量（至少 1，避免饿死）。 */
+async function acquireConnections(n: number): Promise<number> {
+  const want = Math.max(1, Math.floor(n) || 1)
+  for (;;) {
+    if (budgetUsed >= GLOBAL_CONNECTION_BUDGET) {
+      await new Promise<void>((resolve) => budgetWaiters.push(resolve))
+      continue
+    }
+    const granted = Math.min(want, GLOBAL_CONNECTION_BUDGET - budgetUsed)
+    budgetUsed += granted
+    return granted
+  }
+}
+
+/** 归还连接预算并唤醒等待者。 */
+function releaseConnections(n: number): void {
+  budgetUsed = Math.max(0, budgetUsed - n)
+  // 唤醒当前所有等待者，让它们重新竞争（简单且不会漏唤醒）。
+  const waiters = budgetWaiters.splice(0, budgetWaiters.length)
+  for (const w of waiters) w()
 }
 
 function requireCryptoClientToken(): string {
@@ -790,6 +944,8 @@ const handlers: Record<string, NetHandler> = {
   'net:fetchText': (p: FetchTextParams, ctx: NetHandlerCtx) => netFetchText(p, ctx),
   'net:detectFilename': (p: DetectFilenameParams) => netDetectFilename(p),
   'download:sha1': (p: Sha1Params) => netSha1(p),
+  // MC百科：中文名 / 译名来源（免登录抓搜索页）。
+  'mcmod:search': (p: { query: string }) => mcmodSearch(p.query),
   'translate:texts': (p: { texts: string[]; target: string; apiKey?: string }) => translateTexts(p),
   'translate:testKey': (p: { apiKey: string }) => testUapisKey(p.apiKey),
   'auth:deviceBegin': (p: DeviceBeginParams) => msDeviceBegin(p),
@@ -797,32 +953,69 @@ const handlers: Record<string, NetHandler> = {
   'auth:chain': (p: { msAccessToken: string }) => msChain(p.msAccessToken),
   'auth:refreshToken': (p: RefreshTokenParams) => msRefreshToken(p),
   'stream:download': async (p: StreamDownloadParams, ctx: NetHandlerCtx) => {
-    const onBytes = (n: number): void => ctx.emit({ kind: 'bytes', n })
-    const onSize = (s: number): void => ctx.emit({ kind: 'size', s })
+    // 进度就地节流：TS 回退路径此前**每个网络 chunk 一次 ctx.emit**，64 连接下把
+    // 高频 IPC 反序列化直接打进主进程。这里在唯一的出口处合并到 ~100ms 一次。
+    // （原生路径自身已有 120ms 节流，两条路径口径一致，主进程无需再补偿。）
+    const PROGRESS_INTERVAL = 100
+    let lastEmitAt = 0
+    let pendingBytes = 0
+    let pendingSize: number | undefined
+    const flush = (force: boolean): void => {
+      const now = Date.now()
+      if (!force && now - lastEmitAt < PROGRESS_INTERVAL) return
+      if (pendingSize !== undefined) {
+        ctx.emit({ kind: 'size', s: pendingSize })
+        pendingSize = undefined
+      }
+      if (pendingBytes > 0) {
+        ctx.emit({ kind: 'bytes', n: pendingBytes })
+        pendingBytes = 0
+      }
+      lastEmitAt = now
+    }
+    const onBytes = (n: number): void => {
+      pendingBytes += n
+      flush(false)
+    }
+    const onSize = (s: number): void => {
+      pendingSize = s
+      flush(false)
+    }
 
-    // 优先走原生（Rust）下载内核：32 连接 + 原生 TLS，比 JS 侧更省 CPU/内存。
-    // 返回 null 表示当前平台没有编译好的原生库 —— 这不是错误，自动回退到 TS 实现。
-    // 若原生路径抛错（HTTP/网络错误），直接上抛给上层 downloader.ts 走既有镜像回退与重试。
-    const native = await nativeStreamDownload(p.url, p.dest, {
-      signal: ctx.signal,
-      sizeHint: p.sizeHint,
-      headers: p.headers,
-      connections: p.connections,
-      onBytes,
-      onSize
-    })
+    // 全局连接预算：把本次下载的连接数纳入进程级统一上限，跨队列协调。
+    // 小文件本来也只走单连接，这里按请求并发数申请即可；获批数可能小于请求值。
+    const granted = await acquireConnections(p.connections ?? 64)
+    try {
+      // 优先走原生（Rust）下载内核：多连接 + 原生 TLS，比 JS 侧更省 CPU/内存。
+      // 返回 null 表示当前平台没有编译好的原生库 —— 这不是错误，自动回退到 TS 实现。
+      // 若原生路径抛错（HTTP/网络错误），直接上抛给上层 downloader.ts 走既有镜像回退与重试。
+      const native = await nativeStreamDownload(p.url, p.dest, {
+        signal: ctx.signal,
+        sizeHint: p.sizeHint,
+        headers: p.headers,
+        connections: granted,
+        onBytes,
+        onSize
+      })
 
-    if (native) return { ok: true, native: true, bytes: native.bytes, parallel: native.parallel }
+      if (native) {
+        flush(true)
+        return { ok: true, native: true, bytes: native.bytes, parallel: native.parallel }
+      }
 
-    await streamDownload(p.url, p.dest, {
-      signal: ctx.signal,
-      sizeHint: p.sizeHint,
-      headers: p.headers,
-      connections: p.connections,
-      onBytes,
-      onSize
-    })
-    return { ok: true }
+      await streamDownload(p.url, p.dest, {
+        signal: ctx.signal,
+        sizeHint: p.sizeHint,
+        headers: p.headers,
+        connections: granted,
+        onBytes,
+        onSize
+      })
+      flush(true)
+      return { ok: true }
+    } finally {
+      releaseConnections(granted)
+    }
   }
 }
 
@@ -863,10 +1056,30 @@ function handleRequest(req: {
   working
     .then(
       (data) => post({ type: 'result', ref: req.ref, ok: true, data }),
-      (err) =>
-        post({ type: 'result', ref: req.ref, ok: false, error: err instanceof Error ? err.message : String(err) })
+      (err) => {
+        // 结构化错误：code/status/retryAfter 显式跨进程，主进程不再靠正则猜语义。
+        const e = err as { status?: number; retryAfter?: string; code?: string }
+        post({
+          type: 'result',
+          ref: req.ref,
+          ok: false,
+          error: err instanceof Error ? err.message : String(err),
+          code: normalizeErrorCode(e),
+          status: typeof e.status === 'number' ? e.status : undefined,
+          retryAfter: typeof e.retryAfter === 'string' ? e.retryAfter : undefined
+        })
+      }
     )
     .finally(() => aborts.delete(req.ref))
+}
+
+/** 把传输层抛出的错误归一成稳定 code（供 broker/主进程做镜像回退等决策）。 */
+function normalizeErrorCode(e: { status?: number; code?: string }): NetErrorPayload['code'] {
+  if (e.code === 'cancelled' || e.code === 'timeout' || e.code === 'network' || e.code === 'http') {
+    return e.code
+  }
+  if (typeof e.status === 'number') return 'http'
+  return 'unknown'
 }
 
 function onParentMessage(msg: NetRequestMessage): void {

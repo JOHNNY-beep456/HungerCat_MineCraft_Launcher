@@ -2,6 +2,7 @@ import { existsSync, promises as fsp } from 'fs'
 import { join } from 'path'
 import { gunzipSync } from 'zlib'
 import type { InstalledVersion } from '@shared/types'
+import { nativeScanDirs } from './native-downloader'
 
 function runDir(gameDir: string, versionId: string, isolated: boolean): string {
   return isolated ? join(gameDir, 'versions', versionId) : gameDir
@@ -45,6 +46,11 @@ function keepExisting(names: string[], pathOf: (name: string) => string): string
 /** List installed version ids (dirs under versions/ with a matching <id>.json). */
 export async function installedVersions(gameDir: string): Promise<string[]> {
   const versionsDir = join(gameDir, 'versions')
+  // 优先走原生扫描（并行检查 `<目录名>.json`，见 native-downloader.ts / scan.rs）。
+  // 返回 null 表示原生不可用或缺失该能力 —— 此时回退到下面的 TS 实现。
+  // 目录不存在时原生返回空数组（与 TS catch → [] 一致）。排序留在 TS，保证顺序不变。
+  const scanned = await nativeScanDirs(versionsDir, '{name}.json')
+  if (scanned) return scanned.sort()
   let entries
   try {
     entries = await fsp.readdir(versionsDir, { withFileTypes: true })
@@ -58,6 +64,9 @@ export async function installedVersions(gameDir: string): Promise<string[]> {
 /** List single-player worlds (dirs under saves/ containing a level.dat). */
 export async function versionWorlds(gameDir: string, versionId: string, isolated: boolean): Promise<string[]> {
   const savesDir = join(runDir(gameDir, versionId, isolated), 'saves')
+  // 原生优先（并行检查 `level.dat`）；null 回退 TS。排序留在 TS 保证顺序不变。
+  const scanned = await nativeScanDirs(savesDir, 'level.dat')
+  if (scanned) return scanned.sort()
   let entries
   try {
     entries = await fsp.readdir(savesDir, { withFileTypes: true })

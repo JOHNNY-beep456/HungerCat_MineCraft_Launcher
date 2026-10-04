@@ -17,6 +17,7 @@
 import { createHash } from 'crypto'
 import type { HomepageExternal, HomepageMeta, HomepageRisk } from '@shared/types'
 import { mergeAdjacentLiterals, scanHomepageCodeAsync } from '@shared/homepage-runtime'
+import { nativeAnalyzeHomepage } from './native-downloader'
 
 /**
  * 「危险代码」规则表见 @shared/homepage-runtime：主进程的静态检测与渲染层的运行时
@@ -157,9 +158,11 @@ function rememberRisk(key: string, risk: HomepageRisk): void {
  * @param options.library 分析对象是取回的第三方脚本库正文（非主页 HTML 本身）：
  *   跳过 UMD 包装相关的 Node 能力规则，且不把代码里的普通地址当成「链接的外部服务」。
  *
- * 规则匹配（含内联 base64 折叠 / 相邻字面量合并）统一由 @shared/homepage-runtime 的
- * scanHomepageCodeAsync 完成，与渲染层的运行时检测共用同一份规则表。静态检测不截断——
- * 脚本落地时已有体积上限，截断只会给「把载荷放到上限之后」留下绕过空间（F-01）。
+ * 规则匹配（含内联 base64 折叠 / 相邻字面量合并）优先交给原生内核（见
+ * native/downloader/src/homepage.rs）：把整份脚本的规则扫描搬到 Rust，主进程不再被这段
+ * 长任务占用（旧 TS 实现要靠 scanHomepageCodeAsync 分片让出事件循环）。原生库不可用
+ * 或缺少该导出时（老版本 .node）自动回退到 TS 实现，两条路径的判定结果必须一致。
+ * 静态检测不截断——脚本落地时已有体积上限，截断只会给「把载荷放到上限之后」留下绕过空间（F-01）。
  */
 export async function analyzeScript(
   source: string,
@@ -174,9 +177,32 @@ export async function analyzeScript(
     riskCache.set(key, cached)
     return cached
   }
-  const risk = await analyzeScriptUncached(source, scope, options)
+  const risk = await analyzeViaNativeOrTs(source, scope, options)
   rememberRisk(key, risk)
   return risk
+}
+
+/**
+ * 优先用原生内核检测；原生不可用 / 无该导出 / 调用失败时回退 TS 实现。
+ *
+ * 原生返回的外链**不排序**（Rust 的字节序排序与 JS 的 localeCompare 不同），
+ * 这里统一按 `url.localeCompare` 排序，保证与 TS 实现的外链顺序逐条一致。
+ */
+async function analyzeViaNativeOrTs(
+  source: string,
+  scope: 'code' | 'library',
+  options?: { library?: boolean }
+): Promise<HomepageRisk> {
+  const native = await nativeAnalyzeHomepage(source, scope === 'library')
+  if (!native) return analyzeScriptUncached(source, scope, options)
+  const level: HomepageRisk['level'] =
+    native.level === 'reject' || native.level === 'warn' || native.level === 'safe'
+      ? native.level
+      : 'warn'
+  const externals: HomepageExternal[] = native.externals
+    .map((e) => ({ url: e.url, kind: e.kind, code: e.code || undefined }))
+    .sort((a, b) => a.url.localeCompare(b.url))
+  return { level, blocks: native.blocks, externals }
 }
 
 /** 未命中缓存时的真实检测流程。 */

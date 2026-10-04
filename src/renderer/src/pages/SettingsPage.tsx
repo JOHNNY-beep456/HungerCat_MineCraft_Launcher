@@ -8,7 +8,7 @@ import type {
   UpdateInfo
 } from '@shared/types'
 import { useApp } from '../store'
-import { Button, Icon, Markdown, ProgressBar, Segmented, Switch } from '../components/ui'
+import { Button, Icon, Markdown, ProgressBar, Segmented, Select, Switch } from '../components/ui'
 import { dataUrlToBlobUrl } from '../wallpaper'
 import { LOCALES, type TFunction } from '../i18n'
 
@@ -281,6 +281,55 @@ export function SettingsPage(): JSX.Element {
       setApiKeyResult({ ok: false, message: err instanceof Error ? err.message : String(err) })
     } finally {
       setApiKeyBusy(false)
+    }
+  }
+
+  // ── 调试密钥 ────────────────────────────────────────────────────────────
+  // 站长在后台随机生成、可选可用次数；用户填入后即可把当前诊断日志上传到服务端排查。
+  // 输入框始终为空：密钥属于敏感信息，不做回显，需要更换时直接输入新的覆盖。
+  const [debugKeyInput, setDebugKeyInput] = useState('')
+  const [debugKeyBusy, setDebugKeyBusy] = useState(false)
+  const [debugKeyResult, setDebugKeyResult] = useState<{ ok: boolean; message: string } | null>(null)
+
+  /** 上传诊断日志：密钥先落盘（主进程会自动上传一次），保证后续崩溃也能自动回传。 */
+  const submitDebugLogs = async (): Promise<void> => {
+    const key = debugKeyInput.trim()
+    if (!key) {
+      setDebugKeyResult({ ok: false, message: t('settings.debugKey.empty') })
+      return
+    }
+    setDebugKeyBusy(true)
+    setDebugKeyResult(null)
+    try {
+      // 先保存密钥（触发主进程自动上传），再显式上传一次以拿到当前结果。
+      await updateSettings({ debugKey: key })
+      const res = await window.api.debug.submitLogs(key)
+      setDebugKeyResult({
+        ok: res.ok,
+        message: res.ok
+          ? t('settings.debugKey.ok', { n: res.remaining })
+          : t('settings.debugKey.fail')
+      })
+      if (res.ok) setDebugKeyInput('')
+    } catch (err) {
+      setDebugKeyResult({ ok: false, message: err instanceof Error ? err.message : String(err) })
+    } finally {
+      setDebugKeyBusy(false)
+    }
+  }
+
+  /** 清除已保存的调试密钥（停止后续自动上传）。 */
+  const clearDebugKey = async (): Promise<void> => {
+    setDebugKeyBusy(true)
+    setDebugKeyResult(null)
+    try {
+      await updateSettings({ debugKey: '' })
+      setDebugKeyInput('')
+      setDebugKeyResult({ ok: true, message: t('settings.debugKey.cleared') })
+    } catch (err) {
+      setDebugKeyResult({ ok: false, message: err instanceof Error ? err.message : String(err) })
+    } finally {
+      setDebugKeyBusy(false)
     }
   }
 
@@ -966,6 +1015,73 @@ export function SettingsPage(): JSX.Element {
               )}
             </div>
           </Row>
+          <Row label={t('settings.row.debugKey')}>
+            <div className="flex items-center gap-2">
+              <input
+                type="password"
+                value={debugKeyInput}
+                onChange={(e) => {
+                  setDebugKeyInput(e.target.value)
+                  setDebugKeyResult(null)
+                }}
+                placeholder={
+                  settings.debugKey
+                    ? t('settings.debugKey.placeholderSet')
+                    : t('settings.debugKey.placeholder')
+                }
+                spellCheck={false}
+                autoComplete="off"
+                className="input w-56"
+              />
+              <Button
+                size="sm"
+                icon="check"
+                disabled={debugKeyBusy}
+                onClick={() => void submitDebugLogs()}
+              >
+                {debugKeyBusy ? t('settings.debugKey.uploading') : t('settings.debugKey.upload')}
+              </Button>
+              {settings.debugKey && (
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  icon="xmark"
+                  disabled={debugKeyBusy}
+                  onClick={() => void clearDebugKey()}
+                >
+                  {t('settings.debugKey.clear')}
+                </Button>
+              )}
+            </div>
+          </Row>
+          <p className="caption -mt-1">
+            {settings.debugKey
+              ? t('settings.debugKey.statusSet')
+              : t('settings.debugKey.statusUnset')}
+          </p>
+          <p className="caption -mt-1">{t('settings.debugKey.desc')}</p>
+          {settings.feedbackLogConsent && (
+            <div className="glass-soft mt-1 flex items-center gap-2 rounded-xl p-3 text-[13px]">
+              <Icon name="info" size={15} className="opacity-70" />
+              <span className="min-w-0 flex-1 opacity-80">{t('settings.debugKey.consentNotice')}</span>
+              <Button
+                size="sm"
+                variant="ghost"
+                icon="xmark"
+                onClick={() => void updateSettings({ feedbackLogConsent: false, debugMode: false, debugKey: '' })}
+              >
+                {t('settings.debugKey.consentDisable')}
+              </Button>
+            </div>
+          )}
+          {debugKeyResult && (
+            <p
+              className="caption -mt-1"
+              style={{ color: debugKeyResult.ok ? 'var(--fill-success)' : 'var(--fill-danger)' }}
+            >
+              {debugKeyResult.message}
+            </p>
+          )}
           <Row label={t('settings.row.metadataOnly')}>
             <Switch
               checked={settings.mode === 'local' || settings.metadataOnlyMods}
@@ -1046,8 +1162,46 @@ export function SettingsPage(): JSX.Element {
 
         {/* 下载 */}
         <Section title={t('settings.section.download')} icon="download">
+          {/* 来源策略：与 MCTier 一致，分「文件下载源」「版本列表源」两项，各三选一。
+              默认「优先使用官方源，加载缓慢时换用镜像源」，且任何选项都会自动回退。 */}
+          <Row label={t('settings.row.downloadSource')}>
+            <Select
+              value={settings.downloadSource}
+              onChange={(v) => void updateSettings({ downloadSource: v as typeof settings.downloadSource })}
+              options={[
+                { value: 'mirror-first', label: t('settings.source.mirrorFirst') },
+                { value: 'auto', label: t('settings.source.auto') },
+                { value: 'official-first', label: t('settings.source.officialFirst') }
+              ]}
+            />
+          </Row>
+          <Row label={t('settings.row.versionListSource')}>
+            <Select
+              value={settings.versionListSource}
+              onChange={(v) => void updateSettings({ versionListSource: v as typeof settings.versionListSource })}
+              options={[
+                { value: 'mirror-first', label: t('settings.source.mirrorFirstList') },
+                { value: 'auto', label: t('settings.source.auto') },
+                { value: 'official-first', label: t('settings.source.officialFirst') }
+              ]}
+            />
+          </Row>
           {/* 两个维度必须分开呈现，否则用户会以为「改了并发数，单文件下载就该变快」：
               并发数管「同时下几个文件」，连接数管「一个文件开几条连接」。 */}
+          {/* 下载加速档位：直接面向「无线网络慢」的问题——自动档会按实测速率收敛连接数。 */}
+          <Row label={t('settings.row.acceleration')}>
+            <Select
+              value={settings.downloadAcceleration}
+              onChange={(v) =>
+                void updateSettings({ downloadAcceleration: v as typeof settings.downloadAcceleration })
+              }
+              options={[
+                { value: 'auto', label: t('settings.accel.auto') },
+                { value: 'balanced', label: t('settings.accel.balanced') },
+                { value: 'turbo', label: t('settings.accel.turbo') }
+              ]}
+            />
+          </Row>
           <Row label={t('settings.row.concurrency')}>
             <input
               type="number"
@@ -1075,6 +1229,55 @@ export function SettingsPage(): JSX.Element {
             />
           </Row>
           <p className="caption px-1">{t('settings.hint.download')}</p>
+          <p className="caption px-1">{t('settings.hint.source')}</p>
+        </Section>
+
+        {/* 社区资源：模组 / 资源包 / 光影的来源与展示样式 */}
+        <Section title={t('settings.section.community')} icon="box">
+          {/* 中文译名已暂时撤销：来源选项与提示一并置灰说明，避免用户误以为还能选。 */}
+          <p className="caption px-1" style={{ color: 'var(--fill-danger)' }}>
+            {t('settings.communityDisabled')}
+          </p>
+          <Row label={t('settings.row.communitySource')}>
+            <Select
+              value={settings.communitySource}
+              disabled
+              onChange={(v) => void updateSettings({ communitySource: v as typeof settings.communitySource })}
+              options={[
+                { value: 'mirror-first', label: t('settings.source.mirrorFirstList') },
+                { value: 'auto', label: t('settings.communitySource.auto') },
+                { value: 'official-first', label: t('settings.source.officialFirst') }
+              ]}
+            />
+          </Row>
+          <p className="caption px-1">{t('settings.hint.communitySource')}</p>
+          <Row label={t('settings.row.modTitleStyle')}>
+            <Select
+              value={settings.modTitleStyle}
+              disabled
+              onChange={(v) => void updateSettings({ modTitleStyle: v as typeof settings.modTitleStyle })}
+              options={[
+                { value: 'translated-first', label: t('settings.modTitle.translatedFirst') },
+                { value: 'filename-first', label: t('settings.modTitle.filenameFirst') }
+              ]}
+            />
+          </Row>
+          <p className="caption px-1">{t('settings.hint.modTitleStyle')}</p>
+        </Section>
+
+        {/* 公告：启动时展示的范围 */}
+        <Section title={t('settings.section.notice')} icon="message">
+          <Row label={t('settings.row.announcementDisplay')}>
+            <Select
+              value={settings.announcementDisplay}
+              onChange={(v) => void updateSettings({ announcementDisplay: v as typeof settings.announcementDisplay })}
+              options={[
+                { value: 'all', label: t('settings.announcement.all') },
+                { value: 'important-only', label: t('settings.announcement.importantOnly') }
+              ]}
+            />
+          </Row>
+          <p className="caption px-1">{t('settings.hint.announcementDisplay')}</p>
         </Section>
 
         {/* 更新 */}

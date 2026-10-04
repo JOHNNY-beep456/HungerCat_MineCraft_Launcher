@@ -7,10 +7,13 @@ import { Sidebar, type PageId } from './components/Sidebar'
 import { JavaPrompt } from './components/JavaPrompt'
 import { FlyDot } from './components/FlyDot'
 import { AgreementModal } from './components/AgreementModal'
+import { AnnouncementModal } from './components/AnnouncementModal'
 import { OnboardingModal } from './components/OnboardingModal'
 import { SecurityBlockedOverlay } from './components/SecurityBlockedOverlay'
+import { SecurityEngineNotice } from './components/SecurityEngineNotice'
 import { CursorGlow } from './components/CursorGlow'
 import { DownloadOrb } from './components/DownloadOrb'
+import { MultiplayerSession } from './components/MultiplayerSession'
 import { Win10Desktop } from './components/Win10Desktop'
 import { FileManager } from './components/FileManager'
 import { Button, Icon, Markdown } from './components/ui'
@@ -18,13 +21,12 @@ import { renderPage, type ResourcePreset } from './pages/router'
 import { InstanceManagePage } from './pages/InstanceManagePage'
 
 function Shell(): JSX.Element {
-  const { settings, t, reloadAccounts, securityAlert, clearSecurityAlert, fileManagerPath, closeFileManager, lowUsageNotice, dismissLowUsageNotice, launcherUpdateNotice, dismissLauncherUpdateNotice } = useApp()
+  const { settings, t, reloadAccounts, securityAlert, clearSecurityAlert, fileManagerPath, closeFileManager, lowUsageNotice, dismissLowUsageNotice, launcherUpdateNotice, dismissLauncherUpdateNotice, needAgreement, announcements, dismissAnnouncements } = useApp()
   const [page, setPage] = useState<PageId>('home')
   const [managingId, setManagingId] = useState<string | null>(null)
   const [tokenExpiredError, setTokenExpiredError] = useState<string | null>(null)
   const [onboardingOpen, setOnboardingOpen] = useState(false)
   const [resourcePreset, setResourcePreset] = useState<ResourcePreset>(null)
-  const needAgreement = !settings.agreementAcceptedAt
 
   // 首次同意协议后自动弹出新手引导（仅一次；之后通过双击左上角图标再次唤起）。
   useEffect(() => {
@@ -140,6 +142,9 @@ function Shell(): JSX.Element {
           </>
         )}
 
+        {/* 主页安全检测未使用原生（Rust）内核时的顶部非侵入式提示（非桌面模式下才显示） */}
+        {!desktop && <SecurityEngineNotice />}
+
         {/* 自实现资源管理器（非桌面模式）：覆盖层，替代系统文件资源管理器。
             桌面模式下由 Win10Desktop 以「窗口」形式承载，这里不重复渲染。 */}
         <AnimatePresence>
@@ -166,7 +171,16 @@ function Shell(): JSX.Element {
 
         <JavaPrompt />
         <FlyDot />
+        {/* 联机会话大脑：常驻持有语音引擎与提示音（不渲染界面）。
+            挂在 Shell 内是为了在切换页面时通话不断。 */}
+        <MultiplayerSession />
         <AnimatePresence>{needAgreement && <AgreementModal />}</AnimatePresence>
+        {/* 公告：协议处理完后再弹，避免多个弹窗叠在一起。 */}
+        <AnimatePresence>
+          {!needAgreement && announcements.length > 0 && (
+            <AnnouncementModal announcements={announcements} onClose={() => void dismissAnnouncements()} />
+          )}
+        </AnimatePresence>
         <OnboardingModal
           open={onboardingOpen}
           onNavigate={navigate}

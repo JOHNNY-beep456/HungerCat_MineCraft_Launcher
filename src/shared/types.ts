@@ -263,6 +263,8 @@ export interface ModEntry {
   size: number
   /** 识别出的模组显示名（优先 Modrinth 标题，回退到 JAR 元数据中的名称）。 */
   displayName?: string
+  /** 中文译名（来自 MC百科；「社区资源来源」允许时才有）。 */
+  translatedName?: string
   /** Modrinth 项目图标，命中时才有。 */
   iconUrl?: string
   /** Modrinth 项目 slug，命中时才有，用于打开详情页。 */
@@ -331,6 +333,55 @@ export interface LauncherSettings {
    * 服务端（BMCLAPI 等）常按连接限速，此时连接数才是带宽上限。
    */
   downloadConnections: number
+  /**
+   * **下载加速档位**（面向不同网络环境，尤其是无线网络）。
+   *
+   * 背景：并发连接数并非越大越快。无线网络（Wi-Fi）对「同时大量 TCP 连接」非常敏感，
+   * 过多连接会引发丢包 / 重传 / 拥塞崩溃，实测反而比少连接更慢；而稳定的有线 / 光纤
+   * 则能靠多连接吃满带宽。此档位决定「单文件连接数」与「文件并发数」的取值基准：
+   *   - `auto`     依据网络状况自适应（默认）：起步保守，按实测吞吐逐步增减连接；
+   *   - `balanced` 均衡：固定中等并发，适合 Wi-Fi 等共享 / 高延迟链路；
+   *   - `turbo`    极速：固定高并发，适合稳定的有线 / 光纤网络。
+   *
+   * `auto` 下仍会读取 `downloadConnections` / `maxDownloadConcurrency` 作为上限基准，
+   * 但会按实时表现收缩，避免无线网络被连接数压垮。
+   */
+  downloadAcceleration: 'auto' | 'balanced' | 'turbo'
+  /**
+   * **文件下载源**策略（libraries / assets / 客户端 jar / 版本 JSON）。
+   *
+   * 三选项与 MCTier 一致：
+   *   - `mirror-first`   尽量使用镜像源（国内最快，但镜像可能缺少刚更新的版本）
+   *   - `auto`           优先使用官方源，在加载缓慢时换用镜像源（默认）
+   *   - `official-first` 尽量使用官方源
+   *
+   * 所有策略都会自动回退：镜像不可达 / 404 时落回官方源，反之亦然。
+   */
+  downloadSource: 'mirror-first' | 'auto' | 'official-first'
+  /**
+   * **版本列表源**策略（版本清单 / 版本列表）。
+   *
+   * 与 `downloadSource` 分开设置的原因：版本清单体积小、更新频繁，
+   * 用官方源更能拿到「刚刚发布的版本」；而大文件用镜像更快。二者诉求不同。
+   * 取值含义同 `downloadSource`。
+   */
+  versionListSource: 'mirror-first' | 'auto' | 'official-first'
+  /**
+   * **社区资源来源**策略（模组 / 资源包 / 光影的搜索与元数据）。
+   *
+   * 与图「社区资源 / 来源」一致的三选项，镜像侧指 **MC百科**（提供中文名等中文元数据）
+   * 与 **BMCLAPI**（对可镜像的文件做加速，如有）：
+   *   - `mirror-first`   尽量使用镜像源（可能缺少刚刚更新的版本）
+   *   - `auto`           仅在官方源加载缓慢时改用镜像源（默认）
+   *   - `official-first` 尽量使用官方源（不查询 MC百科，因此不显示中文名）
+   */
+  communitySource: 'mirror-first' | 'auto' | 'official-first'
+  /**
+   * **Mod 管理样式**：标题优先显示译名还是文件名。
+   *   - `translated-first` 标题显示译名，详情显示文件名（默认）
+   *   - `filename-first`   标题显示文件名，详情显示译名
+   */
+  modTitleStyle: 'translated-first' | 'filename-first'
   /** 默认版本列表目录（原「游戏目录」）。 */
   gameDir: string
   /** 额外的版本目录（不含默认目录）；可设别名，实例页与主页可切换。 */
@@ -390,10 +441,31 @@ export interface LauncherSettings {
   isolatedVersions: string[]
   /** epoch ms when the user accepted the privacy/terms agreement (0 = not yet). */
   agreementAcceptedAt: number
+  /**
+   * 已同意的协议内容版本（服务端隐私政策 + 用户协议的内容指纹）。
+   * 与当前服务端下发的版本不一致时，需要玩家重新同意（见 AgreementModal）。
+   * 空串表示「未记录版本」（老版本升级上来的用户），首次联网核对时会补记。
+   */
+  agreementAcceptedVersion: string
+  /**
+   * 公告展示范围：
+   *   all            显示所有公告
+   *   important-only 仅显示重要公告
+   */
+  announcementDisplay: 'all' | 'important-only'
+  /**
+   * 已展示过的公告：id → 展示时的发布时间（epoch ms）。
+   * 用于「发布后首次开启时」这一时机：同一公告再次发布（发布时间变化）时会重新弹出。
+   */
+  announcementSeen: Record<string, number>
   /** 是否已完成新手引导；完成后仅在双击左上角图标时再次唤起。 */
   onboardingDone: boolean
-  /** Debug 模式：开启后显示启动日志（右侧控制台），关闭则隐藏并以 PCL 风格进度替代。 */
+  /** Debug 模式：开启后记录启动日志（含主页脚本日志），供「调试密钥」上传排查。 */
   debugMode: boolean
+  /** 调试密钥：站长服务端随机生成、可选可用次数；填写后自动上传诊断日志到服务端。 */
+  debugKey: string
+  /** 用户是否已同意在提交反馈后收集诊断日志（同意后自动开启 debugMode 并回传日志）。 */
+  feedbackLogConsent: boolean
   /** 已安装模组仅识别 JAR 元数据名称、不联网查询 Modrinth；本地模式下强制生效。 */
   metadataOnlyMods: boolean
   /** 当前启用的自定义主页脚本 id；空串表示使用内置「启动游戏」界面。 */
@@ -487,6 +559,10 @@ export interface LauncherSettings {
   multiplayerCustomNodes: Array<{ name: string; address: string }>
   /** 联机 · 提示音音量（0–1）。 */
   multiplayerSoundVolume: number
+  /** 联机 · 各类提示音开关（新消息 / 成员加入 / 成员离开）。 */
+  multiplayerSoundNewMsg: boolean
+  multiplayerSoundJoined: boolean
+  multiplayerSoundLeft: boolean
   /** 联机 · 消息免打扰。 */
   multiplayerDndEnabled: boolean
   /** 联机 · 免打扰起始（自 0 点起的分钟数）。 */
@@ -517,6 +593,10 @@ export interface LauncherSettings {
   multiplayerHudOpacity: number
   /** 联机 · 默认变声器音色。 */
   multiplayerVoiceChanger: string
+  /** 联机 · 偏好的麦克风设备 id（空 = 跟随系统默认设备）。 */
+  multiplayerMicDeviceId: string
+  /** 联机 · 偏好的扬声器（输出）设备 id（空 = 跟随系统默认设备）。 */
+  multiplayerSpeakerDeviceId: string
   /** 联机 · 界面主题偏好（跟随系统 / 亮色 / 暗色）。 */
   multiplayerTheme: 'system' | 'light' | 'dark'
   /** 联机 · 联机时长与统计的本地数据。 */
@@ -536,6 +616,15 @@ export interface DebugLogEntry {
   /** epoch ms */
   ts: number
   level: 'info' | 'warn' | 'error'
+  message: string
+}
+
+/** 调试日志上传结果。 */
+export interface DebugSubmitResult {
+  ok: boolean
+  /** 该密钥剩余可用次数。 */
+  remaining: number
+  /** 供界面展示的结果文案。 */
   message: string
 }
 
@@ -567,6 +656,42 @@ export interface AgreementContent {
   updatedAt?: number
 }
 
+/**
+ * 协议状态：由主进程联网核对后下发。
+ * version 为「隐私政策 + 用户协议」的内容指纹；与服务端最新内容一致时不需要重新同意。
+ */
+export interface AgreementStatus {
+  /** 当前服务端协议内容版本指纹（离线 / 不可达或内容为空时为空串）。 */
+  version: string
+  /** 是否需要（重新）同意：首次使用，或协议内容发生变化。 */
+  needsConsent: boolean
+  /** 当前协议正文；联网失败时为 null（渲染层展示离线提示）。 */
+  content: AgreementContent | null
+}
+
+/** 公告展示时机。 */
+export type AnnouncementTiming = 'every-launch' | 'first-launch-after-publish'
+
+/**
+ * 服务端下发的一条公告。
+ *
+ * - important：是否重要。启动器选择「仅显示重要公告」时只展示这类。
+ * - timing：什么时候显示。every-launch 每次开启都显示；
+ *   first-launch-after-publish 发布后（或再次发布后）首次开启时显示一次。
+ */
+export interface Announcement {
+  id: string
+  title: string
+  /** 正文，支持 Markdown。 */
+  body: string
+  important: boolean
+  timing: AnnouncementTiming
+  /** 发布时间（epoch ms）。 */
+  publishedAt: number
+  /** 更新时间（epoch ms），可选。 */
+  updatedAt?: number
+}
+
 export interface UpdateInfo {
   /** 最新版本号，如 "0.2.0"。 */
   version: string
@@ -578,6 +703,8 @@ export interface UpdateInfo {
   notes?: string
   /** 发布时间（epoch ms），可选。 */
   publishedAt?: number
+  /** 是否为预发布版：由服务端后台勾选决定，为 true 时启动自动检查不弹提示。 */
+  prerelease?: boolean
 }
 
 /** 整合包格式。native 为启动器自带格式。 */
@@ -666,7 +793,7 @@ export interface UpdateCheckResult {
   latest: UpdateInfo | null
   hasUpdate: boolean
   /**
-   * 服务端最新版本是否为测试版（版本号带 `-` 后缀，如 0.5.0-dev1）。
+   * 服务端最新版本是否为预发布版（由服务端后台勾选，启动器不再自行按版本号判断）。
    * 为 true 时启动自动检查不弹提示（仍可由设置页手动检查 / 安装）。
    */
   latestIsPrerelease: boolean
@@ -699,6 +826,8 @@ export interface ResourceFile {
   path: string
   /** Modrinth 项目标题（联网补齐后才有；「仅获取元数据」或本地模式下不联网，恒为空）。 */
   displayName?: string
+  /** 中文译名（来自 MC百科；「社区资源来源」允许时才有）。 */
+  translatedName?: string
   /** Modrinth 项目图标，命中时才有。 */
   iconUrl?: string
   /** Modrinth 项目 slug，命中时才有，用于打开详情页。 */
@@ -770,6 +899,13 @@ export interface ModrinthProject {
   pageUrl?: string
   /** 是否允许第三方渠道下载（CurseForge 的 allowModDistribution；false = 只能去官网下）。 */
   downloadable?: boolean
+  /**
+   * 中文译名（来自 MC百科）。仅在「社区资源来源」允许查询 MC百科时才有。
+   * 用于「标题显示译名」与「按译名搜索」。
+   */
+  translatedName?: string
+  /** MC百科条目地址（有译名时通常一并给出，供「在 MC百科 查看」）。 */
+  mcmodUrl?: string
 }
 
 /** Modrinth 单个项目的完整信息（含 body 完整介绍，用于「完整介绍」弹窗）。 */
@@ -787,6 +923,28 @@ export interface ModrinthProjectDetail {
   source?: ModSource
   /** 项目主页地址（见 ModrinthProject.pageUrl）。 */
   pageUrl?: string
+  /** 中文译名（来自 MC百科，见 ModrinthProject.translatedName）。 */
+  translatedName?: string
+  /** MC百科条目地址。 */
+  mcmodUrl?: string
+}
+
+/**
+ * MC百科（mcmod.cn）搜索命中的一条条目。
+ *
+ * 用于提供中文名（译名）并把中文查询词解析回原文名，从而支持「原名 / 译名均可搜」。
+ */
+export interface McmodHit {
+  /** 条目 id（/class/<id>.html 或 /modpack/<id>.html 中的数字）。 */
+  id: string
+  /** 条目类型：模组条目为 class，整合包为 modpack。 */
+  kind: 'class' | 'modpack'
+  /** 中文名（译名）。 */
+  nameZh: string
+  /** 原文名（英文名）；MC百科未给出时回退为中文名。 */
+  nameEn: string
+  /** 条目地址。 */
+  url: string
 }
 
 /** Modrinth 搜索分页结果。 */
@@ -1032,6 +1190,110 @@ export interface HomepageSubmitResult {
   contentBase64: string
 }
 
+/* ------------------------------------------------------------------ */
+/* 用户反馈                                                             */
+/* ------------------------------------------------------------------ */
+
+/** 服务端当前生效的上传限制（站长可在后台调整，启动器启动时拉取）。 */
+export interface ServerLimits {
+  /** 单个反馈附件大小上限（字节）。 */
+  feedbackMaxBytes: number
+  /** 单条反馈最多附件数量。 */
+  feedbackMaxFiles: number
+  /** 单个主页脚本大小上限（字节）。 */
+  scriptMaxBytes: number
+  /** 反馈关闭/撤销后附件保留天数。 */
+  feedbackRetentionDays: number
+  /** 反馈附件大小的服务端硬上限（字节，仅供界面提示）。 */
+  feedbackMaxBytesCap: number
+  /** 反馈附件数量的服务端硬上限（仅供界面提示）。 */
+  feedbackMaxFilesCap: number
+  /** 主页脚本大小的服务端硬上限（字节，仅供界面提示）。 */
+  scriptMaxBytesCap: number
+  /** 反馈附件保留天数的服务端硬上限（仅供界面提示）。 */
+  feedbackRetentionDaysCap: number
+}
+
+/** 反馈附件（提交时传内容；渲染层只保留文件名与大小用于展示）。 */
+export interface FeedbackFilePayload {
+  /** 原始文件名（服务端会做安全处理）。 */
+  name: string
+  /** 文件内容（base64）。 */
+  contentBase64: string
+}
+
+/** 提交反馈的载荷。 */
+export interface FeedbackSubmitPayload {
+  title: string
+  description: string
+  /** 提交者邮箱（需先经 sendFeedbackCode 验证）。 */
+  email: string
+  /** 邮箱验证码（6 位数字）。 */
+  code: string
+  /** 附件列表（每个 ≤ 3MB，可多个）。 */
+  files: FeedbackFilePayload[]
+  /** 附加诊断信息（如是否附带日志、启动器版本等），可选。 */
+  meta?: Record<string, unknown>
+}
+
+/** 反馈提交结果。 */
+export interface FeedbackSubmitResult {
+  ok: boolean
+  /** 服务端分配的反馈编号（成功时返回）。 */
+  id: string
+  error?: string
+}
+
+/** 发送反馈邮箱验证码的结果。 */
+export interface FeedbackCodeResult {
+  ok: boolean
+  /** 验证码有效期（秒）。 */
+  ttl: number
+  /** 重新发送的冷却时间（秒）。 */
+  cooldown: number
+  error?: string
+}
+
+/** 反馈附件元信息（列表展示用）。 */
+export interface FeedbackFileMeta {
+  name: string
+  size: number
+}
+
+/**
+ * 启动器内展示的单条反馈（用户视角）。
+ *
+ * status：new（未回复）/ replied（已回复）/ closed（后台关闭）/ withdrawn（已撤销）。
+ */
+export interface FeedbackListItem {
+  id: string
+  title: string
+  description: string
+  fileCount: number
+  files: FeedbackFileMeta[]
+  createdAt: number
+  status: 'new' | 'replied' | 'closed' | 'withdrawn'
+  /** 是否已回复。 */
+  replied: boolean
+  reply: string
+  repliedAt: number
+  /** 是否允许用户撤销（仅未回复时可撤销）。 */
+  canWithdraw: boolean
+}
+
+/** 查询反馈列表结果。 */
+export interface FeedbackListResult {
+  ok: boolean
+  feedbacks: FeedbackListItem[]
+  error?: string
+}
+
+/** 撤销反馈结果。 */
+export interface FeedbackWithdrawResult {
+  ok: boolean
+  error?: string
+}
+
 /** The API surface exposed to the renderer through the preload bridge. */
 export interface LauncherApi {
   platform: string
@@ -1048,6 +1310,10 @@ export interface LauncherApi {
     closeWindow: () => Promise<void>
     /** Debug 模式是否开启。 */
     isEnabled: () => Promise<boolean>
+    /** 用调试密钥把当前诊断日志上传到服务端。 */
+    submitLogs: (key: string) => Promise<DebugSubmitResult>
+    /** 渲染层把一条日志转发给主进程（汇入调试日志缓冲，供上传）。 */
+    reportLog: (level: DebugLogEntry['level'], message: string) => void
   }
   auth: {
     begin: () => Promise<DeviceCodeInfo>
@@ -1162,6 +1428,8 @@ export interface LauncherApi {
     ) => Promise<string>
     downloadTo: (fileUrl: string, destPath: string, sizeHint?: number) => Promise<string>
     installFabricApi: (mcVersion: string, versionId: string) => Promise<string>
+    /** 安装「游戏内离线翻译模组」到实例 mods 目录（返回落地路径）。 */
+    installOfflineTranslate: (versionId: string) => Promise<string>
   }
   java: {
     detect: () => Promise<JavaRuntime[]>
@@ -1176,6 +1444,11 @@ export interface LauncherApi {
     toggleMod: (path: string) => Promise<void>
     deleteMod: (path: string) => Promise<void>
     installLocalMod: (versionId: string, sourcePath: string) => Promise<string>
+    installLocalResource: (
+      versionId: string,
+      kind: 'mods' | 'resourcepacks' | 'shaderpacks',
+      sourcePath: string
+    ) => Promise<string>
     deleteWorld: (versionId: string, worldName: string) => Promise<void>
     schematics: (versionId: string) => Promise<SchematicEntry[]>
     deleteFile: (path: string) => Promise<void>
@@ -1227,6 +1500,11 @@ export interface LauncherApi {
     block: (id: string, reason: string) => Promise<void>
     /** 打开主页脚本目录。 */
     openDir: () => Promise<string>
+    /**
+     * 查询主页安全检测当前是否由原生（Rust）内核承担。
+     * 未使用（未编译该平台产物 / 旧版原生库 / 加载失败）时界面给出顶部非侵入式提示。
+     */
+    securityEngine: () => Promise<{ native: boolean }>
     /** 拉取主页市场列表。 */
     market: () => Promise<MarketScript[]>
     /**
@@ -1282,6 +1560,20 @@ export interface LauncherApi {
     /** 订阅开发模式状态变化（到期自动关闭等），返回退订函数。 */
     onChanged: (cb: (s: DevModeStatus) => void) => () => void
   }
+  feedback: {
+    /** 发送反馈邮箱验证码（限流由服务端判定）。 */
+    sendCode: (email: string) => Promise<FeedbackCodeResult>
+    /** 提交反馈（标题 / 描述 / 邮箱验证码 / 附件，附件每个 ≤ 3MB）。 */
+    submit: (payload: FeedbackSubmitPayload) => Promise<FeedbackSubmitResult>
+    /** 查询某邮箱名下的全部反馈（需邮箱验证码，每次查看都要重新验证）。 */
+    list: (email: string, code: string) => Promise<FeedbackListResult>
+    /** 撤销自己的反馈（仅未回复可撤销）。 */
+    withdraw: (email: string, code: string, id: string) => Promise<FeedbackWithdrawResult>
+  }
+  /** 服务端上传限制（反馈附件 / 主页脚本），启动器启动时拉取用于客户端预校验。 */
+  limits: {
+    get: () => Promise<ServerLimits>
+  }
   modpack: {
     probe: (filePath: string) => Promise<ModpackProbe>
     download: (url: string, filename: string) => Promise<string>
@@ -1294,6 +1586,13 @@ export interface LauncherApi {
   about: {
     list: () => Promise<AboutGroup[]>
     agreement: () => Promise<AgreementContent>
+    /**
+     * 联网核对协议版本：返回内容指纹与是否需要（重新）同意，以及协议正文。
+     * 离线 / 不可达时 content 为 null，needsConsent 仅在「从未同意过」时为 true。
+     */
+    agreementStatus: () => Promise<AgreementStatus>
+    /** 拉取服务端公告列表（本地模式返回空数组）。 */
+    announcements: () => Promise<Announcement[]>
   }
   update: {
     check: () => Promise<UpdateCheckResult>
@@ -1426,10 +1725,61 @@ export interface MpPlayer {
   virtualIp?: string
   virtualDomain?: string
   useDomain?: boolean
+  /**
+   * 语音 / 身份唯一键（规整玩家名，各端一致）。
+   *
+   * 渲染层的语音引擎用它来寻址：`syncPeers` 传成员 voiceId，信令 `from`/`to`
+   * 也用它。不能用 `id` —— 同一成员可能带两个不同的 id（信令 / 路由表来源），
+   * 会导致语音连接永远对不上、以及成员列表重复。
+   */
+  voiceId?: string
   micEnabled: boolean
   isMuted: boolean
   joinedAt: string
   isSelf: boolean
+  /** 该成员当前是否正在说话（本机通过音量检测、他人通过语音状态报文）。 */
+  speaking?: boolean
+}
+
+/** 一条大厅聊天消息（消息收发统一走这个结构）。 */
+export interface MpChatMessage {
+  id: string
+  playerId: string
+  playerName: string
+  content: string
+  timestamp: number
+  /** 是否自己发出的（界面据此左右对齐）。 */
+  isSelf: boolean
+}
+
+/**
+ * HUD 浮层上的一行成员状态。
+ */
+export interface MpHudPlayer {
+  id: string
+  name: string
+  speaking: boolean
+  micEnabled: boolean
+  isMuted: boolean
+  isSelf: boolean
+  virtualIp?: string
+}
+
+/** 推送给 HUD 浮层的完整快照。 */
+export interface MpHudState {
+  enabled: boolean
+  opacity: number
+  players: MpHudPlayer[]
+}
+
+/** 一条弹幕。由聊天消息 + 弹幕设置推导，推给弹幕窗口渲染。 */
+export interface MpDanmaku {
+  id: string
+  text: string
+  fontSize: number
+  speed: number
+  opacity: number
+  tracks: number
 }
 
 /** 创建 / 加入大厅的入参。 */
@@ -1441,6 +1791,22 @@ export interface MpJoinParams {
   serverNode: string
   signalingServer: string
   useDomain?: boolean
+}
+
+/**
+ * 局域网桥探测到的一个 Minecraft 世界（房主虚拟 IP + 端口 + 展示信息）。
+ * 用于「世界列表」展示，并可手动复制地址直连。
+ */
+export interface MpWorld {
+  ip: string
+  port: number
+  motd: string
+  version: string
+  players: { online: number; max: number }
+  latencyMs: number
+  /** 可连接的本地代理地址（`127.0.0.1:<代理口>`）；虚拟 IP 直连不可达。 */
+  connectHost?: string
+  connectPort?: number
 }
 
 export interface MpApi {
@@ -1459,10 +1825,60 @@ export interface MpApi {
   getMicEnabled: () => Promise<boolean>
   setGlobalMuted: (muted: boolean) => Promise<void>
   getGlobalMuted: () => Promise<boolean>
+  /** 全局静音状态变化（语音引擎据此静音所有远端播放）。 */
+  onGlobalMutedChanged: (cb: (muted: boolean) => void) => () => void
   mutePlayer: (playerId: string, muted: boolean) => Promise<void>
   isPlayerMuted: (playerId: string) => Promise<boolean>
   parseVirtualIp: (text: string) => Promise<string | null>
   openExternal: (url: string) => Promise<void>
+  /** 局域网桥：扫描并（自动）把大厅内的 MC 世界注入本机局域网列表。 */
+  scanWorlds: () => Promise<MpWorld[]>
+  getWorlds: () => Promise<MpWorld[]>
+  getWorldPort: () => Promise<number>
+  setWorldPort: (port: number) => Promise<MpWorld[]>
+  getAutoLan: () => Promise<boolean>
+  setAutoLan: (enabled: boolean) => Promise<void>
+  getLanBroadcastCount: () => Promise<number>
+  // ---- 消息收发 ----
+  /** 发送一条聊天消息到大厅（广播给所有成员）。 */
+  sendChat: (content: string) => Promise<void>
+  /** 当前会话的聊天记录（最近 N 条）。 */
+  getMessages: () => Promise<MpChatMessage[]>
+  /** 收到新消息（含自己发出的回显）。 */
+  onChat: (cb: (msg: MpChatMessage) => void) => () => void
+  // ---- 语音 ----
+  /** 本机是否正在说话（由渲染层音量检测上报，驱动 HUD / 成员列表的说话指示）。 */
+  setSpeaking: (speaking: boolean) => Promise<void>
+  /** 上报语音引擎错误（麦克风被拒 / 设备占用等），用于在界面上给出可操作的提示。 */
+  reportVoiceError: (message: string) => Promise<void>
+  /** 订阅语音引擎错误提示。 */
+  onVoiceError: (cb: (message: string) => void) => () => void
+  // ---- 语音音频中继（经 EasyTier UDP 端口转发）----
+  /**
+   * 同步成员列表：主进程为每个成员建立 / 回收一条「本机端口 → 其虚拟IP:语音端口」的 UDP 转发。
+   * 语音音频因此不再依赖 WebRTC 的直连能力，跨网络也能互通。
+   */
+  voiceRelaySync: (peers: Array<{ id: string; virtualIp: string }>) => Promise<void>
+  /** 停止语音中继（退出大厅时调用）。 */
+  voiceRelayStop: () => Promise<void>
+  /** 发送一帧已编码音频给指定成员（peerId 为语音标识 voiceId）。 */
+  sendVoiceAudio: (peerId: string, data: Uint8Array) => Promise<void>
+  /** 订阅「收到某成员的音频帧」。 */
+  onVoiceAudio: (cb: (payload: { from: string; data: Uint8Array }) => void) => () => void
+  // ---- 浮层窗口 ----
+  /** 打开 / 关闭 HUD 浮层（游戏内成员状态，透明穿透）。 */
+  openHudWindow: () => Promise<void>
+  closeHudWindow: () => Promise<void>
+  onHudState: (cb: (state: MpHudState) => void) => () => void
+  /** 打开 / 关闭弹幕窗口（透明穿透，滚动显示聊天消息）。 */
+  openDanmakuWindow: () => Promise<void>
+  closeDanmakuWindow: () => Promise<void>
+  /** 设置变更后重新同步浮层窗口（按当前 HUD / 弹幕开关增删窗口并补推状态）。 */
+  syncOverlays: () => Promise<void>
+  /** 弹幕窗口接收新弹幕（仅弹幕窗口自身用）。 */
+  onDanmaku: (cb: (d: MpDanmaku) => void) => () => void
+  /** 弹幕窗口启动时拉取一次当前配置。 */
+  danmakuConfig: () => Promise<{ enabled: boolean; fontSize: number; speed: number; opacity: number; tracks: number }>
   /** 大厅悬浮窗（类似 MCTier 的迷你窗）：创建 / 关闭 / 快照 / 尺寸。 */
   openMiniWindow: () => Promise<void>
   closeMiniWindow: () => Promise<void>

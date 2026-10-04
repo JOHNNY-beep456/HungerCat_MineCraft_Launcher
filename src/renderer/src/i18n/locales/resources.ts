@@ -116,6 +116,8 @@ export const messages: LocaleDict = {
     'res.versions.installingNow': '正在安装…',
     'res.versions.installFabricApi': '同时安装 Fabric API',
     'res.versions.installFabricApiDesc': '安装该加载器时一并安装对应版本的 Fabric API',
+    'res.versions.installOfflineTranslate': '同时安装游戏内离线翻译模组',
+    'res.versions.installOfflineTranslateDesc': '为受支持版本安装离线翻译模组，可在游戏内离线翻译文本（依赖 Fabric API）',
     'res.versions.installLog': '安装日志',
     'res.versions.fetchingVersions': '获取版本中…',
     'res.versions.installNow': '立即安装',
@@ -123,7 +125,16 @@ export const messages: LocaleDict = {
     'res.versions.noLoaderFor': '当前 MC 版本 {mc} 未发现可用 {kind} 加载器版本',
     'res.versions.loaderUnsupported': '当前 MC 版本 {mc} 暂不支持 {kind} 加载器',
     'res.versions.invalidName': '请输入有效的版本名',
-    'res.versions.fabricApiFailed': 'Fabric API 安装失败：{msg}'
+    'res.versions.fabricApiFailed': 'Fabric API 安装失败：{msg}',
+    'res.versions.offlineTranslateFailed': '离线翻译模组安装失败：{msg}',
+    'res.versions.translateConsent.title': '安装离线翻译模组前请确认',
+    'res.versions.translateConsent.intro': '你选择一并安装「游戏内离线翻译模组」，安装前请知晓并同意以下信息：',
+    'res.versions.translateConsent.author': '原作者：',
+    'res.versions.translateConsent.authorName': 'B站@我小张7272635',
+    'res.versions.translateConsent.license': '开源许可：',
+    'res.versions.translateConsent.licenseLink': '查看 MIT License',
+    'res.versions.translateConsent.agree': '我已阅读并同意上述署名与许可信息',
+    'res.versions.translateConsent.confirm': '同意并继续安装'
   },
   'zh-TW': {
     'res.tab.mod': '模組',
@@ -228,6 +239,8 @@ export const messages: LocaleDict = {
     'res.versions.installingNow': '正在安裝…',
     'res.versions.installFabricApi': '同時安裝 Fabric API',
     'res.versions.installFabricApiDesc': '安裝該載入器時一併安裝對應版本的 Fabric API',
+    'res.versions.installOfflineTranslate': '同時安裝遊戲內離線翻譯模組',
+    'res.versions.installOfflineTranslateDesc': '為受支援版本安裝離線翻譯模組，可在遊戲內離線翻譯文字（依賴 Fabric API）',
     'res.versions.installLog': '安裝日誌',
     'res.versions.fetchingVersions': '取得版本中…',
     'res.versions.installNow': '立即安裝',
@@ -235,7 +248,16 @@ export const messages: LocaleDict = {
     'res.versions.noLoaderFor': '目前 MC 版本 {mc} 未發現可用的 {kind} 載入器版本',
     'res.versions.loaderUnsupported': '目前 MC 版本 {mc} 暫不支援 {kind} 載入器',
     'res.versions.invalidName': '請輸入有效的版本名',
-    'res.versions.fabricApiFailed': 'Fabric API 安裝失敗：{msg}'
+    'res.versions.fabricApiFailed': 'Fabric API 安裝失敗：{msg}',
+    'res.versions.offlineTranslateFailed': '離線翻譯模組安裝失敗：{msg}',
+    'res.versions.translateConsent.title': '安裝離線翻譯模組前請確認',
+    'res.versions.translateConsent.intro': '你選擇一併安裝「遊戲內離線翻譯模組」，安裝前請知曉並同意以下資訊：',
+    'res.versions.translateConsent.author': '原作者：',
+    'res.versions.translateConsent.authorName': 'B站@我小張7272635',
+    'res.versions.translateConsent.license': '開源授權：',
+    'res.versions.translateConsent.licenseLink': '檢視 MIT License',
+    'res.versions.translateConsent.agree': '我已閱讀並同意上述署名與授權資訊',
+    'res.versions.translateConsent.confirm': '同意並繼續安裝'
   },
   en: {
     'res.tab.mod': 'Mods',
@@ -340,6 +362,8 @@ export const messages: LocaleDict = {
     'res.versions.installingNow': 'Installing…',
     'res.versions.installFabricApi': 'Also install Fabric API',
     'res.versions.installFabricApiDesc': 'Install the matching Fabric API together with this loader',
+    'res.versions.installOfflineTranslate': 'Also install in-game offline translation mod',
+    'res.versions.installOfflineTranslateDesc': 'Install an offline translation mod for supported versions (requires Fabric API)',
     'res.versions.installLog': 'Install log',
     'res.versions.fetchingVersions': 'Fetching versions…',
     'res.versions.installNow': 'Install now',
@@ -347,6 +371,15 @@ export const messages: LocaleDict = {
     'res.versions.noLoaderFor': 'No {kind} loader versions found for MC {mc}',
     'res.versions.loaderUnsupported': 'MC {mc} does not support the {kind} loader yet',
     'res.versions.invalidName': 'Please enter a valid version name',
-    'res.versions.fabricApiFailed': 'Fabric API install failed: {msg}'
+    'res.versions.fabricApiFailed': 'Fabric API install failed: {msg}',
+    'res.versions.offlineTranslateFailed': 'Offline translation mod install failed: {msg}',
+    'res.versions.translateConsent.title': 'Confirm before installing the offline translation mod',
+    'res.versions.translateConsent.intro': 'You chose to also install the in-game offline translation mod. Please read and agree to the following before installing:',
+    'res.versions.translateConsent.author': 'Original author: ',
+    'res.versions.translateConsent.authorName': 'Bilibili @我小张7272635',
+    'res.versions.translateConsent.license': 'License: ',
+    'res.versions.translateConsent.licenseLink': 'View MIT License',
+    'res.versions.translateConsent.agree': 'I have read and agree to the attribution and license information above',
+    'res.versions.translateConsent.confirm': 'Agree and install'
   }
 }

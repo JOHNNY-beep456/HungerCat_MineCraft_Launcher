@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { AnimatePresence, motion } from 'motion/react'
-import type { MpBinaryStatus, MpLobby, MpPlayer } from '@shared/types'
+import type { MpBinaryStatus, MpLobby, MpPlayer, MpWorld } from '@shared/types'
 import { useApp } from '../store'
 import { Button, Icon, Select, Spinner } from '../components/ui'
 import { MultiplayerLicenseGate, MCTIER_REPO, MCTIER_LICENSE, MCTIER_WEBSITE, MCTIER_ICON } from '../components/MultiplayerLicenseGate'
@@ -10,6 +10,8 @@ import {
   DEFAULT_EASYTier,
   DEFAULT_SIGNALING
 } from '../components/MultiplayerSettings'
+import { MultiplayerChat } from '../components/MultiplayerChat'
+import { MultiplayerVoiceControls } from '../components/MultiplayerVoiceControls'
 
 type View = 'home' | 'settings' | 'form' | 'help'
 type FormMode = 'create' | 'join'
@@ -36,6 +38,9 @@ export function MultiplayerPage({ onExit }: { onExit?: () => void } = {}): JSX.E
   const [players, setPlayers] = useState<MpPlayer[]>([])
   /** 已复制的地址（短暂展示对勾）。 */
   const [copied, setCopied] = useState<string | null>(null)
+
+  /** 自己的虚拟域名（仅开启「虚拟域名」时存在）。 */
+  const selfDomain = players.find((p) => p.isSelf)?.virtualDomain ?? ''
 
   const accepted = settings.multiplayerLicenseAcceptedAt > 0
 
@@ -485,7 +490,15 @@ export function MultiplayerPage({ onExit }: { onExit?: () => void } = {}): JSX.E
                 </div>
               )}
 
-              {/* 已在大厅：大厅信息 + 玩家列表（人数 / 每个人的虚拟 IP，可复制） */}
+              {/* 已在大厅：语音 / 浮层控制 + 世界列表 + 聊天 + 成员列表 */}
+              {lobby && <MultiplayerVoiceControls />}
+
+              {lobby && (
+                <WorldList onCopy={(t) => void copyText(t)} copied={copied} />
+              )}
+
+              {lobby && <MultiplayerChat />}
+
               {lobby && (
                 <div className="glass relative z-0 w-full rounded-[24px] p-4">
                   <div className="mb-2 flex items-center justify-between gap-2">
@@ -520,6 +533,22 @@ export function MultiplayerPage({ onExit }: { onExit?: () => void } = {}): JSX.E
                     )}
                   </div>
 
+                  {/* 自己的虚拟域名（开启「虚拟域名」时显示，可在 MC 直接连接里使用） */}
+                  {selfDomain && (
+                    <div className="glass-soft mb-2 flex items-center justify-between gap-2 rounded-xl px-3 py-2">
+                      <span className="caption selectable truncate" style={{ color: 'var(--fill-primary)' }}>
+                        {t('mp.lobby.myDomain')}：{selfDomain}
+                      </span>
+                      <button
+                        className="shrink-0 opacity-70 transition-opacity hover:opacity-100"
+                        title={t('mp.set.tools.copy')}
+                        onClick={() => void copyText(selfDomain)}
+                      >
+                        <Icon name={copied === selfDomain ? 'check' : 'copy'} size={15} />
+                      </button>
+                    </div>
+                  )}
+
                   {/* 玩家列表 */}
                   <div className="space-y-1.5">
                     {players.map((p) => {
@@ -545,6 +574,11 @@ export function MultiplayerPage({ onExit }: { onExit?: () => void } = {}): JSX.E
                             <div className="caption selectable truncate">
                               {addr || t('mp.lobby.assigning')}
                             </div>
+                            {p.virtualDomain && (
+                              <div className="caption selectable truncate" style={{ color: 'var(--fill-primary)' }}>
+                                {p.virtualDomain}
+                              </div>
+                            )}
                           </div>
                           {addr && (
                             <button
@@ -743,6 +777,159 @@ function FormRow({ label, children }: { label: string; children: React.ReactNode
     <div>
       <div className="mb-1.5 text-[13px] font-medium">{label}</div>
       {children}
+    </div>
+  )
+}
+
+/**
+ * 「世界列表」卡片：展示大厅内探测到的 Minecraft 世界，并支持手动直连 / 自动注入。
+ *
+ * 这是「能看到成员名字、游戏里却连不上」的界面侧解法：
+ *   - 自动注入开启时，世界会直接出现在 MC 的「局域网」列表里，点一下即可进；
+ *   - 关闭自动注入时，可复制 `虚拟IP:端口` 手动在「直接连接」里输入。
+ */
+function WorldList({ onCopy, copied }: { onCopy: (text: string) => void; copied: string | null }): JSX.Element {
+  const { t } = useApp()
+  const [worlds, setWorlds] = useState<MpWorld[]>([])
+  const [port, setPort] = useState(25565)
+  const [autoLan, setAutoLan] = useState(true)
+  const [scanning, setScanning] = useState(false)
+
+  useEffect(() => {
+    let alive = true
+    void (async () => {
+      try {
+        const [p, auto] = await Promise.all([window.api.mp.getWorldPort(), window.api.mp.getAutoLan()])
+        if (alive) {
+          setPort(p)
+          setAutoLan(auto)
+        }
+      } catch {
+        /* 忽略 */
+      }
+    })()
+    return () => {
+      alive = false
+    }
+  }, [])
+
+  // 每 4 秒拉一次扫描结果（主进程每 8 秒自行扫描，这里只取快照）。
+  useEffect(() => {
+    let alive = true
+    const tick = async (): Promise<void> => {
+      try {
+        const list = await window.api.mp.getWorlds()
+        if (alive) setWorlds(list)
+      } catch {
+        /* 忽略单次失败 */
+      }
+    }
+    void tick()
+    const timer = setInterval(() => void tick(), 4000)
+    return () => {
+      alive = false
+      clearInterval(timer)
+    }
+  }, [])
+
+  const rescan = async (): Promise<void> => {
+    setScanning(true)
+    try {
+      setWorlds(await window.api.mp.scanWorlds())
+    } catch {
+      /* 忽略 */
+    } finally {
+      setScanning(false)
+    }
+  }
+
+  return (
+    <div className="glass relative z-0 w-full rounded-[24px] p-4">
+      <div className="mb-2 flex items-center justify-between gap-2">
+        <div className="flex items-center gap-2">
+          <Icon name="box" size={16} style={{ color: 'var(--fill-primary)' }} />
+          <span className="headline">{t('mp.world.title')}</span>
+        </div>
+        <Button size="sm" icon="refresh" disabled={scanning} onClick={() => void rescan()}>
+          {scanning ? t('mp.world.scanning') : t('mp.world.rescan')}
+        </Button>
+      </div>
+
+      {/* 自动注入开关：开启后世界直接出现在 MC 局域网列表 */}
+      <div className="glass-soft mb-2 flex items-center justify-between gap-2 rounded-xl px-3 py-2">
+        <div className="min-w-0">
+          <div className="text-[12.5px] font-medium">{t('mp.world.autoLan')}</div>
+          <div className="caption">{t('mp.world.autoLanDesc')}</div>
+        </div>
+        <button
+          className="glass-soft no-drag shrink-0 rounded-xl px-3 py-1.5 text-[12.5px]"
+          style={{ color: autoLan ? 'var(--fill-primary)' : undefined, borderColor: autoLan ? 'var(--fill-primary)' : undefined }}
+          onClick={() => {
+            const next = !autoLan
+            setAutoLan(next)
+            void window.api.mp.setAutoLan(next)
+          }}
+        >
+          {autoLan ? 'ON' : 'OFF'}
+        </button>
+      </div>
+
+      {/* 世界端口：MC 默认 25565，「对局域网开放」常是随机端口。
+          现在主进程会自动探测常见端口，这里只在非常规端口时才需手动指定。 */}
+      <div className="glass-soft mb-1 flex items-center justify-between gap-2 rounded-xl px-3 py-2">
+        <span className="caption shrink-0">{t('mp.world.port')}</span>
+        <input
+          className="mp-input selectable no-drag"
+          style={{ width: 100 }}
+          value={port}
+          onChange={(e) => setPort(Number(e.target.value.replace(/\D/g, '')) || 0)}
+          onBlur={() => {
+            if (port > 0) {
+              // 主进程会立刻按新端口重扫并回传最新世界列表，这里直接刷新界面，
+              // 让「虚拟 IP:端口」即时更新（不再等 8 秒轮询）。
+              void window.api.mp.setWorldPort(port).then((list) => {
+                if (Array.isArray(list)) setWorlds(list)
+              })
+            }
+          }}
+        />
+      </div>
+      <p className="caption mb-2 px-1">{t('mp.world.portHint')}</p>
+
+      {worlds.length === 0 ? (
+        <div className="caption py-2 text-center">{t('mp.world.empty')}</div>
+      ) : (
+        <div className="space-y-1.5">
+          {worlds.map((w) => {
+            // 可连接地址优先用本地代理口：--no-tun 下虚拟 IP 没有系统路由，
+            // 直接连 `虚拟IP:端口` 必然失败；复制代理口才能真正进世界。
+            const addr =
+              w.connectPort != null
+                ? `${w.connectHost ?? '127.0.0.1'}:${w.connectPort}`
+                : `${w.ip}:${w.port}`
+            return (
+              <div key={`${w.ip}:${w.port}`} className="glass-soft flex items-center gap-2.5 rounded-xl px-3 py-2">
+                <div className="min-w-0 flex-1">
+                  <div className="truncate text-[13px] font-medium">{w.motd || addr}</div>
+                  <div className="caption selectable truncate">
+                    {addr}
+                    {w.version ? ` · ${w.version}` : ''}
+                    {w.players.max > 0 ? ` · ${w.players.online}/${w.players.max}` : ''}
+                    {` · ${w.latencyMs}ms`}
+                  </div>
+                </div>
+                <button
+                  className="shrink-0 opacity-70 transition-opacity hover:opacity-100"
+                  title={t('mp.set.tools.copy')}
+                  onClick={() => onCopy(addr)}
+                >
+                  <Icon name={copied === addr ? 'check' : 'copy'} size={15} />
+                </button>
+              </div>
+            )
+          })}
+        </div>
+      )}
     </div>
   )
 }
