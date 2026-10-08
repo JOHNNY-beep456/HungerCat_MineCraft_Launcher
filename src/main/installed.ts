@@ -1,6 +1,6 @@
 import { existsSync, promises as fsp } from 'fs'
 import { join } from 'path'
-import { gunzipSync } from 'zlib'
+import { gunzipSync, gzipSync } from 'zlib'
 import type { InstalledVersion } from '@shared/types'
 import { nativeScanDirs } from './native-downloader'
 
@@ -87,10 +87,42 @@ export async function versionServers(
   try {
     const raw = await fsp.readFile(serversDat)
     const data = raw.length > 2 && raw[0] === 0x1f && raw[1] === 0x8b ? gunzipSync(raw) : raw
-    return parseServersDat(data)
+    return parseServersDat(data).map((s) => ({ name: s.name, address: s.ip }))
   } catch {
     return []
   }
+}
+
+/**
+ * 向某个实例的 servers.dat 追加一条服务器（名称 + 地址）。
+ *
+ * 文件不存在时按空列表创建；已有内容（含 icon / hidden / acceptTextures）原样保留，
+ * 只追加新条目。名称留空时用地址兜底，方便在游戏里辨认。写回 gzip 压缩格式
+ * （与原版 NbtIo.writeCompressed 一致，读取端两种都认）。返回更新后的完整列表。
+ */
+export async function addVersionServer(
+  gameDir: string,
+  versionId: string,
+  isolated: boolean,
+  name: string,
+  address: string
+): Promise<Array<{ name: string; address: string }>> {
+  const dir = runDir(gameDir, versionId, isolated)
+  const serversDat = join(dir, 'servers.dat')
+  let entries: ServerEntry[] = []
+  try {
+    const raw = await fsp.readFile(serversDat)
+    const data = raw.length > 2 && raw[0] === 0x1f && raw[1] === 0x8b ? gunzipSync(raw) : raw
+    entries = parseServersDat(data)
+  } catch {
+    entries = []
+  }
+  const ip = address.trim()
+  const trimmedName = name.trim()
+  entries.push({ name: trimmedName || ip, ip })
+  await fsp.mkdir(dir, { recursive: true })
+  await fsp.writeFile(serversDat, writeServersDat(entries))
+  return entries.map((s) => ({ name: s.name, address: s.ip }))
 }
 
 /**
@@ -350,16 +382,87 @@ class NbtReader {
   }
 }
 
-function parseServersDat(data: Buffer): Array<{ name: string; address: string }> {
+/** servers.dat 里的单条服务器记录（保留 icon / hidden / acceptTextures，写回时不丢字段）。 */
+interface ServerEntry {
+  name: string
+  ip: string
+  icon?: string
+  hidden?: boolean
+  acceptTextures?: boolean
+}
+
+function parseServersDat(data: Buffer): ServerEntry[] {
   try {
     const root = new NbtReader(data).readRoot()
     const servers = root['servers']
     if (!Array.isArray(servers)) return []
     return servers
       .filter((s): s is Record<string, unknown> => !!s && typeof s === 'object')
-      .map((s) => ({ name: String(s['name'] ?? ''), address: String(s['ip'] ?? '') }))
-      .filter((s) => s.address.length > 0)
+      .map((s) => {
+        const entry: ServerEntry = { name: String(s['name'] ?? ''), ip: String(s['ip'] ?? '') }
+        if (typeof s['icon'] === 'string' && s['icon']) entry.icon = s['icon']
+        if (s['hidden'] !== undefined) entry.hidden = Number(s['hidden']) !== 0
+        if (s['acceptTextures'] !== undefined) entry.acceptTextures = Number(s['acceptTextures']) !== 0
+        return entry
+      })
+      .filter((s) => s.ip.length > 0)
   } catch {
     return []
   }
+}
+
+/**
+ * 写 servers.dat（NBT）。结构固定：根 Compound "" 下挂 List<Compound> "servers"，
+ * 每条含 name / ip（String）以及可选的 icon（String）/ hidden / acceptTextures（Byte）。
+ * 输出 gzip 压缩——与原版 NbtIo.writeCompressed 一致，读取端（含本文件的解析）两种都认。
+ */
+function writeServersDat(servers: ServerEntry[]): Buffer {
+  const parts: Buffer[] = []
+  const u8 = (v: number): void => void parts.push(Buffer.from([v & 0xff]))
+  const i16 = (v: number): void => {
+    const b = Buffer.alloc(2)
+    b.writeInt16BE(v & 0xffff)
+    parts.push(b)
+  }
+  const i32 = (v: number): void => {
+    const b = Buffer.alloc(4)
+    b.writeInt32BE(v | 0)
+    parts.push(b)
+  }
+  const str = (s: string): void => {
+    const b = Buffer.from(s, 'utf8')
+    i16(b.length)
+    parts.push(b)
+  }
+  /** 写入「标签类型 + 名称」头部，payload 紧随其后 */
+  const tag = (type: number, name: string): void => {
+    u8(type)
+    str(name)
+  }
+
+  tag(10, '') // 根：TAG_Compound ""
+  tag(9, 'servers') // TAG_List
+  u8(10) // 列表元素类型：TAG_Compound
+  i32(servers.length)
+  for (const s of servers) {
+    tag(8, 'name')
+    str(s.name)
+    tag(8, 'ip')
+    str(s.ip)
+    if (s.icon !== undefined) {
+      tag(8, 'icon')
+      str(s.icon)
+    }
+    if (s.hidden !== undefined) {
+      tag(1, 'hidden')
+      u8(s.hidden ? 1 : 0)
+    }
+    if (s.acceptTextures !== undefined) {
+      tag(1, 'acceptTextures')
+      u8(s.acceptTextures ? 1 : 0)
+    }
+    u8(0) // TAG_End：结束该服务器 Compound
+  }
+  u8(0) // TAG_End：结束根 Compound
+  return gzipSync(Buffer.concat(parts))
 }

@@ -104,6 +104,23 @@ export function compareVersions(a: string, b: string): number {
   return pa.pre.num - pb.pre.num
 }
 
+/**
+ * 只比较「主版本号」——忽略 `-beta1` / `-rc2` 这类预发布后缀，返回 a-b 的正负。
+ * 用于「重要版本」判定：只有当启动器主版本号 <= 重要版本主版本号时才推送，
+ * 避免把一条旧的重要版本推给已经升级到更新主版本的用户。
+ */
+export function compareMainVersions(a: string, b: string): number {
+  const pa = parseVersion(a).nums
+  const pb = parseVersion(b).nums
+  const len = Math.max(pa.length, pb.length)
+  for (let i = 0; i < len; i++) {
+    const x = pa[i] ?? 0
+    const y = pb[i] ?? 0
+    if (x !== y) return x - y
+  }
+  return 0
+}
+
 function filenameFrom(info: UpdateInfo): string {
   if (info.filename && info.filename.trim()) return info.filename.trim()
   const seg = info.url.split(/[?#]/)[0].split('/').filter(Boolean).pop()

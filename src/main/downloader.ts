@@ -119,7 +119,69 @@ async function isTaskSatisfied(task: DownloadTask): Promise<boolean> {
   return false
 }
 
+/**
+ * 同一目标文件的并发去重。
+ *
+ * 背景：一个「下载任务」可能同时发起对同一文件的多个请求——例如「原版 + 加载器」并发
+ * 下载时，加载器版本会继承原版的库 / 资源，两边的任务列表大量重叠；若各下各的，不仅
+ * 重复占用带宽，还会同时写同一个 `.part` 互相破坏。
+ *
+ * 做法：以目标路径为键登记「正在进行的下载」。后来的请求不重复下载，而是挂到同一个
+ * Promise 上共享结果；同时把进度字节扇出给所有订阅者，保证每条任务的进度都准确。
+ */
+interface SharedDownload {
+  sinks: Set<(n: number) => void>
+  sizeSinks: Set<(s: number) => void>
+  received: number
+  total: number
+  promise: Promise<void>
+}
+const sharedDownloads = new Map<string, SharedDownload>()
+
 async function downloadFile(
+  task: DownloadTask,
+  onBytes: (n: number) => void,
+  signal?: AbortSignal,
+  retries = 3,
+  onSize?: (size: number) => void,
+  connections?: number
+): Promise<void> {
+  const inflight = sharedDownloads.get(task.dest)
+  if (inflight) {
+    inflight.sinks.add(onBytes)
+    if (onSize) inflight.sizeSinks.add(onSize)
+    // 补发已收到的进度，让后加入者的进度条立刻对齐
+    if (inflight.received > 0) onBytes(inflight.received)
+    if (onSize && inflight.total > 0) onSize(inflight.total)
+    return inflight.promise
+  }
+  const sinks = new Set<(n: number) => void>([onBytes])
+  const sizeSinks = new Set<(s: number) => void>()
+  if (onSize) sizeSinks.add(onSize)
+  const shared: SharedDownload = { sinks, sizeSinks, received: 0, total: 0, promise: Promise.resolve() }
+  shared.promise = downloadFileOnce(
+    task,
+    (n) => {
+      shared.received += n
+      for (const s of sinks) s(n)
+    },
+    signal,
+    retries,
+    (s) => {
+      shared.total = s
+      for (const cb of sizeSinks) cb(s)
+    },
+    connections
+  )
+  sharedDownloads.set(task.dest, shared)
+  try {
+    await shared.promise
+  } finally {
+    if (sharedDownloads.get(task.dest) === shared) sharedDownloads.delete(task.dest)
+  }
+}
+
+async function downloadFileOnce(
   task: DownloadTask,
   onBytes: (n: number) => void,
   signal?: AbortSignal,

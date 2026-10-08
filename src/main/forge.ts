@@ -48,7 +48,13 @@ export async function installForge(
   onLog: (line: string) => void,
   customId?: string,
   onProgress?: (p: DownloadProgress) => void,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  /**
+   * 运行安装器前必须先完成的前置（通常是原版下载的 Promise）。
+   * 安装器 jar 会先下载（可与原版下载并发），但安装器本身必须等它完成后再运行 ——
+   * 安装器需要原版已就绪才能正确注入加载器 profile。
+   */
+  beforeRun?: Promise<unknown>
 ): Promise<string> {
   const installerUrl = INSTALLER[kind].installer(version)
   const installerDir = join(gameDir, '.installers')
@@ -81,6 +87,14 @@ export async function installForge(
       totalBytes = s
     }
   })
+
+  // 安装器 jar 已就绪；但必须等原版下载完成后再运行（安装器需要原版已就绪）。
+  // 这样「安装器下载」与「原版下载」可以并发，而安装步骤仍严格晚于原版。
+  if (beforeRun) {
+    onLog(`等待原版下载完成…\n`)
+    await beforeRun
+    if (signal?.aborted) throw new Error('下载已取消')
+  }
 
   onLog(`运行安装器 (Java ${javaPath})…\n`)
   onProgress?.({ taskId, task: `运行安装器 ${label}`, current: 0, total: 1, currentBytes: 0, totalBytes: 0, phase: 'mod', percent: 0 })

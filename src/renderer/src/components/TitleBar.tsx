@@ -22,8 +22,8 @@ export function TitleBar({ onLogoDoubleClick }: { onLogoDoubleClick?: () => void
     void window.api.window.isMaximized().then(setMaximized)
   }, [])
 
-  // 与 useAutoTranslate 的判定保持一致：设置开启、非本地模式、非英语界面时才算启用。
-  const translateEnabled = !!settings.autoTranslateResources && settings.mode !== 'local' && locale !== 'en'
+  // 与 useAutoTranslate 的判定保持一致：设置开启、非本地模式时即视为启用（英语界面也启用）。
+  const translateEnabled = !!settings.autoTranslateResources && settings.mode !== 'local'
   useEffect(() => {
     translateStatus.setEnabled(translateEnabled)
     translateStatus.setLocale(locale)

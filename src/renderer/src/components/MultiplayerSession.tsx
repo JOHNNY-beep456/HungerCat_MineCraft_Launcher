@@ -31,6 +31,8 @@ export function MultiplayerSession(): JSX.Element | null {
   const inLobby = !!lobby
 
   // 读取大厅状态 + 订阅变化。
+  // 注意：不能因 enableMultiplayer 关闭就跳过——主进程是事实来源，大厅状态随时可能变化；
+  // 关掉开关时主进程返回 null 大厅，本效应自然无副作用。
   useEffect(() => {
     let alive = true
     const refresh = async (): Promise<void> => {
@@ -83,13 +85,15 @@ export function MultiplayerSession(): JSX.Element | null {
   const selfVoiceId = players.find((p) => p.isSelf)?.voiceId ?? ''
 
   // 引擎生命周期：进入大厅启动，离开即停。
+  // 未在大厅时不创建引擎（避免启动期无谓构造）；进入大厅才 new 并 start ——
+  // 这样既保留启动优化，也不会因 enableMultiplayer 开关而漏建引擎导致语音不可用。
   useEffect(() => {
-    if (!engineRef.current) engineRef.current = new VoiceEngine()
-    const engine = engineRef.current
     if (!lobby) {
-      engine.stop()
+      engineRef.current?.stop()
       return
     }
+    if (!engineRef.current) engineRef.current = new VoiceEngine()
+    const engine = engineRef.current
     // 语音引擎以 voiceId 为准寻址：它由玩家名规整得到，各端一致。
     // 用 p.id 会因「信令来源 / 路由表来源」两个不同 id 而对不上，语音永远连不通。
     engine.start(selfVoiceId, settings.multiplayerVoiceChanger, {

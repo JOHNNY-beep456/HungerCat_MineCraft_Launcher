@@ -104,9 +104,9 @@ body,
 body {
   /* 基础字体栈只放「跟随平台原生的 UI 字体」。
      不得出现 -apple-system / BlinkMacSystemFont / 'SF Pro Text' / 'PingFang SC' /
-     'Hiragino Sans GB' 这类 macOS 专有字体：切换成苹方正是「仿 Mac 玻璃」皮肤的内容
-     （见文件末尾的 [data-skin='mac']），写在这里会让未开启该皮肤的用户也看到苹方——
-     本机装了这些字体时尤其明显。系统级的 system-ui 已能覆盖各平台的默认 UI 字体。 */
+     'Hiragino Sans GB' 这类 macOS 专有字体：所有皮肤（含「液态玻璃」）都沿用这套
+     默认字体栈，写在这里之外的地方也会让部分用户看到非预期的字体。
+     系统级的 system-ui 已能覆盖各平台的默认 UI 字体。 */
   font-family: 'Segoe UI Variable', 'Segoe UI Variable Text', 'Segoe UI', 'Microsoft YaHei UI',
     'Microsoft YaHei', system-ui, sans-serif;
   font-size: 14px;
@@ -352,7 +352,7 @@ body {
    一层均匀的「材质底」，而不是像玻璃那样能看清背景）+ 面板受光渐变（--surface-shade）
    + 顶部高光（.glass::before）+ 倒角亮/暗边 + 接触/中层/环境三层投影
    （--glass-shadow 的 5 段）。厚度是这几层堆出来的，不靠提高透明度。
-   仿 Mac 玻璃（[data-skin='mac']）：底色更透、模糊更小、饱和度更高，
+   液态玻璃（[data-skin='mac']）：底色更透、模糊更强、饱和度更高，
    并把 --surface-shade 关掉（见文件末尾），避免变成「半透 + 白雾」的中间态。 */
 .glass {
   position: relative;
@@ -453,6 +453,18 @@ body {
   letter-spacing: 0.01em;
 }
 
+/* 服务器 MOTD（彩色）：净化后的 HTML 片段，仅含 span / b / i / br 与颜色样式。
+   这里统一行高与换行，避免全局样式泄漏影响观感。 */
+.ins-motd {
+  line-height: 1.35;
+}
+.ins-motd span,
+.ins-motd b,
+.ins-motd i,
+.ins-motd u {
+  font-size: inherit;
+}
+
 /* --- Buttons --- */
 .btn {
   display: inline-flex;
@@ -537,6 +549,14 @@ body {
   border-color: var(--fill-primary);
   /* 保留凹陷的内阴影，再叠一圈聚焦光环 */
   box-shadow: var(--glass-shadow-well), 0 0 0 3px rgba(10, 132, 255, 0.25);
+}
+/* 带「备注」的下拉触发器（两行：标题 + 备注）：放开 .input 的固定高度，上下留出内边距，
+   让两行有呼吸空间，避免挤成一团（单行选择器仍保持 36px）。 */
+.input.select-2line {
+  height: auto;
+  min-height: 36px;
+  padding-top: 6px;
+  padding-bottom: 6px;
 }
 /* 多行输入：.input 的尺寸是按「单行输入框」定的——固定 height:36px、上下不留内边距，
    那是为了让单行文字在框内垂直居中。同一套尺寸套到 textarea 上就会出问题：
@@ -705,7 +725,7 @@ textarea.input {
   .glass-strong,
   .glass-soft {
     backdrop-filter: none;
-    /* 用不透明表面（--surface-flat 不被任何皮肤覆盖）：即使开着「仿 Mac 玻璃」，
+    /* 用不透明表面（--surface-flat 不被任何皮肤覆盖）：即使开着「液态玻璃」，
        「减少透明度」也应当真正变成不透明，而不是留下半透明底色。 */
     background: var(--surface-flat);
   }
@@ -737,10 +757,12 @@ textarea.input {
 }
 
 /* ------------------------------------------------------------------ */
-/*  超低占用模式：只削减「持续开销」，可见时的动画与界面观感与常规完全一致   */
+/*  超低占用模式：强制极简 + 减少动态效果之上，再尽可能关闭一切            */
+/*  动画 / 过渡 / 模糊 / 阴影渲染，只保留必要的静态界面（功能不变）。       */
+/*  由 store 映射：data-mode='minimal' + data-reduced-motion='true'       */
+/*  + data-low-usage='true'（三者叠加，见下方规则）。                     */
 /* ------------------------------------------------------------------ */
-/* 窗口最小化 / 被完全遮挡时暂停装饰动画，重新可见立即恢复：                */
-/* 观感不变（那一刻本就看不见），却能省掉后台持续重绘。                    */
+/* 窗口最小化 / 被完全遮挡时暂停装饰动画，重新可见立即恢复。 */
 [data-low-usage='true'][data-window-hidden='true'] .app-background .blob,
 [data-low-usage='true'][data-window-hidden='true'] .catfish-bob,
 [data-low-usage='true'][data-window-hidden='true'] .catfish-wag {
@@ -749,6 +771,34 @@ textarea.input {
 /* 关闭跟随鼠标的持续重绘光晕（老机器上典型的无谓开销）。 */
 [data-low-usage='true'] .cursor-glow {
   display: none;
+}
+/* 尽可能掐断一切动画与过渡：只保留必要的即时反馈（无补间），不改任何功能。 */
+[data-low-usage='true'] *,
+[data-low-usage='true'] *::before,
+[data-low-usage='true'] *::after {
+  animation-duration: 0.001ms !important;
+  animation-delay: 0ms !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 0.001ms !important;
+  transition-delay: 0ms !important;
+  scroll-behavior: auto !important;
+}
+/* 彻底停掉装饰性动画，避免 0.001ms 循环仍触发合成层重绘。 */
+[data-low-usage='true'] .app-background .blob,
+[data-low-usage='true'] .catfish-bob,
+[data-low-usage='true'] .catfish-wag,
+[data-low-usage='true'] .translate-dot--pulse {
+  animation: none !important;
+}
+/* 去掉所有模糊：背景装饰、玻璃、滚动条等一律不参与合成。 */
+[data-low-usage='true'] .app-background,
+[data-low-usage='true'] .app-background * {
+  filter: none !important;
+  backdrop-filter: none !important;
+}
+[data-low-usage='true'] :is(.glass, .glass-strong, .glass-soft, .mica, .mica-well) {
+  backdrop-filter: none !important;
+  box-shadow: none !important;
 }
 
 /* --- Utility for safe-area / selectable text --- */
@@ -800,26 +850,148 @@ textarea.input {
 [data-mode='minimal'] .cursor-glow {
   display: none;
 }
+/* 极简模式：所有控件都要扁平化 —— 玻璃高光/卷边、云母受光渐变、卡片与按钮的
+   投影、分隔描边之外的装饰一律抹平，仅保留一根 --divider 描边表达边界。 */
+[data-mode='minimal'] :is(.glass, .glass-strong, .glass-soft, .mica, .mica-well, .chip, .btn, .input) {
+  box-shadow: none !important;
+  backdrop-filter: none !important;
+  background-image: none !important;
+}
+[data-mode='minimal'] :is(.glass, .glass-strong, .glass-soft, .mica, .mica-well)::before {
+  display: none !important;
+}
+[data-mode='minimal'] :is(.card, .panel, .section, .modal, .popover, .dropdown, .menu) {
+  box-shadow: none !important;
+  backdrop-filter: none !important;
+}
+[data-mode='minimal'] .btn-primary {
+  box-shadow: none !important;
+}
 
 /* ------------------------------------------------------------------ */
-/*  实验性皮肤 1：仿 Mac 玻璃                                            */
-/*  令牌与字体定义在文件末尾的「实验性皮肤」段（必须未分层才能压过        */
-/*  :root / body）。这里做的是「通透玻璃」那一层：在基础材质之上把        */
-/*  模糊（.glass 的 36/48/24px）换成 52/64px、饱和度提到 220%、底色 0.42， */
-/*  得到比默认「原毛玻璃」更透的磨砂（同样在层外，天然压过 @layer 里的   */
-/*  .glass；再用 :not([data-mode='minimal']) 让极简模式仍然优先）。        */
+/*  实验性皮肤 1：液态玻璃（iOS 26 / 27「Liquid Glass」风格）             */
+/*  令牌与文字色定义在文件末尾的「实验性皮肤」段（必须未分层才能压过      */
+/*  :root / body）。这里做的是「液态玻璃」那一层：                        */
+/*    · 纯透明玻璃体：几乎不铺底色，背景完全透出来（强背景模糊 + 提亮 /   */
+/*      增饱和），质感不靠底色，全靠下面两层光；                          */
+/*    · 水的反光（Wet rim）：沿周界一圈略厚、带轻微模糊的润泽高光——       */
+/*      上缘最亮、左缘次之、右缘最淡、下缘一道反向反光，像水膜挂在杯壁；    */
+/*    · 微微凹陷：顶部一道柔内影 + 中心极淡的暗部（环境光遮蔽）+ 底部内侧  */
+/*      反光，让表面读起来是一个浅浅下凹的「碟面」，而不是平铺的玻璃。      */
+/*  仍用 :not([data-mode='minimal']) 让极简 / 超低占用优先（它们各自会     */
+/*  关掉模糊与阴影）。                                                    */
 /* ------------------------------------------------------------------ */
 /* 只有用户未要求「减少透明度」且不是极简模式时，才启用磨砂 */
 @media (prefers-reduced-transparency: no-preference) {
   [data-skin='mac']:not([data-mode='minimal']) .glass {
-    backdrop-filter: blur(52px) saturate(220%);
+    backdrop-filter: blur(44px) saturate(190%) brightness(1.05);
   }
   [data-skin='mac']:not([data-mode='minimal']) .glass-strong {
-    backdrop-filter: blur(64px) saturate(230%);
+    backdrop-filter: blur(60px) saturate(200%) brightness(1.06);
   }
   [data-skin='mac']:not([data-mode='minimal']) .glass-soft {
-    backdrop-filter: blur(24px) saturate(160%);
+    backdrop-filter: blur(22px) saturate(170%) brightness(1.04);
   }
+}
+/* 水的反光：沿周界一圈略厚、带轻微模糊的润泽高光——上缘最亮、左缘次之、
+   右缘最淡、下缘一道反向反光（像水膜挂在杯壁，而非干玻璃的硬边）。
+   后两段是「微微凹陷」：顶部一道柔内影（表面向下弯折的起点）+ 底部内侧反光
+   （远端唇口把光反回来），与 ::after 的中心暗部合起来形成浅浅的「碟面」。 */
+[data-skin='mac']:not([data-mode='minimal']) :is(.glass, .glass-strong) {
+  box-shadow:
+    inset 0 1px 1.5px rgba(255, 255, 255, 0.92),
+    inset 1px 0 1.5px -0.25px rgba(255, 255, 255, 0.45),
+    inset -1px 0 1.5px -0.25px rgba(255, 255, 255, 0.18),
+    inset 0 -1px 1.5px -0.25px rgba(255, 255, 255, 0.34),
+    inset 0 14px 22px -16px rgba(15, 23, 42, 0.2),
+    inset 0 -12px 20px -16px rgba(255, 255, 255, 0.3),
+    var(--glass-shadow);
+}
+[data-skin='mac'][data-theme='dark']:not([data-mode='minimal']) :is(.glass, .glass-strong) {
+  box-shadow:
+    inset 0 1px 1.5px rgba(255, 255, 255, 0.42),
+    inset 1px 0 1.5px -0.25px rgba(255, 255, 255, 0.18),
+    inset -1px 0 1.5px -0.25px rgba(255, 255, 255, 0.06),
+    inset 0 -1px 1.5px -0.25px rgba(255, 255, 255, 0.12),
+    inset 0 14px 22px -16px rgba(0, 0, 0, 0.5),
+    inset 0 -12px 20px -16px rgba(255, 255, 255, 0.1),
+    var(--glass-shadow);
+}
+/* 水膜的润泽（::before）：顶部一层极淡内发光，越往下越透明——像杯壁上挂着
+   的一层水膜，而不是平涂的白雾。大面板才叠；行内小条见下方单独处理。 */
+[data-skin='mac']:not([data-mode='minimal']) :is(.glass, .glass-strong)::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  border-radius: inherit;
+  pointer-events: none;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.5) 0%, rgba(255, 255, 255, 0) 30%);
+  opacity: 0.5;
+}
+/* 中间微微凹陷（::after）：中心一层极淡的暗部（环境光遮蔽）向四周淡出，让
+   表面读起来向下凹；再叠一道底部内侧反光，强化「浅浅的碟面」曲率。
+   （此处不再用 screen 混合——凹陷需要压暗中心，而非提亮。） */
+[data-skin='mac']:not([data-mode='minimal']) :is(.glass, .glass-strong)::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  border-radius: inherit;
+  pointer-events: none;
+  background:
+    radial-gradient(78% 68% at 50% 44%, rgba(15, 23, 42, 0.12) 0%, rgba(15, 23, 42, 0) 74%),
+    radial-gradient(120% 76% at 50% 120%, rgba(255, 255, 255, 0.28) 0%, rgba(255, 255, 255, 0) 60%);
+  opacity: 0.85;
+}
+[data-skin='mac'][data-theme='dark']:not([data-mode='minimal']) :is(.glass, .glass-strong)::after {
+  background:
+    radial-gradient(78% 68% at 50% 44%, rgba(0, 0, 0, 0.32) 0%, rgba(0, 0, 0, 0) 74%),
+    radial-gradient(120% 76% at 50% 120%, rgba(255, 255, 255, 0.12) 0%, rgba(255, 255, 255, 0) 60%);
+}
+/* 行内小条（.glass-soft，如首页「版本目录」那一行）本身很矮：只保留一道细顶边
+   的水反光与极轻的膜光，不叠中心凹陷（太小会糊），避免糊成白块、与所在大面板割裂。 */
+[data-skin='mac']:not([data-mode='minimal']) .glass-soft {
+  box-shadow:
+    inset 0 1px 1.5px rgba(255, 255, 255, 0.55),
+    inset 0 -1px 1.5px -0.25px rgba(255, 255, 255, 0.2);
+}
+[data-skin='mac'][data-theme='dark']:not([data-mode='minimal']) .glass-soft {
+  box-shadow:
+    inset 0 1px 1.5px rgba(255, 255, 255, 0.2),
+    inset 0 -1px 1.5px -0.25px rgba(255, 255, 255, 0.08);
+}
+[data-skin='mac']:not([data-mode='minimal']) .glass-soft::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  border-radius: inherit;
+  pointer-events: none;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.35) 0%, rgba(255, 255, 255, 0) 60%);
+  opacity: 0.4;
+}
+
+/* ------------------------------------------------------------------ */
+/*  纯 CSS 3D 玩家模型（默认主页）：缓慢自转，展示皮肤与帽子外层。        */
+/* ------------------------------------------------------------------ */
+.player3d-spin {
+  animation: player3d-spin 18s linear infinite;
+}
+@keyframes player3d-spin {
+  from {
+    transform: rotateX(-8deg) rotateY(0deg);
+  }
+  to {
+    transform: rotateX(-8deg) rotateY(360deg);
+  }
+}
+/* 减少动态效果 / 极简 / 超低占用下不自转，避免无谓重绘。 */
+[data-reduced-motion='true'] .player3d-spin,
+[data-mode='minimal'] .player3d-spin,
+[data-low-usage='true'] .player3d-spin {
+  animation: none;
+  transform: rotateX(-8deg) rotateY(-28deg);
 }
 
 /* ------------------------------------------------------------------ */
@@ -1122,28 +1294,29 @@ textarea.input {
   --glass-shadow: 0 24px 60px -24px rgba(0, 0, 0, 0.65);
 }
 
-/* --- 仿 Mac 玻璃：苹方字体 + 更通透的玻璃 + macOS 系文字色 --- */
-[data-skin='mac'] body {
-  font-family: 'PingFang SC', 'PingFang TC', '苹方-简', 'Hiragino Sans GB', 'Heiti SC',
-    'Microsoft YaHei', system-ui, sans-serif;
-  letter-spacing: 0.006em;
-}
-
+/* --- 液态玻璃（iOS 26/27 Liquid Glass 风格）：不换字体 ---
+   注意：本皮肤不使用苹方等任何替代字体，沿用启动器默认字体栈。
+   玻璃体「纯透明」：几乎不铺底色，背景完全透出来；质感与厚度全靠边缘的
+   水的反光 + 中间微微凹陷的碟面来表达（见上方皮肤段），不叠加普通模式的
+   受光渐变（--surface-shade 关掉）。 */
 [data-skin='mac'] {
-  --text-primary: rgba(0, 0, 0, 0.88);
-  --text-secondary: rgba(60, 60, 67, 0.62);
-  --text-tertiary: rgba(60, 60, 67, 0.34);
+  --text-primary: rgba(0, 0, 0, 0.9);
+  --text-secondary: rgba(60, 60, 67, 0.6);
+  --text-tertiary: rgba(60, 60, 67, 0.32);
 
-  --glass-bg: rgba(255, 255, 255, 0.42);
-  --glass-bg-strong: rgba(255, 255, 255, 0.56);
-  --glass-bg-soft: rgba(255, 255, 255, 0.26);
-  --glass-border: rgba(255, 255, 255, 0.72);
-  --glass-highlight: rgba(255, 255, 255, 0.9);
-  --glass-shadow: 0 28px 70px -26px rgba(15, 23, 42, 0.42);
-  /* 通透玻璃靠 backdrop 模糊本身读厚度，不要叠加普通模式那层受光渐变 */
+  /* 玻璃体：纯透明——只留极薄一层，让背景完全透出 */
+  --glass-bg: rgba(255, 255, 255, 0.06);
+  --glass-bg-strong: rgba(255, 255, 255, 0.09);
+  --glass-bg-soft: rgba(255, 255, 255, 0.04);
+  /* 基础描边压到极淡：真正的边缘由「水的反光」（inset 高光）定义，避免双层亮边 */
+  --glass-border: rgba(255, 255, 255, 0.28);
+  --glass-highlight: rgba(255, 255, 255, 0.98);
+  /* 悬浮投影：单层大半径柔影（不加「贴边」的紧致层——那会在面板下方 / 卡片间隙
+     形成一道明显的暗带，见实例页卡片间距很小时的观感）。 */
+  --glass-shadow: 0 30px 76px -28px rgba(15, 23, 42, 0.5);
   --surface-shade: none;
   --surface-shade-inset: none;
-  /* 控件不用普通模式那套不透明的「云母控件」（见下方「mac 控件复位」），只留悬停提亮 */
+  /* 控件不用普通模式那套不透明的「云母控件」（见下方控件复位），只留悬停提亮 */
   --control-hover-brightness: 1.02;
 
   --fill-secondary: rgba(120, 120, 128, 0.12);
@@ -1153,16 +1326,17 @@ textarea.input {
 }
 
 [data-skin='mac'][data-theme='dark'] {
-  --text-primary: rgba(245, 245, 247, 0.94);
+  --text-primary: rgba(245, 245, 247, 0.95);
   --text-secondary: rgba(235, 235, 245, 0.62);
   --text-tertiary: rgba(235, 235, 245, 0.36);
 
-  --glass-bg: rgba(28, 28, 36, 0.36);
-  --glass-bg-strong: rgba(32, 32, 42, 0.48);
-  --glass-bg-soft: rgba(24, 24, 32, 0.24);
-  --glass-border: rgba(255, 255, 255, 0.18);
-  --glass-highlight: rgba(255, 255, 255, 0.26);
-  --glass-shadow: 0 28px 70px -26px rgba(0, 0, 0, 0.7);
+  /* 纯透明：深色下也只留极薄一层提亮，不做深色实底 */
+  --glass-bg: rgba(255, 255, 255, 0.045);
+  --glass-bg-strong: rgba(255, 255, 255, 0.06);
+  --glass-bg-soft: rgba(255, 255, 255, 0.03);
+  --glass-border: rgba(255, 255, 255, 0.14);
+  --glass-highlight: rgba(255, 255, 255, 0.4);
+  --glass-shadow: 0 30px 76px -28px rgba(0, 0, 0, 0.72);
   --surface-shade: none;
   --surface-shade-inset: none;
   --control-hover-brightness: 1.06;
@@ -1173,7 +1347,41 @@ textarea.input {
   --scrim: rgba(0, 0, 0, 0.5);
 }
 
-/* --- 通透皮肤的控件复位（仿 Mac / 原毛玻璃[默认]） ---
+/* --- 卡片投影与浮层投影分离（通透皮肤） ---
+   液态玻璃 / 原毛玻璃都是「通透」皮肤：卡片（.glass）首尾相接时（设置页 16px、
+   首页网格 20px、实例页 / 资源下载页等），大半径投影会越过间隙落到下一张卡片背后，
+   被下一张卡片的 backdrop-filter 在顶边截成一道硬边（见设置页红框处）。
+   这里统一把 .glass 的投影收成「能在常见间隙内衰减完」的收敛投影：向下约 12px 处
+   淡出为 0、左右不外溢（spread = -blur/2），因此既不会越过间隙、也不会被列表容器的
+   overflow 裁到。浮层（.glass-strong：弹窗 / 下拉 / 右键菜单 / 侧栏）仍保留大半径
+   悬浮投影。做法是直接在各元素上覆盖 --glass-shadow 令牌（不改 box-shadow 规则），
+   并在 .glass-strong 上显式写回大投影，避免其嵌套在 .glass 内时被外层值带偏。 */
+[data-skin='mac'] .glass {
+  --glass-shadow: 0 12px 28px -14px rgba(15, 23, 42, 0.45);
+}
+[data-skin='mac'][data-theme='dark'] .glass {
+  --glass-shadow: 0 12px 28px -14px rgba(0, 0, 0, 0.62);
+}
+[data-skin='glass'] .glass {
+  --glass-shadow: 0 12px 28px -14px rgba(15, 23, 42, 0.38);
+}
+[data-skin='glass'][data-theme='dark'] .glass {
+  --glass-shadow: 0 12px 28px -14px rgba(0, 0, 0, 0.6);
+}
+[data-skin='mac'] .glass-strong {
+  --glass-shadow: 0 30px 76px -28px rgba(15, 23, 42, 0.5);
+}
+[data-skin='mac'][data-theme='dark'] .glass-strong {
+  --glass-shadow: 0 30px 76px -28px rgba(0, 0, 0, 0.72);
+}
+[data-skin='glass'] .glass-strong {
+  --glass-shadow: 0 24px 60px -24px rgba(15, 23, 42, 0.35);
+}
+[data-skin='glass'][data-theme='dark'] .glass-strong {
+  --glass-shadow: 0 24px 60px -24px rgba(0, 0, 0, 0.65);
+}
+
+/* --- 通透皮肤的控件复位（液态玻璃 / 原毛玻璃[默认]） ---
    这两套皮肤都是通透风格，3D 云母那套不透明的「云母控件」（实心底色 + 倒角 + 投影）
    会让标签、次级按钮、输入框、分栏变成一个个实心白块，与通透感冲突。这里把控件退回
    扁平半透明填充（= 上云母之前的观感），让整块皮肤一致。
@@ -1214,7 +1422,7 @@ textarea.input {
 }
 
 /* --- 行内下拉触发器（.select-seamless）：去掉底色，与所在行融为一体 ---
-   版本目录等「行内选择器」原先在「原毛玻璃 / 仿 Mac」是 --fill-secondary 灰底、在
+   版本目录等「行内选择器」原先在「原毛玻璃 / 液态玻璃」是 --fill-secondary 灰底、在
    「3D 云母 / Win10」又与行底同色 —— 三套皮肤观感不一，且灰底在这一行偏突兀。
    这里统一改成无缝：不设底色/描边/内阴影，只靠文字与右侧箭头指示，悬停时才浮出
    一层极淡底色提示可点。未分层，优先级高于 @layer components 里的 .input 基础样式，

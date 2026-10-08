@@ -45,7 +45,8 @@ async function completeChain(
     expiresAt: Date.now() + expiresIn * 1000,
     skinUrl: skin?.url,
     capeUrl: cape?.url,
-    skinModel: skin?.variant,
+    // Mojang 返回的 variant 是大写（CLASSIC / SLIM），统一归一化为小写，避免判断失效。
+    skinModel: skin?.variant ? (skin.variant.toLowerCase() === 'slim' ? 'slim' : 'classic') : undefined,
     addedAt: addedAt ?? Date.now()
   }
 }

@@ -42,33 +42,29 @@
 
 ```
 src/
-├── main/                 # 主进程
-│   ├── index.ts          # 窗口 + IPC 注册
-│   ├── auth.ts           # 微软设备代码流 + 令牌链
-│   ├── yggdrasil.ts      # Yggdrasil 外置登录 + authlib-injector
-│   ├── versions.ts       # 版本清单/版本 JSON（含继承合并）
+├── main/                 # 主进程（后端 / 编排）
+│   ├── index.ts          # 组合根：窗口、生命周期、托盘、IPC 插桩
+│   ├── handlers/         # IPC 处理器（按域拆分：versions / mods / homepage / window …）
+│   ├── network/          # 网络进程（utilityProcess）：专职网络 IO
+│   ├── multiplayer/      # 联机（EasyTier / 大厅 / 信令 / 语音中继）
 │   ├── downloader.ts     # 下载引擎（资源/库/客户端/SHA1）
-│   ├── launcher.ts       # JVM 参数构建（含注入、内存上限）+ 子进程启动
-│   ├── java.ts           # Java 检测
-│   ├── loaders.ts        # Fabric/Quilt 加载器
-│   ├── forge.ts          # Forge/NeoForge 安装器
-│   ├── modrinth.ts       # Modrinth 模组/资源/光影 API
-│   ├── modpack.ts        # 整合包导入/导出
-│   ├── manage.ts         # 版本内模组/存档/原理图管理
-│   ├── resources.ts      # 资源包/光影文件管理
-│   ├── server.ts         # 更新/协议/关于内容服务
-│   ├── mirror.ts         # 镜像（Mojang / BMCLAPI）
-│   └── store.ts          # 设置/账号持久化（含离线/Yggdrasil 账号）
-├── preload/index.ts      # contextBridge 安全桥接
-├── shared/types.ts       # 主进程/渲染进程共享类型
+│   ├── launcher.ts       # JVM 参数构建 + 子进程启动
+│   ├── store.ts          # 设置/账号持久化
+│   └── …                 # auth / yggdrasil / versions / loaders / forge / modrinth /
+│                         # modpack / manage / resources / server / mirror / wallpaper …
+├── preload/index.ts      # contextBridge 安全桥接（window.api）
+├── shared/               # 跨进程契约（types.ts 的 LauncherApi、net-protocol.ts …）
 └── renderer/             # 渲染进程（React）
     └── src/
-        ├── components/   # 标题栏、侧边栏、玻璃 UI 组件（含 Avatar 头像）
-        ├── pages/        # 首页/版本/模组/资源/账号/实例/设置/导出
+        ├── components/   # 通用组件与弹窗
+        ├── pages/        # 页面（settings / customhome / instance-manage 已按板块拆目录）
+        ├── i18n/         # 多语言（locales/<语言>/<板块>.json）
         ├── store.tsx     # 设置/账号/内存状态
         ├── runtime.tsx   # 下载/启动运行状态
         └── assets/       # logo 等静态资源
 ```
+
+> 架构、各板块职责、i18n 规范与构建调试流程详见 [docs/](./docs/README.md)。
 
 ## 开发与构建
 

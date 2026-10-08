@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { useApp } from './store'
 import { translateStatus } from './translate-status'
+import { isTargetLang } from './lang-detect'
 
 /**
  * 资源名 / 简介自动翻译（实验性）。
@@ -70,9 +71,9 @@ const norm = (text: string | undefined): string => (text ?? '').trim()
  */
 export function useAutoTranslate(texts: Array<string | undefined>): (text: string | undefined) => string {
   const { settings, locale } = useApp()
-  // 英语界面上资源名 / 简介本身就是英文，无需翻译；置为 false 后返回函数一律回退原文，
-  // 已缓存的其它语言译文也随之失效，避免「切换语言后仍显示旧译文」。
-  const enabled = !!settings.autoTranslateResources && settings.mode !== 'local' && locale !== 'en'
+  // 英语界面同样需要翻译：不少资源简介是中文 / 其它语言，应翻成英文。
+  // 「已是目标语言」的条目（英文界面下的英文原文）由语言检测提前跳过，不会发请求。
+  const enabled = !!settings.autoTranslateResources && settings.mode !== 'local'
   const [tick, setTick] = useState(0)
   // 每个挂载实例一个稳定 id，用于向「翻译状态」注册 / 注销自己的统计。
   const [id] = useState(() => translateStatus.nextId())
@@ -109,6 +110,8 @@ export function useAutoTranslate(texts: Array<string | undefined>): (text: strin
     // 被「失败冷却」拦下的条目中最早的可重试时刻（0 表示没有）。
     let retryAt = 0
     const pending: string[] = []
+    // 目标是否为中文（简 / 繁）：用于丢弃「不含汉字」的异常译文（见下方写入处）。
+    const isZhTarget = locale === 'zh-CN' || locale === 'zh-TW'
     for (const raw of texts) {
       const s = norm(raw)
       if (!s || s.length > 1800) continue
@@ -120,6 +123,12 @@ export function useAutoTranslate(texts: Array<string | undefined>): (text: strin
         continue
       }
       if (inflight.has(k) || settled.has(k)) continue
+      // 语言检测：文本已是目标语言（如中文界面下的中文简介）则落定为「无需翻译」，
+      // 不发起任何翻译请求。这样「与设置语言一致就不翻译」，也避免中→中的无谓调用。
+      if (isTargetLang(s, locale)) {
+        settled.add(k)
+        continue
+      }
       const f = failedAt.get(k)
       if (f) {
         // 尝试次数用尽：视为确实无需翻译，不再重试。
@@ -173,6 +182,14 @@ export function useAutoTranslate(texts: Array<string | undefined>): (text: strin
             const prev = failedAt.get(k)
             failedAt.set(k, { at: Date.now(), tries: (prev?.tries ?? 0) + 1 })
             anyFailed = true
+            continue
+          }
+          // 目标为中文，却翻出「不含任何汉字」的结果：说明在线接口把中文误判成日/英并
+          // 翻成了英文（实测「馋猫网|…|AI交流の猫窝」在 to_lang=zh 时会翻成英文）。
+          // 丢弃该译文、保留原文，避免中文界面显示英文；落定为「无需翻译」以免反复请求。
+          if (isZhTarget && !/[\u4e00-\u9fff\u3400-\u4dbf]/.test(out)) {
+            settled.add(k)
+            failedAt.delete(k)
             continue
           }
           // 译文与原文相同 = 确实无需翻译，落定后不再重试。

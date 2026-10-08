@@ -5,11 +5,13 @@ import type { TFunction } from '../i18n'
 import { activeGameDir, useAdaptivePolling, useApp, versionDirLabel } from '../store'
 import { useRuntime } from '../runtime'
 import { Avatar, Button, Icon, ProgressBar, Select } from '../components/ui'
+import { PlayerModel3D } from '../components/PlayerModel3D'
 
 export function HomePage(): JSX.Element {
   const { settings, selectedAccount, updateSettings, reloadSettings, t } = useApp()
-  const { download, launchState, launchLog, launchReport, dismissLaunchReport, busy, launch, stopLaunch } =
-    useRuntime()
+  const { download, launchState, launchLog, busy, launch, stopLaunch } = useRuntime()
+  /** 仅正版 / 第三方账号展示 3D 模型；离线账号不展示。 */
+  const showModel = !!selectedAccount && !selectedAccount.offline && selectedAccount.authType !== 'offline'
 
   const [installed, setInstalled] = useState<InstalledVersion[]>([])
   const [dirs, setDirs] = useState<VersionDir[]>([])
@@ -93,7 +95,7 @@ export function HomePage(): JSX.Element {
     refreshMemory()
   }, [])
   // 已用内存轮询：常规 30s；超低占用模式下放宽周期并在窗口不可见时暂停。
-  useAdaptivePolling(refreshMemory, 30000, settings.lowUsageMode)
+  useAdaptivePolling(refreshMemory, 30000, settings.mode === 'lowUsage')
 
   // 切换版本目录：主进程持久化选中项并失效缓存，installed 副作用随之重新拉取。
   const selectDir = async (id: string): Promise<void> => {
@@ -173,16 +175,25 @@ export function HomePage(): JSX.Element {
         </div>
       </div>
 
-      <div className={`grid flex-1 grid-cols-1 gap-5 overflow-hidden ${settings.debugMode ? 'lg:grid-cols-[1.1fr_1fr]' : ''}`}>
+      {/* 网格带 overflow-hidden（小窗口下裁掉多余内容），会把面板的外投影一起裁掉。
+          这里加一圈内边距 + 等量负外边距：内容区大小与位置完全不变，只把裁剪边界向外挪，
+          给面板投影留出渲染空间（左右各 8px、底部 20px，正好落在 main 的内边距里）。 */}
+      <div
+        className={`grid flex-1 grid-cols-1 gap-5 overflow-hidden px-2 pb-5 -mx-2 -mb-5 ${
+          showModel ? 'lg:grid-cols-[1.4fr_1fr]' : settings.debugMode ? 'lg:grid-cols-[1.1fr_1fr]' : ''
+        }`}
+      >
         {/* Left: controls */}
         <div className="glass flex flex-col gap-5 rounded-[28px] p-6">
           {/* 版本目录：版本列表与启动落点都以当前选中的版本目录为准 */}
           <div className="glass-soft flex items-center gap-3 rounded-2xl px-3 py-2">
             <Icon name="folder" size={15} className="shrink-0 opacity-60" />
             <span className="caption shrink-0">{t('home.versionDir')}</span>
+            {/* 选择器整体置于行尾并缩短；文字靠右显示当前目录 */}
             <Select
               variant="seamless"
-              className="min-w-0 flex-1"
+              align="right"
+              className="ml-auto min-w-0 w-[220px] max-w-[45%]"
               value={activeDirId}
               onChange={(v) => void selectDir(v)}
               options={dirs.map((d) => ({ value: d.id, label: versionDirLabel(d) }))}
@@ -340,9 +351,25 @@ export function HomePage(): JSX.Element {
           </div>
         </div>
 
-        {/* Right: console (仅 Debug 模式显示) */}
-        {settings.debugMode && (
-        <div className="glass flex min-h-0 flex-col rounded-[28px] p-5">
+        {/* Right: 3D 玩家模型（仅正版 / 第三方）+ 调试控制台（仅 Debug 模式） */}
+        {(showModel || settings.debugMode) && (
+          <div className="flex min-h-0 flex-col gap-5">
+            {showModel && (
+              <div className="glass flex min-h-0 flex-1 items-center justify-center rounded-[28px] p-5">
+                <PlayerModel3D
+                  name={selectedAccount?.name}
+                  uuid={selectedAccount?.id}
+                  skinUrl={selectedAccount?.skinUrl}
+                  capeUrl={selectedAccount?.capeUrl}
+                  authType={selectedAccount?.authType}
+                  yggdrasilServer={selectedAccount?.yggdrasilServer}
+                  skinModel={selectedAccount?.skinModel}
+                  size={200}
+                />
+              </div>
+            )}
+            {settings.debugMode && (
+              <div className="glass flex min-h-0 flex-1 flex-col rounded-[28px] p-5">
           <div className="mb-3 flex items-center justify-between">
             <span className="headline">{t('home.launchLog')}</span>
             <div className="flex items-center gap-2">
@@ -380,47 +407,11 @@ export function HomePage(): JSX.Element {
               <ProgressBar percent={download.percent} />
             </div>
           )}
-        </div>
+              </div>
+            )}
+          </div>
         )}
       </div>
-
-      {/* 启动异常报告：按关键词给出结论与建议；识别不出时原样展示错误内容。 */}
-      {launchReport && (
-        <div className="fixed inset-0 z-[130] flex items-center justify-center p-6">
-          <div className="absolute inset-0" style={{ background: 'var(--scrim)' }} onClick={dismissLaunchReport} />
-          <div className="glass-strong relative z-10 flex max-h-[80vh] w-full max-w-lg flex-col rounded-[28px] p-6">
-            <div className="mb-3 flex items-center gap-3">
-              <div
-                className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl text-white"
-                style={{ background: 'var(--fill-danger)' }}
-              >
-                <Icon name="xmark" size={22} />
-              </div>
-              <div className="min-w-0">
-                <h2 className="title">{t('home.report.title')}</h2>
-                <p className="caption">{launchReport.summary}</p>
-              </div>
-            </div>
-            {launchReport.advice && (
-              <p className="caption mb-3 rounded-xl px-3 py-2" style={{ background: 'var(--chip-bg)' }}>
-                {launchReport.advice}
-              </p>
-            )}
-            <div className="mb-1.5 text-[13px] font-semibold">{t('home.report.detail')}</div>
-            <pre
-              className="selectable min-h-0 flex-1 overflow-auto whitespace-pre-wrap break-all rounded-2xl p-3 font-mono text-[12px] leading-relaxed"
-              style={{ background: 'rgba(0,0,0,0.28)', color: 'rgba(255,255,255,0.82)' }}
-            >
-              {launchReport.raw}
-            </pre>
-            <div className="mt-4 flex gap-2">
-              <Button className="flex-1" onClick={dismissLaunchReport}>
-                {t('home.report.close')}
-              </Button>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   )
 }

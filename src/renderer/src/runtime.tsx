@@ -10,6 +10,7 @@ import {
 } from 'react'
 import type { DownloadProgress, LaunchEvent, LaunchOptions, LaunchState } from '@shared/types'
 import { diagnoseLaunch, type LaunchReport } from './launch-diagnosis'
+import { useApp } from './store'
 
 interface RuntimeState {
   download: DownloadProgress | null
@@ -20,6 +21,8 @@ interface RuntimeState {
   launchPid: number | null
   /** 启动异常诊断报告：非空时界面弹窗展示（可关闭）。 */
   launchReport: LaunchReport | null
+  /** 是否正在分析启动错误：为真时界面以非侵入式方式显示「错误分析中…」。 */
+  analyzingReport: boolean
   busy: boolean
   installingId: string | null
   /** Non-null when a Java version mismatch is waiting for the user's decision. */
@@ -27,7 +30,7 @@ interface RuntimeState {
   /** 下载光球动画的起点（屏幕坐标） */
   flyFrom: { x: number; y: number; key: number } | null
   triggerFly: (x: number, y: number) => void
-  installVersion: (id: string) => Promise<void>
+  installVersion: (id: string, dirId?: string) => Promise<void>
   cancelDownload: () => void
   /** 只取消单个下载任务（按 taskId），不影响其它并行任务。 */
   cancelTask: (taskId: string) => void
@@ -49,7 +52,7 @@ const RuntimeContext = createContext<RuntimeState | null>(null)
  */
 interface RuntimeActions {
   triggerFly: (x: number, y: number) => void
-  installVersion: (id: string) => Promise<void>
+  installVersion: (id: string, dirId?: string) => Promise<void>
   cancelDownload: () => void
   /** 只取消单个下载任务（按 taskId），不影响其它并行任务。 */
   cancelTask: (taskId: string) => void
@@ -65,13 +68,19 @@ interface RuntimeActions {
 const RuntimeActionsContext = createContext<RuntimeActions | null>(null)
 
 export function RuntimeProvider({ children }: { children: ReactNode }): JSX.Element {
+  // 启动游戏后自动跳转到「启动游戏」页：由这里发起全局导航请求，最外层 Shell 消费。
+  const { requestNavigate } = useApp()
   const [downloads, setDownloads] = useState<DownloadProgress[]>([])
   const [launchState, setLaunchState] = useState<LaunchState | null>(null)
   const [launchLog, setLaunchLog] = useState<string[]>([])
   const [launchPid, setLaunchPid] = useState<number | null>(null)
   const [launchReport, setLaunchReport] = useState<LaunchReport | null>(null)
+  /** 是否正在分析启动错误（用于非侵入式显示「错误分析中…」）。 */
+  const [analyzingReport, setAnalyzingReport] = useState(false)
   /** 启动日志的最新快照：onEvent 闭包内需读取最新值做诊断，故用 ref 而非 state。 */
   const launchLogRef = useRef<string[]>([])
+  /** 「错误分析中」提示的定时器：延迟一帧再计算报告，让提示先绘制出来。 */
+  const analyzeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const [busy, setBusy] = useState(false)
   const [installingId, setInstallingId] = useState<string | null>(null)
   const [javaPrompt, setJavaPrompt] = useState<{ required: number } | null>(null)
@@ -134,25 +143,36 @@ export function RuntimeProvider({ children }: { children: ReactNode }): JSX.Elem
       if (e.state === 'exited' || e.state === 'error') {
         setBusy(false)
         setLaunchPid(null)
-        // 启动失败 / 非正常退出：按关键词分析日志生成可读报告；
-        // 未能识别时报告里仍保留原始错误内容，直接输出给用户。
+        // 启动失败 / 非正常退出：先非侵入式提示「错误分析中…」，再按关键词分析日志
+        // 生成可读报告；未能识别时报告里仍保留原始错误内容，直接输出给用户。
         if (e.state === 'error' || (e.exitCode !== undefined && e.exitCode !== 0)) {
-          setLaunchReport(diagnoseLaunch(launchLogRef.current, e.error, e.exitCode))
+          const logs = launchLogRef.current
+          const error = e.error
+          const exitCode = e.exitCode
+          setAnalyzingReport(true)
+          if (analyzeTimerRef.current != null) clearTimeout(analyzeTimerRef.current)
+          // 延后到下一帧再计算：同步计算会与提示同一帧提交，用户看不到「分析中」。
+          analyzeTimerRef.current = setTimeout(() => {
+            analyzeTimerRef.current = null
+            setLaunchReport(diagnoseLaunch(logs, error, exitCode))
+            setAnalyzingReport(false)
+          }, 0)
         }
       }
     })
     return () => {
       if (flushTimer != null) clearTimeout(flushTimer)
+      if (analyzeTimerRef.current != null) clearTimeout(analyzeTimerRef.current)
       offDownload()
       offLaunch()
     }
   }, [])
 
-  const installVersion = useCallback(async (id: string) => {
+  const installVersion = useCallback(async (id: string, dirId?: string) => {
     setBusy(true)
     setInstallingId(id)
     try {
-      await window.api.download.install(id)
+      await window.api.download.install(id, dirId)
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
       if (!msg.includes('下载已取消')) {
@@ -177,27 +197,33 @@ export function RuntimeProvider({ children }: { children: ReactNode }): JSX.Elem
     setDownloads((prev) => prev.filter((t) => (t.taskId ?? 'main') !== taskId))
   }, [])
 
-  const doLaunch = useCallback(async (opts: LaunchOptions) => {
-    setBusy(true)
-    launchLogRef.current = []
-    setLaunchReport(null)
-    setLaunchLog([])
-    setLaunchState('starting')
-    setLaunchPid(null)
-    setDownloads([])
-    try {
-      const { pid } = await window.api.launch.start(opts)
-      setLaunchPid(pid || null)
-    } catch (err) {
-      setLaunchState('error')
-      setLaunchLog([err instanceof Error ? err.message : String(err)])
-      setBusy(false)
-    } finally {
-      // 启动时的补全下载完成后（无论成功、失败还是取消），清理该版本的进度条目，
-      // 避免「进度」页 / 控制台在下载结束后仍残留进度条。
-      setDownloads((prev) => prev.filter((t) => (t.taskId ?? 'main') !== opts.versionId))
-    }
-  }, [])
+  const doLaunch = useCallback(
+    async (opts: LaunchOptions) => {
+      // 无论从哪个界面发起启动，都先跳到「启动游戏」页，让用户看到启动进度与结果。
+      requestNavigate('home')
+      setBusy(true)
+      launchLogRef.current = []
+      setLaunchReport(null)
+      setAnalyzingReport(false)
+      setLaunchLog([])
+      setLaunchState('starting')
+      setLaunchPid(null)
+      setDownloads([])
+      try {
+        const { pid } = await window.api.launch.start(opts)
+        setLaunchPid(pid || null)
+      } catch (err) {
+        setLaunchState('error')
+        setLaunchLog([err instanceof Error ? err.message : String(err)])
+        setBusy(false)
+      } finally {
+        // 启动时的补全下载完成后（无论成功、失败还是取消），清理该版本的进度条目，
+        // 避免「进度」页 / 控制台在下载结束后仍残留进度条。
+        setDownloads((prev) => prev.filter((t) => (t.taskId ?? 'main') !== opts.versionId))
+      }
+    },
+    [requestNavigate]
+  )
 
   const launch = useCallback(
     async (opts: LaunchOptions) => {
@@ -225,6 +251,7 @@ export function RuntimeProvider({ children }: { children: ReactNode }): JSX.Elem
     setBusy(true)
     launchLogRef.current = []
     setLaunchReport(null)
+    setAnalyzingReport(false)
     setLaunchLog([])
     setLaunchState('starting')
     try {
@@ -277,13 +304,14 @@ export function RuntimeProvider({ children }: { children: ReactNode }): JSX.Elem
       launchLog,
       launchPid,
       launchReport,
+      analyzingReport,
       busy,
       installingId,
       javaPrompt,
       flyFrom,
       ...actions
     }),
-    [download, downloads, launchState, launchLog, launchPid, launchReport, busy, installingId, javaPrompt, flyFrom, actions]
+    [download, downloads, launchState, launchLog, launchPid, launchReport, analyzingReport, busy, installingId, javaPrompt, flyFrom, actions]
   )
 
   return (

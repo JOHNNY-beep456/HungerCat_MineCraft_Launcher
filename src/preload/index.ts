@@ -71,13 +71,14 @@ const api: LauncherApi = {
     addYggdrasil: (server: string, email: string, password: string): Promise<YggdrasilLoginOutcome> =>
       ipcRenderer.invoke('accounts:addYggdrasil', server, email, password),
     addYggdrasilProfiles: (ids: string[]): Promise<MinecraftAccount[]> =>
-      ipcRenderer.invoke('accounts:addYggdrasilProfiles', ids)
+      ipcRenderer.invoke('accounts:addYggdrasilProfiles', ids),
+    yggdrasilSkin: (server: string, uuid: string) => ipcRenderer.invoke('yggdrasil:skin', server, uuid)
   },
   versions: {
     list: () => ipcRenderer.invoke('versions:list'),
     get: (id: string) => ipcRenderer.invoke('versions:get', id),
-    createVanilla: (baseVersion: string, customName: string) =>
-      ipcRenderer.invoke('versions:createVanilla', baseVersion, customName),
+    createVanilla: (baseVersion: string, customName: string, dirId?: string) =>
+      ipcRenderer.invoke('versions:createVanilla', baseVersion, customName, dirId),
     scanExternal: (mcDir: string): Promise<ExternalVersion[]> =>
       ipcRenderer.invoke('versions:scanExternal', mcDir),
     importExternal: (
@@ -88,7 +89,10 @@ const api: LauncherApi = {
       ipcRenderer.invoke('versions:importExternal', mcDir, versionId, onConflict)
   },
   installed: {
-    list: () => ipcRenderer.invoke('installed:list')
+    list: () => ipcRenderer.invoke('installed:list'),
+    listAll: () => ipcRenderer.invoke('installed:listAll'),
+    addServer: (versionId: string, name: string, address: string) =>
+      ipcRenderer.invoke('installed:addServer', versionId, name, address)
   },
   versionDirs: {
     list: () => ipcRenderer.invoke('versionDirs:list'),
@@ -100,13 +104,13 @@ const api: LauncherApi = {
   },
   loaders: {
     versions: (kind: LoaderKind, mcVersion: string) => ipcRenderer.invoke('loaders:versions', kind, mcVersion),
-    install: (kind: LoaderKind, mcVersion: string, loaderVersion: string, customId?: string) =>
-      ipcRenderer.invoke('loaders:install', kind, mcVersion, loaderVersion, customId)
+    install: (kind: LoaderKind, mcVersion: string, loaderVersion: string, customId?: string, dirId?: string) =>
+      ipcRenderer.invoke('loaders:install', kind, mcVersion, loaderVersion, customId, dirId)
   },
   forge: {
     versions: (kind: ForgeKind, mcVersion: string) => ipcRenderer.invoke('forge:versions', kind, mcVersion),
-    install: (kind: ForgeKind, mcVersion: string, version: string, customId?: string) =>
-      ipcRenderer.invoke('forge:install', kind, mcVersion, version, customId),
+    install: (kind: ForgeKind, mcVersion: string, version: string, customId?: string, waitForVersion?: string, dirId?: string) =>
+      ipcRenderer.invoke('forge:install', kind, mcVersion, version, customId, waitForVersion, dirId),
     onLog: subscribe<string>('forge:log')
   },
   resources: {
@@ -120,7 +124,7 @@ const api: LauncherApi = {
       ipcRenderer.invoke('resources:applyUpdate', versionId, update, enabled)
   },
   download: {
-    install: (id: string) => ipcRenderer.invoke('download:install', id),
+    install: (id: string, dirId?: string) => ipcRenderer.invoke('download:install', id, dirId),
     cancel: (taskId?: string) => ipcRenderer.invoke('download:cancel', taskId),
     /** 当前实际使用的下载器（原生 Rust 内核是否可用）。 */
     engine: () => ipcRenderer.invoke('download:engine'),
@@ -140,8 +144,8 @@ const api: LauncherApi = {
       ipcRenderer.invoke('mods:project', id, type),
     versions: (slug: string, loaders: string[], gameVersions: string[], source?: ModSource, type?: ModrinthType) =>
       ipcRenderer.invoke('mods:versions', slug, loaders, gameVersions, source, type),
-    install: (fileUrl: string, filename: string, versionId: string, type?: ModrinthType, sizeHint?: number) =>
-      ipcRenderer.invoke('mods:install', fileUrl, filename, versionId, type, sizeHint),
+    install: (fileUrl: string, filename: string, versionId: string, type?: ModrinthType, sizeHint?: number, dirId?: string) =>
+      ipcRenderer.invoke('mods:install', fileUrl, filename, versionId, type, sizeHint, dirId),
     downloadTo: (fileUrl: string, destPath: string, sizeHint?: number) =>
       ipcRenderer.invoke('mods:downloadTo', fileUrl, destPath, sizeHint),
     installFabricApi: (mcVersion: string, versionId: string) =>
@@ -156,7 +160,7 @@ const api: LauncherApi = {
     pick: (): Promise<JavaRuntime | null> => ipcRenderer.invoke('java:pick')
   },
   manage: {
-    mods: (versionId: string) => ipcRenderer.invoke('manage:mods', versionId),
+    mods: (versionId: string, dirId?: string) => ipcRenderer.invoke('manage:mods', versionId, dirId),
     onModsUpdated: subscribe<{ versionId: string; mod: ModEntry }>('manage:mods-updated'),
     toggleMod: (path: string) => ipcRenderer.invoke('manage:toggleMod', path),
     deleteMod: (path: string) => ipcRenderer.invoke('manage:deleteMod', path),
@@ -249,8 +253,8 @@ const api: LauncherApi = {
   modpack: {
     probe: (filePath: string) => ipcRenderer.invoke('modpack:probe', filePath),
     download: (url: string, filename: string) => ipcRenderer.invoke('modpack:download', url, filename),
-    import: (filePath: string, customName?: string) => ipcRenderer.invoke('modpack:import', filePath, customName),
-    importFromUrl: (url: string, filename: string, customName?: string) => ipcRenderer.invoke('modpack:importFromUrl', url, filename, customName),
+    import: (filePath: string, customName?: string, dirId?: string) => ipcRenderer.invoke('modpack:import', filePath, customName, dirId),
+    importFromUrl: (url: string, filename: string, customName?: string, dirId?: string) => ipcRenderer.invoke('modpack:importFromUrl', url, filename, customName, dirId),
     exportInventory: (versionId: string) => ipcRenderer.invoke('modpack:exportInventory', versionId),
     export: (versionId: string, options: ModpackExportOptions) => ipcRenderer.invoke('modpack:export', versionId, options),
     onProgress: subscribe<DownloadProgress>('modpack:progress')
@@ -271,6 +275,10 @@ const api: LauncherApi = {
     texts: (texts: string[], target: string) => ipcRenderer.invoke('translate:texts', texts, target),
     setKey: (key: string) => ipcRenderer.invoke('translate:setKey', key),
     clearKey: () => ipcRenderer.invoke('translate:clearKey')
+  },
+  minecraft: {
+    userinfo: (name: string) => ipcRenderer.invoke('minecraft:userinfo', name),
+    serverStatus: (address: string) => ipcRenderer.invoke('minecraft:serverstatus', address)
   },
   window: {
     minimize: () => ipcRenderer.invoke('window:minimize'),

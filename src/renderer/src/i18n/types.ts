@@ -1,22 +1,17 @@
-/** i18n 基础类型与语言清单（从 index 拆出，避免 fragment 与 index 循环依赖）。 */
+/**
+ * i18n 基础类型。
+ *
+ * `Locale` 不再是固定字面量联合，而是普通 `string`：语言清单由 `index.ts` 通过
+ * `import.meta.glob` 从 `locales/<语言>/meta.json` **自动发现**，新增一门语言只需
+ * 新建目录并放入 JSON，无需改动任何代码（也就无需在此维护联合类型）。
+ */
 
-export type Locale = 'zh-CN' | 'zh-TW' | 'en'
-
-/** 设置页语言选项（label 用各自母语书写，便于辨认）。 */
-export const LOCALES: Array<{ value: Locale; label: string }> = [
-  { value: 'zh-CN', label: '简体中文' },
-  { value: 'zh-TW', label: '繁體中文' },
-  { value: 'en', label: 'English' }
-]
-
-export function isLocale(v: unknown): v is Locale {
-  return v === 'zh-CN' || v === 'zh-TW' || v === 'en'
-}
+export type Locale = string
 
 /** 单个语言的「键 → 文案」字典。 */
-export type LocaleDict = Record<Locale, Record<string, string>>
+export type LocaleDict = Record<string, Record<string, string>>
 
 export type TFunction = (key: string, vars?: Record<string, string | number>) => string
 
-/** 语言兜底顺序：目标语言 → 简体中文 → 键名。 */
+/** 语言兜底：目标语言缺词 → 简体中文 → 键名。 */
 export const FALLBACK: Locale = 'zh-CN'

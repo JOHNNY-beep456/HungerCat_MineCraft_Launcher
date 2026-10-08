@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent } from 'react'
 import { AnimatePresence, motion } from 'motion/react'
-import type { ConflictPolicy, ExternalVersion, InstalledVersion, ModpackProbe, VersionDir } from '@shared/types'
-import { activeGameDir, activeVersionDir, useApp, versionDirLabel } from '../store'
+import type { ConflictPolicy, ExternalVersion, InstalledVersion, MinecraftServerStatus, ModpackProbe, VersionDir } from '@shared/types'
+import { activeGameDir, allVersionDirs, useApp, versionDirLabel } from '../store'
+import { useAutoTranslate } from '../translate'
 import type { TFunction } from '../i18n'
 import { useRuntimeActions } from '../runtime'
 import { Button, Icon, LoadingState, Segmented, Select, Spinner } from '../components/ui'
@@ -34,6 +35,16 @@ export function InstancesPage({ onManage }: { onManage: (versionId: string) => v
   const [aliasPrompt, setAliasPrompt] = useState<{ mode: 'add' | 'edit'; id: string; path: string } | null>(null)
   const [aliasValue, setAliasValue] = useState('')
 
+  // 直接为某个实例添加服务器（名称 + 地址）：写入该实例的 servers.dat。
+  const [serverPrompt, setServerPrompt] = useState<{ versionId: string } | null>(null)
+  const [serverName, setServerName] = useState('')
+  const [serverAddress, setServerAddress] = useState('')
+  const [serverBusy, setServerBusy] = useState(false)
+  const [serverError, setServerError] = useState<string | null>(null)
+
+  // 导入整合包时的目标版本目录：空串表示跟随当前生效目录。
+  const [importDirId, setImportDirId] = useState('')
+
   const currentDirId = settings.selectedVersionDirId || 'default'
 
   const refresh = useCallback(async () => {
@@ -51,6 +62,32 @@ export function InstancesPage({ onManage }: { onManage: (versionId: string) => v
       /* versionDirs:list 失败时保持上次列表 */
     }
   }, [])
+
+  /** 打开「添加服务器」弹窗：清空上次输入与错误。 */
+  const openAddServer = (versionId: string): void => {
+    setServerName('')
+    setServerAddress('')
+    setServerError(null)
+    setServerBusy(false)
+    setServerPrompt({ versionId })
+  }
+
+  /** 提交添加服务器：写入该实例的 servers.dat，成功后刷新列表；失败把原因留在弹窗里。 */
+  const submitAddServer = (): void => {
+    if (!serverPrompt) return
+    const address = serverAddress.trim()
+    if (!address) return
+    setServerBusy(true)
+    setServerError(null)
+    void window.api.installed
+      .addServer(serverPrompt.versionId, serverName.trim(), address)
+      .then(() => {
+        setServerPrompt(null)
+        return refresh()
+      })
+      .catch((err: unknown) => setServerError(err instanceof Error ? err.message : String(err)))
+      .finally(() => setServerBusy(false))
+  }
 
   useEffect(() => {
     void refresh()
@@ -104,8 +141,14 @@ export function InstancesPage({ onManage }: { onManage: (versionId: string) => v
     await refresh()
   }
 
+  // 下拉选项：目录路径只作为「备注」显示在名称下方（无别名时直接显示路径）。
+  // 这样目录名与路径合并进同一个下拉，界面不再单独占一行显示路径。
   const dirOptions = [
-    ...dirs.map((d) => ({ value: d.id, label: versionDirLabel(d) })),
+    ...allVersionDirs(settings).map((d) => ({
+      value: d.id,
+      label: d.alias ? d.alias : d.path,
+      note: d.alias ? d.path : undefined
+    })),
     { value: '__add__', label: t('ins.dirAddOption') }
   ]
 
@@ -135,8 +178,24 @@ export function InstancesPage({ onManage }: { onManage: (versionId: string) => v
     })
   }
 
-  const renameTaken =
-    renameProbe !== null && renameValue.trim() !== '' && (installed ?? []).some((v) => v.id === renameValue.trim())
+  // 导入弹窗打开时，拉取「目标版本目录」里的实例名（重名判断按目标目录，而非当前生效目录）。
+  const [importDirNames, setImportDirNames] = useState<string[]>([])
+  useEffect(() => {
+    if (!renameProbe) return
+    let alive = true
+    const targetDirId = importDirId || settings.selectedVersionDirId || 'default'
+    void window.api.installed
+      .listAll()
+      .then((all) => {
+        if (alive) setImportDirNames(all.filter((i) => i.dirId === targetDirId).map((i) => i.id))
+      })
+      .catch(() => undefined)
+    return () => {
+      alive = false
+    }
+  }, [renameProbe, importDirId, settings.selectedVersionDirId])
+
+  const renameTaken = renameProbe !== null && renameValue.trim() !== '' && importDirNames.includes(renameValue.trim())
 
   // 在既有实例中取一个不重名、且不等于其 MC 版本号的实例名
   // （避免打开弹窗时默认值被占用、导入按钮置灰，或与版本号同名时静默合并进原版）。
@@ -168,15 +227,17 @@ export function InstancesPage({ onManage }: { onManage: (versionId: string) => v
     if (!renameProbe) return
     const name = renameValue.trim()
     if (!name) return
-    if ((installed ?? []).some((v) => v.id === name)) {
+    // 按目标版本目录判重（与弹窗里的提示一致）。
+    if (importDirNames.includes(name)) {
       setImportMsg(t('ins.nameExistsChange', { name }))
       return
     }
     const probe = renameProbe.probe
     const filePath = renameProbe.filePath
+    const targetDirId = importDirId || settings.selectedVersionDirId || 'default'
     setRenameProbe(null)
     try {
-      await window.api.modpack.import(filePath, name)
+      await window.api.modpack.import(filePath, name, targetDirId)
     } catch (err) {
       setImportMsg(t('ins.importFailed', { msg: err instanceof Error ? err.message : String(err) }))
     }
@@ -324,52 +385,52 @@ export function InstancesPage({ onManage }: { onManage: (versionId: string) => v
         </div>
       </div>
 
-      {/* 版本目录选择：切换 / 添加（可设别名）；实例列表与启动都以此为准 */}
-      <div className="glass-soft flex items-center gap-3 rounded-2xl px-3 py-2">
-        <Icon name="folder" size={15} className="shrink-0 opacity-60" />
-        <span className="caption shrink-0">{t('ins.versionDir')}</span>
-        <Select
-          variant="seamless"
-          className="w-[220px] max-w-[44vw] shrink-0"
-          value={currentDirId}
-          onChange={(v) => void selectDir(v)}
-          options={dirOptions}
-        />
-        <span className="caption min-w-0 flex-1 truncate" title={activeVersionDir(settings).path}>
-          {activeVersionDir(settings).path}
-        </span>
-        <Button size="sm" icon="settings" onClick={() => setDirsOpen(true)}>
-          {t('ins.manage')}
-        </Button>
-      </div>
+      {/* 单框工具栏：左侧搜索 + 版本号 / 加载器筛选，右侧版本目录选择（切换 / 添加 / 管理）。
+          版本目录路径作为备注显示在下拉框内（名称下方）。 */}
+      <div className="glass-soft flex flex-wrap items-center gap-3 rounded-2xl px-3 py-2">
+        {(installed?.length ?? 0) > 0 && (
+          <>
+            <div className="relative min-w-[200px] flex-1">
+              <Icon name="search" size={15} className="absolute left-3 top-1/2 -translate-y-1/2 opacity-50" />
+              <input
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                placeholder={t('ins.searchPlaceholder')}
+                className="input w-full pl-9"
+              />
+            </div>
+            <div className="flex shrink-0 items-center gap-2">
+              <span className="caption">{t('ins.filterVersion')}</span>
+              <Select className="w-[132px]" value={filterMc} onChange={setFilterMc} options={mcOptions} />
+            </div>
+            <div className="flex shrink-0 items-center gap-2">
+              <span className="caption">{t('ins.filterLoader')}</span>
+              <Select className="w-[128px]" value={filterLoader} onChange={setFilterLoader} options={loaderOptions} />
+            </div>
+            {filtersActive && (
+              <Button size="sm" icon="xmark" onClick={clearFilters}>
+                {t('ins.filterClear')}
+              </Button>
+            )}
+          </>
+        )}
 
-      {/* 搜索（版本名 / 存档名 / 服务器名）+ 筛选（版本号 / 加载器）；无实例时不展示 */}
-      {(installed?.length ?? 0) > 0 && (
-        <div className="glass-soft flex flex-wrap items-center gap-3 rounded-2xl px-3 py-2">
-          <div className="relative min-w-[200px] flex-1">
-            <Icon name="search" size={15} className="absolute left-3 top-1/2 -translate-y-1/2 opacity-50" />
-            <input
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              placeholder={t('ins.searchPlaceholder')}
-              className="input w-full pl-9"
-            />
-          </div>
-          <div className="flex shrink-0 items-center gap-2">
-            <span className="caption">{t('ins.filterVersion')}</span>
-            <Select className="w-[132px]" value={filterMc} onChange={setFilterMc} options={mcOptions} />
-          </div>
-          <div className="flex shrink-0 items-center gap-2">
-            <span className="caption">{t('ins.filterLoader')}</span>
-            <Select className="w-[128px]" value={filterLoader} onChange={setFilterLoader} options={loaderOptions} />
-          </div>
-          {filtersActive && (
-            <Button size="sm" icon="xmark" onClick={clearFilters}>
-              {t('ins.filterClear')}
-            </Button>
-          )}
+        {/* 版本目录选择器：整体置于行尾 */}
+        <div className="ml-auto flex min-w-0 items-center gap-2">
+          <Icon name="folder" size={15} className="shrink-0 opacity-60" />
+          <span className="caption shrink-0">{t('ins.versionDir')}</span>
+          <Select
+            variant="seamless"
+            className="min-w-0 w-[240px] max-w-[40vw]"
+            value={currentDirId}
+            onChange={(v) => void selectDir(v)}
+            options={dirOptions}
+          />
+          <Button size="sm" icon="settings" onClick={() => setDirsOpen(true)}>
+            {t('ins.manage')}
+          </Button>
         </div>
-      )}
+      </div>
 
       {importMsg && (
         <div className="glass-soft flex items-center gap-2 rounded-2xl px-4 py-3 text-[13px]">
@@ -423,12 +484,80 @@ export function InstancesPage({ onManage }: { onManage: (versionId: string) => v
                   canLaunch={!!selectedAccount}
                   onManage={() => onManage(v.id)}
                   onLaunch={doLaunch}
+                  onAddServer={() => openAddServer(v.id)}
                 />
               </motion.div>
             ))}
           </div>
         )}
       </div>
+
+      {/* 添加服务器弹窗：输入名称 + 地址，写入该实例的 servers.dat */}
+      <AnimatePresence>
+        {serverPrompt && (
+          <motion.div
+            className="absolute inset-0 z-50 flex items-center justify-center p-6"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+          >
+            <motion.div
+              className="absolute inset-0"
+              style={{ background: 'var(--scrim)' }}
+              onClick={() => !serverBusy && setServerPrompt(null)}
+            />
+            <motion.div
+              className="glass-strong relative z-10 w-full max-w-sm rounded-[28px] p-6"
+              initial={{ scale: 0.94, opacity: 0, y: 12 }}
+              animate={{ scale: 1, opacity: 1, y: 0 }}
+              exit={{ scale: 0.94, opacity: 0, y: 12 }}
+              transition={{ type: 'spring', bounce: 0.18, duration: 0.4 }}
+            >
+              <h2 className="title mb-1">{t('ins.addServerTitle')}</h2>
+              <p className="caption mb-4 truncate" title={serverPrompt.versionId}>
+                {t('ins.addServerFor', { name: serverPrompt.versionId })}
+              </p>
+              <label className="caption mb-1 block">{t('ins.serverName')}</label>
+              <input
+                autoFocus
+                value={serverName}
+                onChange={(e) => setServerName(e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && submitAddServer()}
+                placeholder={t('ins.serverNamePlaceholder')}
+                className="input mb-3 w-full"
+              />
+              <label className="caption mb-1 block">{t('ins.serverAddress')}</label>
+              <input
+                value={serverAddress}
+                onChange={(e) => setServerAddress(e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && submitAddServer()}
+                placeholder={t('ins.serverAddressPlaceholder')}
+                spellCheck={false}
+                className="input mb-4 w-full"
+              />
+              <p className="caption mb-4 -mt-2 opacity-70">{t('ins.addServerHint')}</p>
+              {serverError && (
+                <p className="mb-4 text-[12px]" style={{ color: 'var(--fill-danger)' }}>
+                  {serverError}
+                </p>
+              )}
+              <div className="flex gap-2">
+                <Button className="flex-1" disabled={serverBusy} onClick={() => setServerPrompt(null)}>
+                  {t('ins.cancel')}
+                </Button>
+                <Button
+                  variant="primary"
+                  className="flex-1"
+                  disabled={serverBusy || !serverAddress.trim()}
+                  onClick={submitAddServer}
+                >
+                  {serverBusy ? t('ins.addServerBusy') : t('ins.addServerConfirm')}
+                </Button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {/* 重命名弹窗（文件夹名冲突） */}
       <AnimatePresence>
@@ -457,7 +586,14 @@ export function InstancesPage({ onManage }: { onManage: (versionId: string) => v
                 onChange={(e) => setRenameValue(e.target.value)}
                 onKeyDown={(e) => e.key === 'Enter' && renameValue.trim() && !renameTaken && void confirmImport()}
                 placeholder={t('ins.instanceNamePlaceholder')}
-                className="input mb-5 w-full"
+                className="input mb-3 w-full"
+              />
+              <div className="caption mb-2">{t('ins.installDir')}</div>
+              <Select
+                value={importDirId || settings.selectedVersionDirId || 'default'}
+                onChange={setImportDirId}
+                className="mb-5 w-full"
+                options={dirOptions}
               />
               {renameTaken && (
                 <p className="mb-4 -mt-3 text-[12px]" style={{ color: 'var(--fill-danger)' }}>
@@ -668,18 +804,22 @@ export function InstancesPage({ onManage }: { onManage: (versionId: string) => v
   )
 }
 
+
+
 function InstanceCard({
   v,
   canLaunch,
   onManage,
-  onLaunch
+  onLaunch,
+  onAddServer
 }: {
   v: InstalledVersion
   canLaunch: boolean
   onManage: () => void
   onLaunch: (versionId: string, opts?: { world?: string; server?: string }) => void
+  onAddServer: () => void
 }): JSX.Element {
-  const { openFileManager, t } = useApp()
+  const { openFileManager, settings, t } = useApp()
   return (
     <div className="glass rounded-[24px] p-4">
       <div className="flex items-center gap-3">
@@ -710,6 +850,8 @@ function InstanceCard({
         >
           {t('ins.dir')}
         </Button>
+        {/* 直接为该实例添加服务器：写入其 servers.dat，保存后卡片里即可一键进入 */}
+        <Button size="sm" className="shrink-0" icon="server" onClick={onAddServer} title={t('ins.addServer')} />
         <Button size="sm" variant="primary" icon="play" disabled={!canLaunch} onClick={() => onLaunch(v.id)}>
           {t('ins.launch')}
         </Button>
@@ -721,7 +863,14 @@ function InstanceCard({
             <QuickRow key={`w-${w}`} label={`${v.id} - ${w}`} icon="home" onPlay={() => onLaunch(v.id, { world: w })} />
           ))}
           {v.servers.map((s) => (
-            <QuickRow key={`s-${s.address}`} label={`${v.id} - ${s.name}`} icon="link" onPlay={() => onLaunch(v.id, { server: s.address })} />
+            <ServerRow
+              key={`s-${s.address}`}
+              versionId={v.id}
+              name={s.name}
+              address={s.address}
+              enabled={settings.showServerStatus}
+              onPlay={() => onLaunch(v.id, { server: s.address })}
+            />
           ))}
         </div>
       )}
@@ -729,6 +878,295 @@ function InstanceCard({
   )
 }
 
+/**
+ * 服务器条目：展示「实例名 - 服务器名」、MOTD（彩色）与在线人数 / 总人数。
+ *
+ * 开启「显示服务器状态」后经 uapis.cn 查询：优先使用接口返回的 motd_html
+ * （白名单净化后渲染），若仅有纯文本则本地解析 § 颜色代码着色。查询失败 / 关闭
+ * 开关时退回仅显示名称与地址，不阻塞启动按钮。
+ */
+function ServerRow({
+  versionId,
+  name,
+  address,
+  enabled,
+  onPlay
+}: {
+  versionId: string
+  name: string
+  address: string
+  enabled: boolean
+  onPlay: () => void
+}): JSX.Element {
+  const { t } = useApp()
+  const [status, setStatus] = useState<MinecraftServerStatus | null>(null)
+  const [failed, setFailed] = useState(false)
+
+  useEffect(() => {
+    if (!enabled) {
+      setStatus(null)
+      setFailed(false)
+      return
+    }
+    let alive = true
+    setFailed(false)
+    void window.api.minecraft
+      .serverStatus(address)
+      .then((s) => {
+        if (alive) setStatus(s)
+      })
+      .catch(() => {
+        if (alive) {
+          setStatus(null)
+          setFailed(true)
+        }
+      })
+    return () => {
+      alive = false
+    }
+  }, [enabled, address])
+
+  // MOTD 自动翻译：跟随「自动翻译」总开关（useAutoTranslate 内部已含语言检测，
+  // MOTD 已是设置语言时不会翻译）。仅对纯文本 motd_clean 取译文。
+  const trMotd = useAutoTranslate([status?.motdClean])
+  const motdTranslated = status ? trMotd(status.motdClean) : ''
+
+  const motdHtml = useMemo(() => {
+    if (!status) return ''
+    if (status.motdHtml.trim()) return sanitizeMotdHtml(status.motdHtml)
+    // 无 HTML 时退回本地解析纯文本 MOTD 的 § 颜色代码。
+    return motdToHtml(status.motdClean)
+  }, [status])
+
+  return (
+    <div className="glass-soft flex items-start gap-2 rounded-xl px-3 py-2">
+      {status?.faviconUrl ? (
+        <img
+          src={status.faviconUrl}
+          alt=""
+          aria-hidden
+          className="mt-0.5 h-4 w-4 shrink-0 rounded-[3px]"
+          style={{ imageRendering: 'pixelated' }}
+        />
+      ) : (
+        <Icon name="link" size={15} className="mt-0.5 shrink-0 opacity-60" />
+      )}
+      <div className="min-w-0 flex-1">
+        <div className="truncate text-[13px] font-medium">
+          {versionId} - {name}
+        </div>
+        {(() => {
+          // MOTD 展示与「自动翻译」开关无关：只要接口返回了 MOTD 就展示（等宽/换行保留）。
+          // 三档优先级：① 语言检测判定需翻译且已翻好 → 显示译文（纯文本）；
+          //             ② 有彩色 motd_html → 净化后渲染；③ 仅有纯文本 → § 代码着色。
+          if (!enabled || !status) {
+            return <div className="caption mt-0.5 truncate">{address}</div>
+          }
+          const needTranslate = motdTranslated.trim() && motdTranslated.trim() !== status.motdClean.trim()
+          if (needTranslate) {
+            return (
+              <div className="ins-motd mt-0.5 whitespace-pre-wrap break-all text-[12px] leading-snug">
+                {motdTranslated}
+              </div>
+            )
+          }
+          if (motdHtml) {
+            return (
+              <div
+                className="ins-motd mt-0.5 whitespace-pre-wrap break-all text-[12px] leading-snug"
+                dangerouslySetInnerHTML={{ __html: motdHtml }}
+              />
+            )
+          }
+          // MOTD 为空（部分服务器不返回且直连也拿不到）：退回显示「地址 · 版本」，避免该行空白。
+          return (
+            <div className="caption mt-0.5 truncate">
+              {address}
+              {status.version ? ` · ${status.version}` : ''}
+            </div>
+          )
+        })()}
+      </div>
+      {enabled && status && (
+        <span
+          className="mt-0.5 shrink-0 rounded-md px-1.5 py-0.5 text-[11px] font-medium"
+          style={{
+            color: status.online ? 'var(--fill-success)' : 'var(--fill-danger)',
+            background: 'var(--fill-tertiary, rgba(120,120,128,0.12))'
+          }}
+          title={status.version || undefined}
+        >
+          {status.online
+            ? t('ins.server.players', { online: status.players, max: status.maxPlayers })
+            : t('ins.server.offline')}
+        </span>
+      )}
+      {enabled && failed && !status && (
+        <span className="caption mt-0.5 shrink-0">{t('ins.server.failed')}</span>
+      )}
+      <button
+        onClick={onPlay}
+        className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-white transition-transform active:scale-90 no-drag"
+        style={{ background: 'var(--fill-primary)' }}
+        title={t('ins.quickLaunch')}
+      >
+        <Icon name="play" size={14} />
+      </button>
+    </div>
+  )
+}
+
+/** Minecraft § 颜色代码 → 十六进制颜色（与游戏内 16 色对应）。 */
+const MC_COLORS: Record<string, string> = {
+  '0': '#000000',
+  '1': '#0000AA',
+  '2': '#00AA00',
+  '3': '#00AAAA',
+  '4': '#AA0000',
+  '5': '#AA00AA',
+  '6': '#FFAA00',
+  '7': '#AAAAAA',
+  '8': '#555555',
+  '9': '#5555FF',
+  a: '#55FF55',
+  b: '#55FFFF',
+  c: '#FF5555',
+  d: '#FF55FF',
+  e: '#FFFF55',
+  f: '#FFFFFF'
+}
+
+/** 转义 HTML 文本中的特殊字符，避免纯文本 MOTD 注入。 */
+function escapeHtml(s: string): string {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+}
+
+/** 本地解析纯文本 MOTD：按 § 代码着色（§l 加粗 / §o 斜体 / §r 复位），换行保留。 */
+function motdToHtml(clean: string): string {
+  if (!clean) return ''
+  const segs: string[] = []
+  let bold = false
+  let italic = false
+  let color = ''
+  const open = (): string => {
+    const style = `${color ? `color:${color};` : ''}${bold ? 'font-weight:700;' : ''}${italic ? 'font-style:italic;' : ''}`
+    return style ? `<span style="${style}">` : '<span>'
+  }
+  // 逐字符扫描 § 代码，颜色/样式变化时切分并闭合上一段。
+  let i = 0
+  let text = ''
+  let seg = open()
+  const chars = Array.from(clean)
+  while (i < chars.length) {
+    const ch = chars[i]
+    if ((ch === '§' || ch === '&') && i + 1 < chars.length) {
+      const code = chars[i + 1].toLowerCase()
+      if (code in MC_COLORS) {
+        if (text) seg += escapeHtml(text) + '</span>'
+        if (seg) segs.push(seg)
+        color = MC_COLORS[code]
+        bold = false
+        italic = false
+        text = ''
+        seg = open()
+        i += 2
+        continue
+      }
+      if (code === 'l') {
+        if (text) seg += escapeHtml(text) + '</span>'
+        if (seg) segs.push(seg)
+        bold = true
+        text = ''
+        seg = open()
+        i += 2
+        continue
+      }
+      if (code === 'o') {
+        if (text) seg += escapeHtml(text) + '</span>'
+        if (seg) segs.push(seg)
+        italic = true
+        text = ''
+        seg = open()
+        i += 2
+        continue
+      }
+      if (code === 'r') {
+        if (text) seg += escapeHtml(text) + '</span>'
+        if (seg) segs.push(seg)
+        color = ''
+        bold = false
+        italic = false
+        text = ''
+        seg = open()
+        i += 2
+        continue
+      }
+      // 其它格式代码（§k 乱码 / §m 删除线 / §n 下划线）直接丢弃。
+      i += 2
+      continue
+    }
+    text += ch
+    i++
+  }
+  if (text) seg += escapeHtml(text) + '</span>'
+  if (seg) segs.push(seg)
+  return segs.join('')
+}
+
+/**
+ * 白名单净化接口返回的 motd_html：仅保留 span / b / i / br，仅保留 color 与
+ * font-weight / font-style / text-decoration 等样式，剔除 script / 事件属性 / 图片
+ * 等一切可能注入的内容（dangerouslySetInnerHTML 前必须执行）。
+ */
+function sanitizeMotdHtml(html: string): string {
+  const doc = new DOMParser().parseFromString(html, 'text/html')
+  const allowedTags = new Set(['SPAN', 'B', 'I', 'U', 'BR', 'STRONG', 'EM'])
+  const allowedProps = new Set(['color', 'font-weight', 'font-style', 'text-decoration'])
+  const walk = (node: Node): void => {
+    const children = Array.from(node.childNodes)
+    for (const child of children) {
+      if (child.nodeType === Node.TEXT_NODE) continue
+      if (child.nodeType !== Node.ELEMENT_NODE) {
+        child.remove()
+        continue
+      }
+      const el = child as Element
+      if (!allowedTags.has(el.tagName)) {
+        // 不在白名单：用其子节点替换该元素（保留文字、丢弃标签本身）。
+        const fragment = doc.createDocumentFragment()
+        while (el.firstChild) fragment.appendChild(el.firstChild)
+        el.replaceWith(fragment)
+        walk(node)
+        continue
+      }
+      for (const attr of Array.from(el.attributes)) {
+        const attrName = attr.name.toLowerCase()
+        if (attrName === 'style') {
+          const kept: string[] = []
+          for (const decl of attr.value.split(';')) {
+            const [prop, ...rest] = decl.split(':')
+            if (!prop || rest.length === 0) continue
+            const p = prop.trim().toLowerCase()
+            if (!allowedProps.has(p)) continue
+            // 仅允许安全的颜色/粗细/样式取值，拒绝 url( / expression 之类。
+            const value = rest.join(':').trim()
+            if (/url\s*\(|expression|javascript:/i.test(value)) continue
+            kept.push(`${p}:${value}`)
+          }
+          if (kept.length > 0) el.setAttribute('style', kept.join(';'))
+          else el.removeAttribute('style')
+        } else {
+          el.removeAttribute(attr.name)
+        }
+      }
+      walk(el)
+    }
+  }
+  walk(doc.body)
+  return doc.body.innerHTML
+}
+
+/** 存档条目：展示「实例名 - 存档名」并提供一键进入世界的播放按钮。 */
 function QuickRow({ label, icon, onPlay }: { label: string; icon: string; onPlay: () => void }): JSX.Element {
   const { t } = useApp()
   return (

@@ -1,0 +1,10 @@
+{
+  "about.title": "About",
+  "about.subtitle": "HungerCat MineCraft Launcher · Team & related links",
+  "about.refresh": "Refresh",
+  "about.loadError": "Failed to load about info: {msg}",
+  "about.loading": "Loading about info…",
+  "about.empty": "No about info",
+  "about.more": "More…",
+  "about.chooseLink": "Choose a link to open:"
+}

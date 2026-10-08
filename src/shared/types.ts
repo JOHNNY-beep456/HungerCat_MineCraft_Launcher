@@ -191,9 +191,15 @@ export interface SystemMemoryInfo {
 export interface SystemHardwareInfo {
   /** 逻辑 CPU 核心数。 */
   cpuCores: number
+  /** CPU 型号字符串（os.cpus()[0].model），用于估算年代与识别虚拟机。 */
+  cpuModel: string
+  /** 估算的 CPU 发布年份（0 = 无法识别）；≤ 2020 视为 2000~2020 年老产物。 */
+  cpuYear: number
+  /** 是否运行在虚拟机 / 云主机中（型号含 QEMU / VMware / KVM / Hyper-V 等特征）。 */
+  isVirtualMachine: boolean
   /** 物理内存总量（单位 MB）。 */
   totalMemMb: number
-  /** 是否判定为低配电脑（2010 年代老机器）：核心数或内存低于阈值。 */
+  /** 是否判定为低配电脑：老 CPU（≤2020）/ 虚拟机 / 内存 < 16GB。 */
   lowEnd: boolean
 }
 
@@ -223,6 +229,38 @@ export interface InstalledVersion {
   loader: string | null
   worlds: string[]
   servers: Array<{ name: string; address: string }>
+}
+
+/**
+ * 跨版本目录的实例引用：附带所属版本目录 id。
+ * 资源下载等场景需要「查询所有已添加版本目录的实例」并以「版本名-目录别名」展示，
+ * 列表项必须带上它来自哪个目录（同名实例可能同时存在于多个目录）。
+ */
+export interface VersionDirInstance extends InstalledVersion {
+  /** 所属版本目录 id（对应 VersionDir.id）。 */
+  dirId: string
+}
+
+/** 服务器状态查询结果（uapis.cn「我的世界服务器状态」接口）。 */
+export interface MinecraftServerStatus {
+  /** 服务器是否在线。 */
+  online: boolean
+  /** 当前在线人数。 */
+  players: number
+  /** 服务器最大容量。 */
+  maxPlayers: number
+  /** 纯文本 MOTD（已去除颜色与格式代码）。 */
+  motdClean: string
+  /** HTML MOTD（保留颜色与样式，渲染层将做白名单净化后再展示）。 */
+  motdHtml: string
+  /** 服务器图标（Base64 Data URI，可能为空）。 */
+  faviconUrl: string
+  /** 服务器解析后的 IP。 */
+  ip: string
+  /** 服务器端口。 */
+  port: number
+  /** 服务器报告的版本信息。 */
+  version: string
 }
 
 /** 从外部 .minecraft 目录扫描到的可导入版本。 */
@@ -315,8 +353,14 @@ export interface LaunchEvent {
 
 export interface LauncherSettings {
   theme: 'light' | 'dark' | 'system'
-  /** 界面语言：简体中文（默认）/ 繁体中文 / 英语。 */
-  language: 'zh-CN' | 'zh-TW' | 'en'
+  /**
+   * 界面语言 id（默认 `zh-CN`）。
+   *
+   * 用普通 `string` 而非字面量联合：语言清单由渲染层 `i18n/index.ts` 自动发现
+   * （`locales/<语言>/meta.json`），新增一门语言无需改动类型定义。非法 / 未知值
+   * 会在渲染层回落到简体中文。
+   */
+  language: string
   memoryMb: number
   /**
    * 并行下载的**文件数量**（worker 池大小）。
@@ -400,13 +444,10 @@ export interface LauncherSettings {
   javaPath?: string
   closeOnLaunch: boolean
   reducedMotion: boolean
-  /**
-   * 超低占用模式：为 2010 年代老电脑设计。在不改变界面 / 动画 / 功能的前提下，
-   * 降低后台持续开销（窗口不可见时暂停动画与轮询、延长刷新间隔、关闭鼠标光晕）。
-   */
-  lowUsageMode: boolean
   /** 是否已完成首次启动的硬件检测（保证低配提醒只出现一次）。 */
   hardwareChecked: boolean
+  /** 最近一次硬件检测是否判定为低配（老 CPU / 虚拟机 / 内存 < 16GB）：为真则限制离开超低占用模式。 */
+  hardwareLowEnd: boolean
   /** Each version gets its own isolated game directory (saves/mods/config). */
   versionIsolation: boolean
   /** Custom accent color (hex). */
@@ -425,6 +466,12 @@ export interface LauncherSettings {
    */
   autoThemeFromWallpaper: boolean
   /**
+   * 实验性（默认关闭）：导航栏置于顶部，改用一条「圆弧长条」横向导航，不再占用左侧竖栏。
+   * 与上面的界面皮肤（mica / mac / win10）和运行模式相互独立 —— 不参与互斥组，
+   * 三套皮肤与极简 / 超低占用下都能开。
+   */
+  topNav: boolean
+  /**
    * MC 游戏窗口尺寸：720P / 1080P / 最大化（铺满工作区）/ 全屏 / 自定义。
    * 桌面模式（experimental = 'win10'）下强制按「全屏」处理。
    */
@@ -433,8 +480,15 @@ export interface LauncherSettings {
   gameWindowWidth: number
   /** 自定义游戏窗口高（仅 gameWindowSize === 'custom' 时生效），逻辑像素。 */
   gameWindowHeight: number
-  /** 运行模式：normal 普通 / local 本地（关闭联网功能）/ minimal 极简（UI 二维化）。 */
-  mode: 'normal' | 'local' | 'minimal'
+  /**
+   * 运行模式：
+   *   normal   普通（联网功能全开）
+   *   local    本地（关闭联网功能）
+   *   minimal  极简（UI 二维化）
+   *   lowUsage 超低占用（面向 2010 年代老电脑）：强制极简 + 减少动态效果，
+   *            并尽可能关闭一切动画/过渡/模糊/阴影渲染，功能保持不变。
+   */
+  mode: 'normal' | 'local' | 'minimal' | 'lowUsage'
   /** Version ids the user has disabled. */
   disabledVersions: string[]
   /** 强制隔离的实例 id（整合包导入的实例自动加入）。 */
@@ -476,7 +530,7 @@ export interface LauncherSettings {
    * 实验性界面（默认关闭，多项互斥）：
    *   off    默认界面（原毛玻璃：半透明磨砂 + 扁平半透明控件）
    *   mica   3D 云母：近实心底色 + 面板受光渐变 + 倒角与三层投影，更有厚度
-   *   mac    仿 Mac 玻璃皮肤：苹方字体 + 更通透的玻璃与文字色
+   *   mac    液态玻璃皮肤：不换字体，玻璃更通透 + 高光/卷边描边，液态流动感
    *   win10  Win10 桌面：自动全屏，功能以桌面图标呈现，双击打开
    * 用单一字段表达「相斥」，避免多个布尔同时为真。
    */
@@ -520,6 +574,12 @@ export interface LauncherSettings {
    * 仅在 autoTranslateResources 开启时生效，默认开启；关闭后只翻译简介与正文。
    */
   translateResourceNames: boolean
+  /**
+   * 实例页是否查询并展示服务器状态（名称 / MOTD / 在线人数），默认开启。
+   *
+   * 开启后会经 uapis.cn 查询服务器状态（会联网）；关闭后服务器条目仅显示名称与地址。
+   */
+  showServerStatus: boolean
   /**
    * 是否已保存 uapis.cn 的 API KEY。
    *
@@ -705,6 +765,11 @@ export interface UpdateInfo {
   publishedAt?: number
   /** 是否为预发布版：由服务端后台勾选决定，为 true 时启动自动检查不弹提示。 */
   prerelease?: boolean
+  /**
+   * 是否为「重要版本」：由服务端后台勾选。为 true 时，无论用户是否开启自动更新，
+   * 只要当前版本号与服务端不完全一致，就推送更新提示。
+   */
+  important?: boolean
 }
 
 /** 整合包格式。native 为启动器自带格式。 */
@@ -797,6 +862,16 @@ export interface UpdateCheckResult {
    * 为 true 时启动自动检查不弹提示（仍可由设置页手动检查 / 安装）。
    */
   latestIsPrerelease: boolean
+  /**
+   * 服务端最新版本是否为「重要版本」（由服务端后台勾选）。
+   * 为 true 时，无论是否开启自动更新，只要满足下面的 importantApplies 且版本号不完全一致就推送。
+   */
+  latestIsImportant: boolean
+  /**
+   * 重要版本是否对「当前启动器」生效：仅当启动器主版本号（去掉 -beta1 这类后缀）
+   * <= 重要版本主版本号时为 true，避免把一条旧的重要版本推给已升级到更新主版本的用户。
+   */
+  importantApplies: boolean
 }
 
 export type LoaderKind = 'fabric' | 'quilt'
@@ -1334,11 +1409,20 @@ export interface LauncherApi {
     addYggdrasil: (server: string, email: string, password: string) => Promise<YggdrasilLoginOutcome>
     /** 提交多角色选择结果，批量创建账号（返回新建的账号列表）。 */
     addYggdrasilProfiles: (ids: string[]) => Promise<MinecraftAccount[]>
+    /**
+     * 取第三方（Yggdrasil）账号的皮肤贴图：走认证站会话服
+     * （`{server}/sessionserver/session/minecraft/profile/{uuid}`），**不查正版 uapis 接口**。
+     * 失败返回 undefined，调用方回退到站点头像接口。
+     */
+    yggdrasilSkin: (
+      server: string,
+      uuid: string
+    ) => Promise<{ skinUrl: string; skinModel: 'classic' | 'slim'; capeUrl: string } | undefined>
   }
   versions: {
     list: () => Promise<VersionManifest>
     get: (id: string) => Promise<VersionJson>
-    createVanilla: (baseVersion: string, customName: string) => Promise<void>
+    createVanilla: (baseVersion: string, customName: string, dirId?: string) => Promise<void>
     /** 扫描外部 .minecraft 目录中的可导入版本（标注重名）。 */
     scanExternal: (mcDir: string) => Promise<ExternalVersion[]>
     /** 从外部 .minecraft 导入指定版本；重名按 onConflict 策略处理。 */
@@ -1350,6 +1434,14 @@ export interface LauncherApi {
   }
   installed: {
     list: () => Promise<InstalledVersion[]>
+    /** 列出「所有已添加版本目录」里的实例（每项附带所属目录 id，用于「版本名-目录别名」展示）。 */
+    listAll: () => Promise<VersionDirInstance[]>
+    /** 为某个实例的 servers.dat 追加一条「名称 + 地址」，返回更新后的服务器列表。 */
+    addServer: (
+      versionId: string,
+      name: string,
+      address: string
+    ) => Promise<Array<{ name: string; address: string }>>
   }
   versionDirs: {
     /** 列出全部版本目录（首项恒为默认目录，isDefault=true）。 */
@@ -1365,11 +1457,20 @@ export interface LauncherApi {
   }
   loaders: {
     versions: (kind: LoaderKind, mcVersion: string) => Promise<string[]>
-    install: (kind: LoaderKind, mcVersion: string, loaderVersion: string, customId?: string) => Promise<string>
+    install: (kind: LoaderKind, mcVersion: string, loaderVersion: string, customId?: string, dirId?: string) => Promise<string>
   }
   forge: {
     versions: (kind: ForgeKind, mcVersion: string) => Promise<string[]>
-    install: (kind: ForgeKind, mcVersion: string, version: string, customId?: string) => Promise<string>
+    install: (
+      kind: ForgeKind,
+      mcVersion: string,
+      version: string,
+      customId?: string,
+      /** 需先等待其下载完成的版本 id（通常是原版）：安装器 jar 并发下载，但安装器等它下完再运行。 */
+      waitForVersion?: string,
+      /** 目标版本目录 id；缺省用当前生效目录。 */
+      dirId?: string
+    ) => Promise<string>
     onLog: (cb: (line: string) => void) => () => void
   }
   resources: {
@@ -1390,7 +1491,7 @@ export interface LauncherApi {
     applyUpdate: (versionId: string, update: ResourceUpdateInfo, enabled: boolean) => Promise<string>
   }
   download: {
-    install: (id: string) => Promise<{ versionId: string; assetIndex: string }>
+    install: (id: string, dirId?: string) => Promise<{ versionId: string; assetIndex: string }>
     /** 取消下载：传 taskId 只取消该任务，不传则取消全部。 */
     cancel: (taskId?: string) => Promise<boolean>
     /** 当前实际使用的下载器（原生 Rust 内核是否可用）。 */
@@ -1424,7 +1525,9 @@ export interface LauncherApi {
       versionId: string,
       type?: ModrinthType,
       /** 已知文件大小：可跳过下载前的 HEAD 探测（CurseForge 这类重定向 CDN 上能省约 1s/文件）。 */
-      sizeHint?: number
+      sizeHint?: number,
+      /** 目标实例所属的版本目录 id；缺省用当前生效目录。 */
+      dirId?: string
     ) => Promise<string>
     downloadTo: (fileUrl: string, destPath: string, sizeHint?: number) => Promise<string>
     installFabricApi: (mcVersion: string, versionId: string) => Promise<string>
@@ -1439,7 +1542,7 @@ export interface LauncherApi {
     pick: () => Promise<JavaRuntime | null>
   }
   manage: {
-    mods: (versionId: string) => Promise<ModEntry[]>
+    mods: (versionId: string, dirId?: string) => Promise<ModEntry[]>
     onModsUpdated: (cb: (e: { versionId: string; mod: ModEntry }) => void) => () => void
     toggleMod: (path: string) => Promise<void>
     deleteMod: (path: string) => Promise<void>
@@ -1577,8 +1680,8 @@ export interface LauncherApi {
   modpack: {
     probe: (filePath: string) => Promise<ModpackProbe>
     download: (url: string, filename: string) => Promise<string>
-    import: (filePath: string, customName?: string) => Promise<{ versionId: string; name: string }>
-    importFromUrl: (url: string, filename: string, customName?: string) => Promise<{ versionId: string; name: string }>
+    import: (filePath: string, customName?: string, dirId?: string) => Promise<{ versionId: string; name: string }>
+    importFromUrl: (url: string, filename: string, customName?: string, dirId?: string) => Promise<{ versionId: string; name: string }>
     exportInventory: (versionId: string) => Promise<ModpackExportInventory>
     export: (versionId: string, options: ModpackExportOptions) => Promise<string>
     onProgress: (cb: (p: DownloadProgress) => void) => () => void
@@ -1613,6 +1716,18 @@ export interface LauncherApi {
     setKey: (key: string) => Promise<{ ok: boolean; message: string }>
     /** 删除已保存的 API KEY，回到访客额度。 */
     clearKey: () => Promise<{ ok: boolean; message: string }>
+  }
+  minecraft: {
+    /**
+     * 查询正版 / 第三方玩家信息（uapis.cn）：名字 → UUID 与皮肤地址。
+     * 用于头像本地合成（含帽子外层）与 3D 模型；玩家不存在 / 网络异常时抛出异常。
+     */
+    userinfo: (name: string) => Promise<{ username: string; uuid: string; skinUrl: string; capeUrl: string }>
+    /**
+     * 查询服务器状态（uapis.cn）：地址（可含端口）→ 在线状态 / 在线人数 / MOTD / 图标。
+     * 用于实例页服务器条目展示名称与 MOTD（彩色）及在线人数；地址无效 / 网络异常时抛出异常。
+     */
+    serverStatus: (address: string) => Promise<MinecraftServerStatus>
   }
   window: {
     minimize: () => Promise<void>

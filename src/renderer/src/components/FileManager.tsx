@@ -425,7 +425,9 @@ export function FileManager({
                 <span className="caption">{t('cmp.fm.empty')}</span>
               </div>
             ) : (
-              <div className="selectable">
+              <div className="select-none">
+                {/* 列表行不做文本选择：否则双击打开文件时会把文件名选中（浏览器默认行为）。
+                    文件名复制通过状态栏 / 右键「在资源管理器中定位」完成，不依赖划选。 */}
                 {entries.map((e) => (
                   <div
                     key={e.path}
