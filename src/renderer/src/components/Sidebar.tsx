@@ -114,9 +114,7 @@ export function Sidebar({
       {settings.mode !== 'normal' && (
         <div className="glass-soft flex items-center gap-2 rounded-xl px-3 py-2">
           <Icon name="info" size={14} className="opacity-60" />
-          <span className="text-[12px] font-medium opacity-80">
-            {settings.mode === 'local' ? t('sidebar.localMode') : t('sidebar.minimalMode')}
-          </span>
+          <span className="text-[12px] font-medium opacity-80">{modeLabel(settings.mode, t)}</span>
         </div>
       )}
 
@@ -133,5 +131,98 @@ export function Sidebar({
         </div>
       </button>
     </aside>
+  )
+}
+
+/** 运行模式徽标的文案（侧栏 / 顶栏共用）。 */
+function modeLabel(mode: string, t: (k: string) => string): string {
+  if (mode === 'local') return t('sidebar.localMode')
+  if (mode === 'lowUsage') return t('sidebar.lowUsageMode')
+  return t('sidebar.minimalMode')
+}
+
+/**
+ * 实验性「导航栏置于顶部」：把左侧竖栏换成顶部一条「圆弧长条」（全圆角胶囊）横向导航。
+ * 条目过多时横向滚动；右侧固定放运行模式徽标与账号入口，不随滚动移动。
+ */
+export function TopNav({
+  active,
+  onNavigate
+}: {
+  active: PageId
+  onNavigate: (p: PageId) => void
+}): JSX.Element {
+  const { accounts, selectedAccount, settings, homepageUpdates, t } = useApp()
+  const { downloads } = useRuntime()
+  const nav = visibleNav(settings)
+
+  return (
+    <div className="shrink-0 px-4 pb-1 pt-3">
+      <nav className="glass-strong flex items-center gap-2 rounded-full p-2">
+        <div className="no-scrollbar flex min-w-0 flex-1 items-center gap-1 overflow-x-auto">
+          {nav.map((item) => {
+            const isActive = active === item.id
+            return (
+              <button
+                key={item.id}
+                id={`nav-${item.id}`}
+                onClick={() => onNavigate(item.id)}
+                className="relative flex shrink-0 items-center gap-2 rounded-full px-3.5 py-2 no-drag"
+                style={{ color: isActive ? 'var(--text-primary)' : 'var(--text-secondary)' }}
+              >
+                {isActive && (
+                  <motion.span
+                    layoutId="nav-active-top"
+                    className="mica absolute inset-0 rounded-full"
+                    transition={{ type: 'spring', bounce: 0.2, duration: 0.4 }}
+                  />
+                )}
+                <span className="relative z-10">
+                  <Icon name={item.icon} size={18} />
+                </span>
+                <span className="relative z-10 whitespace-nowrap text-[13px] font-medium">
+                  {t(`nav.${item.id}`)}
+                </span>
+                {item.id === 'downloads' && downloads.length > 0 && (
+                  <span
+                    className="relative z-10 flex h-5 min-w-5 items-center justify-center rounded-full px-1 text-[11px] font-bold text-white"
+                    style={{ background: 'var(--fill-primary)' }}
+                  >
+                    {downloads.length}
+                  </span>
+                )}
+                {item.id === 'homepage' && homepageUpdates.length > 0 && (
+                  <span
+                    className="relative z-10 flex h-5 min-w-5 items-center justify-center rounded-full px-1 text-[11px] font-bold text-white"
+                    style={{ background: 'var(--fill-primary)' }}
+                  >
+                    {homepageUpdates.length}
+                  </span>
+                )}
+              </button>
+            )
+          })}
+        </div>
+
+        {settings.mode !== 'normal' && (
+          <div className="glass-soft flex shrink-0 items-center gap-1.5 rounded-full px-2.5 py-1.5">
+            <Icon name="info" size={13} className="opacity-60" />
+            <span className="whitespace-nowrap text-[12px] font-medium opacity-80">
+              {modeLabel(settings.mode, t)}
+            </span>
+          </div>
+        )}
+
+        <button
+          onClick={() => onNavigate('accounts')}
+          className="flex shrink-0 items-center gap-2 rounded-full px-2 py-1 no-drag transition-transform active:scale-[0.97]"
+        >
+          <Avatar name={selectedAccount?.name} uuid={selectedAccount?.id} skinUrl={selectedAccount?.skinUrl} authType={selectedAccount?.authType} yggdrasilServer={selectedAccount?.yggdrasilServer} offline={selectedAccount?.offline} size={30} />
+          <span className="max-w-[120px] truncate text-[13px] font-semibold">
+            {selectedAccount?.name ?? t('sidebar.notLoggedIn')}
+          </span>
+        </button>
+      </nav>
+    </div>
   )
 }

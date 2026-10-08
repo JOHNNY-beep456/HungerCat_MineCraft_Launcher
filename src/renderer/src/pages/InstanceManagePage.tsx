@@ -1,181 +1,33 @@
-import { useCallback, useEffect, useMemo, useState, type DragEvent, type ReactNode } from 'react'
-import { AnimatePresence, motion } from 'motion/react'
+import { useCallback, useEffect, useMemo, useState, type DragEvent } from 'react'
+import { AnimatePresence } from 'motion/react'
 import type {
   ModEntry,
   ModrinthProject,
-  ModrinthVersion,
   ResourceFile,
   ResourceUpdateInfo,
   SchematicEntry
 } from '@shared/types'
 import { activeGameDir, useApp } from '../store'
-import { modListTitles } from '../mod-title'
 import { useRuntimeActions } from '../runtime'
-import { Button, Icon, LoadingState, Segmented, Spinner } from '../components/ui'
+import { Segmented } from '../components/ui'
 import { ExportPage } from './ExportPage'
-
-type Tab = 'mods' | 'saves' | 'resourcepacks' | 'shaders' | 'schematics' | 'version'
+import type { ResFilter, Tab } from './instance-manage/types'
+import { InstanceHeader } from './instance-manage/InstanceHeader'
+import { ResourceFilterBar } from './instance-manage/ResourceFilterBar'
+import { VersionPanel } from './instance-manage/VersionPanel'
+import { ModsPanel } from './instance-manage/ModsPanel'
+import { SavesPanel } from './instance-manage/SavesPanel'
+import { ResourcesPanel } from './instance-manage/ResourcesPanel'
+import { SchematicsPanel } from './instance-manage/SchematicsPanel'
+import { ModDetailSheet } from './instance-manage/ModDetailSheet'
+import { DeleteConfirmDialog } from './instance-manage/DeleteConfirmDialog'
 
 /**
- * 资源列表的分栏筛选。
- * 「已启用 / 已禁用」只有模组有这种语义（靠 .disabled 改名实现），资源包 / 光影只有「全部 / 可更新」。
- */
-type ResFilter = 'all' | 'enabled' | 'disabled' | 'updatable'
-
-/**
- * 在线安装面板：光影 / 资源包共用。
+ * 实例管理页：组合根。
  *
- * 模组页保留它原有的内联实现（那套还带拖拽导入和详情弹窗），这里只做「搜索 → 选最新匹配版本 →
- * 下载到当前实例」：目标目录由主进程按 type 决定（shaderpacks / resourcepacks），隔离设置也在主进程处理。
- * 本地模式下调用方根本不渲染本面板，所以这里不再单独做联网判断。
+ * 页面状态、副作用与业务处理都集中在这里，具体板块（模组、资源包 / 光影、存档、投影、
+ * 版本设置等）拆到 ./instance-manage/ 下作为展示型子组件，通过 props 接收状态与回调。
  */
-function OnlineInstaller({
-  type,
-  versionId,
-  mcVersion,
-  onMcVersionChange,
-  loaders = [],
-  loader = '',
-  onLoaderChange,
-  onDone
-}: {
-  type: 'shader' | 'resourcepack'
-  versionId: string
-  mcVersion: string
-  onMcVersionChange: (v: string) => void
-  /** 可选的运行时筛选：光影是 iris / optifine；资源包没有加载器，留空 */
-  loaders?: Array<{ value: string; label: string }>
-  loader?: string
-  onLoaderChange?: (v: string) => void
-  /** 收尾回调：ok 为真表示装好了，调用方应刷新列表 */
-  onDone: (message: string, ok: boolean) => void
-}): JSX.Element {
-  const { t } = useApp()
-  const [query, setQuery] = useState('')
-  const [results, setResults] = useState<ModrinthProject[]>([])
-  const [searching, setSearching] = useState(false)
-  const [busySlug, setBusySlug] = useState<string | null>(null)
-
-  const doSearch = async (): Promise<void> => {
-    const q = query.trim()
-    if (!q) return
-    setSearching(true)
-    try {
-      const r = await window.api.mods.search(
-        q,
-        type,
-        undefined,
-        mcVersion.trim() || undefined,
-        loaders.length > 0 ? loader : undefined
-      )
-      setResults(r.hits)
-    } catch (err) {
-      setResults([])
-      onDone(err instanceof Error ? err.message : String(err), false)
-    } finally {
-      setSearching(false)
-    }
-  }
-
-  const install = async (p: ModrinthProject): Promise<void> => {
-    setBusySlug(p.slug)
-    try {
-      const mc = mcVersion.trim()
-      const versions = await window.api.mods.versions(
-        p.slug,
-        loaders.length > 0 ? [loader] : [],
-        mc ? [mc] : [],
-        p.source,
-        type
-      )
-      const v = versions[0]
-      if (!v) {
-        const target = `${mc || t('ins.currentVersion')}${loaders.length > 0 ? ` + ${loader}` : ''}`
-        onDone(t('ins.noMatchingVersion', { target }), false)
-        return
-      }
-      const file = v.files.find((f) => f.primary) ?? v.files[0]
-      if (!file) {
-        onDone(t('ins.noDownloadableFile'), false)
-        return
-      }
-      await window.api.mods.install(file.url, file.filename, versionId, type)
-      setResults([])
-      setQuery('')
-      onDone(t('ins.installed', { name: p.title, version: v.version_number }), true)
-    } catch (err) {
-      onDone(err instanceof Error ? err.message : String(err), false)
-    } finally {
-      setBusySlug(null)
-    }
-  }
-
-  return (
-    <div>
-      <div className="mb-2 flex items-center gap-2">
-        <span className="headline">{t('ins.onlineInstall')}</span>
-        <span className="caption">
-          {t('ins.matching', {
-            target: `${mcVersion || t('ins.currentVersion')}${loaders.length > 0 ? ` + ${loader}` : ''}`
-          })}
-        </span>
-      </div>
-      <div className="mb-2 flex gap-2">
-        <div className="relative flex-1">
-          <Icon name="search" size={15} className="absolute left-3 top-1/2 -translate-y-1/2 opacity-50" />
-          <input
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            onKeyDown={(e) => e.key === 'Enter' && void doSearch()}
-            placeholder={type === 'shader' ? t('ins.searchShadersPlaceholder') : t('ins.searchResourcepacksPlaceholder')}
-            className="input w-full pl-9"
-          />
-        </div>
-        <Button variant="primary" icon="search" disabled={searching} onClick={() => void doSearch()}>
-          {t('ins.search')}
-        </Button>
-      </div>
-      <div className="mb-2 flex flex-wrap items-center gap-2">
-        <span className="caption">{t('ins.version')}</span>
-        <input value={mcVersion} onChange={(e) => onMcVersionChange(e.target.value)} className="input w-28" />
-        {loaders.length > 0 && (
-          <>
-            <span className="caption ml-2">{t('ins.loader')}</span>
-            <Segmented value={loader} onChange={(v) => onLoaderChange?.(v)} options={loaders} />
-          </>
-        )}
-      </div>
-      {searching ? (
-        <LoadingState text={t('ins.searching')} />
-      ) : (
-        results.length > 0 && (
-          <div className="space-y-1.5">
-            {results.map((p) => (
-              <button
-                key={p.slug}
-                onClick={() => void install(p)}
-                disabled={busySlug === p.slug}
-                className="glass-soft flex w-full items-center gap-3 rounded-xl px-3 py-2 text-left no-drag"
-              >
-                {p.icon_url ? (
-                  <img src={p.icon_url} width={28} height={28} alt="" className="rounded-lg" />
-                ) : (
-                  <Icon name="image" size={18} className="opacity-50" />
-                )}
-                <span className="min-w-0 flex-1">
-                  <span className="block truncate text-[13px] font-medium">{p.title}</span>
-                  <span className="caption block truncate">{p.description}</span>
-                </span>
-                {busySlug === p.slug && <Spinner size={16} />}
-              </button>
-            ))}
-          </div>
-        )
-      )}
-    </div>
-  )
-}
-
 export function InstanceManagePage({
   versionId,
   onBack,
@@ -185,7 +37,7 @@ export function InstanceManagePage({
   onBack: () => void
   onRename: (newId: string) => void
 }): JSX.Element {
-  const { settings, selectedAccount, updateSettings, reloadSettings, openFileManager, t } = useApp()
+  const { settings, selectedAccount, updateSettings, reloadSettings, t } = useApp()
   const { launch } = useRuntimeActions()
 
   const [tab, setTab] = useState<Tab>('mods')
@@ -601,22 +453,13 @@ export function InstanceManagePage({
 
   return (
     <div className="flex h-full flex-col gap-5">
-      <div className="flex items-center gap-3">
-        <Button size="sm" icon="chevronLeft" onClick={onBack}>
-          {t('ins.back')}
-        </Button>
-        <div className="min-w-0 flex-1">
-          <h1 className="display truncate">{t('ins.manageTitle')}</h1>
-          <p className="caption mt-1 selectable truncate">
-            {versionId}
-            {disabled ? t('ins.disabledSuffix') : ''}
-            {loader ? ` · ${loaderLabel(loader)}` : ''}
-          </p>
-        </div>
-        <Button size="sm" icon="play" disabled={!selectedAccount || disabled} onClick={() => doLaunch()}>
-          {t('ins.launch')}
-        </Button>
-      </div>
+      <InstanceHeader
+        versionId={versionId}
+        disabled={disabled}
+        loader={loader}
+        onBack={onBack}
+        onLaunch={() => doLaunch()}
+      />
 
       <div className="shrink-0">
         <Segmented value={tab} onChange={(v) => setTab(v)} options={tabOptions} />
@@ -624,584 +467,118 @@ export function InstanceManagePage({
 
       {/* 资源分栏：全部 / 已启用 / 已禁用 / 可更新（已启用、已禁用仅对模组有意义） */}
       {(tab === 'mods' || tab === 'resourcepacks' || tab === 'shaders') && (
-        <div className="glass-soft flex flex-wrap items-center gap-2 rounded-2xl px-3 py-2">
-          <Segmented value={resFilter} onChange={setResFilter} options={filterOptions} />
-          <span className="ml-auto flex items-center gap-2">
-            {checking ? (
-              <>
-                <Spinner size={14} />
-                <span className="caption">{t('ins.checkingUpdates', { n: checkedCount })}</span>
-              </>
-            ) : (
-              <Button size="sm" icon="refresh" onClick={() => setCheckToken((n) => n + 1)}>
-                {t('ins.checkUpdates')}
-              </Button>
-            )}
-          </span>
-        </div>
+        <ResourceFilterBar
+          resFilter={resFilter}
+          onResFilterChange={setResFilter}
+          filterOptions={filterOptions}
+          checking={checking}
+          checkedCount={checkedCount}
+          onRecheck={() => setCheckToken((n) => n + 1)}
+        />
       )}
 
       <div className="min-h-0 flex-1 overflow-y-auto pr-1">
         {tab === 'version' && (
-          <div className="space-y-3">
-            <div className="glass-soft rounded-2xl p-4">
-              <div className="text-[14px] font-medium">{t('ins.renameVersion')}</div>
-              <div className="caption mt-0.5">{t('ins.renameVersionDesc')}</div>
-              <div className="mt-3 flex gap-2">
-                <input
-                  value={renameValue}
-                  onChange={(e) => setRenameValue(e.target.value)}
-                  onKeyDown={(e) =>
-                    e.key === 'Enter' &&
-                    !renaming &&
-                    renameValue.trim() &&
-                    renameValue.trim() !== versionId &&
-                    void doRename()
-                  }
-                  placeholder={t('ins.newInstanceNamePlaceholder')}
-                  className="input flex-1"
-                  disabled={renaming}
-                />
-                <Button
-                  size="sm"
-                  variant="primary"
-                  disabled={renaming || !renameValue.trim() || renameValue.trim() === versionId}
-                  onClick={() => void doRename()}
-                >
-                  {renaming ? t('ins.renaming') : t('ins.rename')}
-                </Button>
-              </div>
-              {renameError && (
-                <div className="mt-2 text-[12px]" style={{ color: 'var(--fill-danger)' }}>
-                  {renameError}
-                </div>
-              )}
-            </div>
-            <Row label={t('ins.disableVersion')} desc={t('ins.disableVersionDesc')}>
-              <Button size="sm" variant={disabled ? 'primary' : 'secondary'} onClick={() => void toggleDisabled()}>
-                {disabled ? t('ins.enable') : t('ins.disable')}
-              </Button>
-            </Row>
-            <Row label={t('ins.launchGame')}>
-              <Button size="sm" variant="primary" icon="play" disabled={!selectedAccount || disabled} onClick={() => doLaunch()}>
-                {t('ins.launch')}
-              </Button>
-            </Row>
-            <Row label={t('ins.openVersionDir')}>
-              <Button
-                size="sm"
-                icon="folder"
-                onClick={() => void window.api.manage.openDir(versionId, 'version').then(openFileManager)}
-              >
-                {t('ins.open')}
-              </Button>
-            </Row>
-            <Row label={t('ins.exportModpack')} desc={t('ins.exportModpackDesc')}>
-              <Button size="sm" icon="box" onClick={() => setExportOpen(true)}>
-                {t('ins.exportModpack')}
-              </Button>
-            </Row>
-            <Row label={t('ins.deleteVersion')} desc={t('ins.deleteVersionDesc')}>
-              <Button size="sm" variant="danger" icon="trash" disabled={deleting} onClick={() => setDeleteConfirm(true)}>
-                {deleting ? t('ins.deleting') : t('ins.delete')}
-              </Button>
-            </Row>
-          </div>
+          <VersionPanel
+            versionId={versionId}
+            disabled={disabled}
+            deleting={deleting}
+            renaming={renaming}
+            renameValue={renameValue}
+            renameError={renameError}
+            onRenameValueChange={setRenameValue}
+            onRename={doRename}
+            onToggleDisabled={toggleDisabled}
+            onLaunch={() => doLaunch()}
+            onExport={() => setExportOpen(true)}
+            onDeleteRequest={() => setDeleteConfirm(true)}
+          />
         )}
 
         {tab === 'mods' && (
-          <div className="space-y-4">
-            {settings.mode !== 'local' && (
-            <div>
-              <div className="mb-2 flex items-center gap-2">
-                <span className="headline">{t('ins.onlineInstall')}</span>
-                <span className="caption">{t('ins.matching', { target: `${mcSel} + ${loaderSel}` })}</span>
-              </div>
-              <div className="mb-2 flex gap-2">
-                <div className="relative flex-1">
-                  <Icon name="search" size={15} className="absolute left-3 top-1/2 -translate-y-1/2 opacity-50" />
-                  <input
-                    value={query}
-                    onChange={(e) => setQuery(e.target.value)}
-                    onKeyDown={(e) => e.key === 'Enter' && void searchMods()}
-                    placeholder={t('ins.searchModsPlaceholder')}
-                    className="input w-full pl-9"
-                  />
-                </div>
-                <Button variant="primary" icon="search" disabled={searching} onClick={() => void searchMods()}>
-                  {t('ins.search')}
-                </Button>
-              </div>
-              <div className="mb-2 flex items-center gap-2">
-                <span className="caption">{t('ins.version')}</span>
-                <input value={mcSel} onChange={(e) => setMcSel(e.target.value)} className="input w-28" />
-                <span className="caption ml-2">{t('ins.loader')}</span>
-                <Segmented
-                  value={loaderSel}
-                  onChange={setLoaderSel}
-                  options={[
-                    { value: 'fabric', label: 'Fabric' },
-                    { value: 'quilt', label: 'Quilt' },
-                    { value: 'forge', label: 'Forge' },
-                    { value: 'neoforge', label: 'NeoForge' }
-                  ]}
-                />
-              </div>
-              {searching ? (
-                <LoadingState text={t('ins.searching')} />
-              ) : (
-                results.length > 0 && (
-                  <div className="space-y-1.5">
-                    {results.map((p) => (
-                      <button
-                        key={p.slug}
-                        onClick={() => void installOnline(p)}
-                        disabled={busyId === p.slug}
-                        className="glass-soft flex w-full items-center gap-3 rounded-xl px-3 py-2 text-left no-drag"
-                      >
-                        {p.icon_url ? (
-                          <img src={p.icon_url} width={28} height={28} alt="" className="rounded-lg" />
-                        ) : (
-                          <Icon name="box" size={18} className="opacity-50" />
-                        )}
-                        <span className="min-w-0 flex-1 truncate text-[13px] font-medium">{p.title}</span>
-                        {busyId === p.slug && <Spinner size={16} />}
-                      </button>
-                    ))}
-                  </div>
-                )
-              )}
-            </div>
-            )}
-
-            <div
-              className={`rounded-2xl border-2 border-dashed p-5 text-center transition-colors ${dragOver ? 'opacity-80' : ''}`}
-              style={{ borderColor: dragOver ? 'var(--fill-primary)' : 'var(--divider)' }}
-              onDragOver={(e) => {
-                e.preventDefault()
-                setDragOver(true)
-              }}
-              onDragLeave={() => setDragOver(false)}
-              onDrop={(e) => void onDrop(e)}
-            >
-              <Icon name="download" size={22} className="mx-auto mb-1 opacity-60" />
-              <p className="text-[13px] opacity-80">{t('ins.dropModFiles')}</p>
-              <Button
-                size="sm"
-                icon="folder"
-                className="mt-2"
-                onClick={async () => {
-                  const paths = await window.api.shell.pickFiles([{ name: t('ins.filterMods'), extensions: ['jar', 'zip'] }])
-                  if (paths.length > 0) await installLocals(paths)
-                }}
-              >
-                {t('ins.selectLocalFiles')}
-              </Button>
-            </div>
-
-            <div>
-              <div className="mb-2 flex items-center justify-between">
-                <span className="headline">{t('ins.installedModsCount', { n: mods.length })}</span>
-                <span className="caption">{t('ins.toggleHint')}</span>
-              </div>
-              {loadingMods ? (
-                <div className="flex items-center justify-center gap-2 py-4">
-                  <Spinner size={22} />
-                  <span className="caption opacity-60">{t('ins.loadingMods')}</span>
-                </div>
-              ) : mods.length === 0 ? (
-                <div className="caption py-4 text-center opacity-60">{t('ins.noMods')}</div>
-              ) : visibleMods.length === 0 ? (
-                <div className="caption py-4 text-center opacity-60">
-                  {resFilter === 'updatable' ? t('ins.noUpdatable') : t('ins.noMods')}
-                </div>
-              ) : (
-                <div className="space-y-1.5">
-                  {visibleMods.map((m) => {
-                    const up = updates[m.path]
-                    return (
-                      <div key={m.path} className="glass-soft flex items-center gap-2 rounded-xl px-3 py-2">
-                        {m.iconUrl ? (
-                          <img
-                            src={m.iconUrl}
-                            width={28}
-                            height={28}
-                            alt=""
-                            draggable={false}
-                            className={`shrink-0 rounded-lg object-cover ${m.enabled ? '' : 'opacity-30'}`}
-                          />
-                        ) : (
-                          <Icon name="box" size={15} className={m.enabled ? '' : 'opacity-30'} />
-                        )}
-                        <button
-                          type="button"
-                          onClick={() => setModDetail(m)}
-                          className="min-w-0 flex-1 text-left no-drag"
-                        >
-                          {(() => {
-                            const pair = modListTitles(m, settings.modTitleStyle)
-                            return (
-                              <>
-                                <div className={`truncate text-[13px] font-medium leading-tight ${m.enabled ? '' : 'opacity-40 line-through'}`}>
-                                  {pair.title}
-                                </div>
-                                {pair.detail && (
-                                  <div className={`caption truncate leading-tight ${m.enabled ? '' : 'opacity-40'}`}>{pair.detail}</div>
-                                )}
-                              </>
-                            )
-                          })()}
-                        </button>
-                        {up && (
-                          <span className="caption shrink-0" title={`${up.title} · ${up.slug}`}>
-                            {up.currentVersion
-                              ? `${up.currentVersion} → ${up.latestVersion}`
-                              : t('ins.updateTo', { version: up.latestVersion })}
-                          </span>
-                        )}
-                        <span className="caption">{formatBytes(m.size)}</span>
-                        {up && (
-                          <button
-                            onClick={() => void applyUpdate(up, m.enabled)}
-                            disabled={busyId === m.path}
-                            className="mica no-drag shrink-0 rounded-lg px-2 py-1 text-[12px] font-medium"
-                            style={{ color: 'var(--fill-primary)' }}
-                          >
-                            {busyId === m.path ? t('ins.updating') : t('ins.update')}
-                          </button>
-                        )}
-                        <button
-                          onClick={() => void toggleMod(m)}
-                          disabled={busyId === m.path}
-                          className="mica no-drag rounded-lg px-2 py-1 text-[12px] font-medium"
-                          style={{ opacity: m.enabled ? 1 : 0.7 }}
-                        >
-                          {busyId === m.path ? '…' : m.enabled ? t('ins.disable') : t('ins.enable')}
-                        </button>
-                        <button onClick={() => void deleteMod(m)} className="no-drag opacity-50 hover:opacity-100">
-                          <Icon name="trash" size={15} />
-                        </button>
-                      </div>
-                    )
-                  })}
-                </div>
-              )}
-            </div>
-          </div>
+          <ModsPanel
+            mods={mods}
+            loadingMods={loadingMods}
+            visibleMods={visibleMods}
+            updates={updates}
+            busyId={busyId}
+            resFilter={resFilter}
+            query={query}
+            onQueryChange={setQuery}
+            onSearch={searchMods}
+            searching={searching}
+            results={results}
+            mcSel={mcSel}
+            onMcSelChange={setMcSel}
+            loaderSel={loaderSel}
+            onLoaderSelChange={setLoaderSel}
+            dragOver={dragOver}
+            setDragOver={setDragOver}
+            onDrop={onDrop}
+            onInstallLocals={installLocals}
+            onInstallOnline={installOnline}
+            onToggleMod={toggleMod}
+            onDeleteMod={deleteMod}
+            onApplyUpdate={applyUpdate}
+            onOpenDetail={setModDetail}
+          />
         )}
 
         {tab === 'saves' && (
-          <div className="space-y-3">
-            <div className="flex items-center justify-between">
-              <span className="headline">{t('ins.savesCount', { n: worlds.length })}</span>
-              <Button size="sm" icon="folder" onClick={() => void window.api.manage.openDir(versionId, 'saves').then(openFileManager)}>
-                {t('ins.openDir')}
-              </Button>
-            </div>
-            {worlds.length === 0 ? (
-              <div className="caption py-4 text-center opacity-60">{t('ins.noSaves')}</div>
-            ) : (
-              worlds.map((w) => (
-                <div key={w} className="glass-soft flex items-center gap-2 rounded-xl px-3 py-2">
-                  <Icon name="home" size={15} className="opacity-60" />
-                  <span className="min-w-0 flex-1 truncate text-[13px]">{versionId} - {w}</span>
-                  <Button size="sm" icon="play" disabled={!selectedAccount} onClick={() => doLaunch({ world: w })}>
-                    {t('ins.launch')}
-                  </Button>
-                  <button
-                    onClick={async () => {
-                      await window.api.manage.deleteWorld(versionId, w)
-                      void reload()
-                    }}
-                    className="no-drag opacity-50 hover:opacity-100"
-                  >
-                    <Icon name="trash" size={15} />
-                  </button>
-                </div>
-              ))
-            )}
-          </div>
+          <SavesPanel
+            versionId={versionId}
+            worlds={worlds}
+            onLaunchWorld={(w) => doLaunch({ world: w })}
+            onReload={reload}
+          />
         )}
 
         {tab === 'resourcepacks' && (
-          <div className="space-y-3">
-            {settings.mode !== 'local' && (
-              <OnlineInstaller
-                type="resourcepack"
-                versionId={versionId}
-                mcVersion={mcSel}
-                onMcVersionChange={setMcSel}
-                onDone={handleInstalled}
-              />
-            )}
-
-            <div
-              className={`rounded-2xl border-2 border-dashed p-5 text-center transition-colors ${resDragOver ? 'opacity-80' : ''}`}
-              style={{ borderColor: resDragOver ? 'var(--fill-primary)' : 'var(--divider)' }}
-              onDragOver={(e) => {
-                e.preventDefault()
-                setResDragOver(true)
-              }}
-              onDragLeave={() => setResDragOver(false)}
-              onDrop={(e) => void onResDrop(e, 'resourcepacks')}
-            >
-              <Icon name="download" size={22} className="mx-auto mb-1 opacity-60" />
-              <p className="text-[13px] opacity-80">{t('ins.dropResourceFiles')}</p>
-              <Button
-                size="sm"
-                icon="folder"
-                className="mt-2"
-                onClick={async () => {
-                  const paths = await window.api.shell.pickFiles([
-                    { name: t('ins.filterResourcepacks'), extensions: ['zip'] }
-                  ])
-                  if (paths.length > 0) await installLocalResources(paths, 'resourcepacks')
-                }}
-              >
-                {t('ins.selectLocalFiles')}
-              </Button>
-            </div>
-
-            <div className="flex items-center justify-between">
-              <span className="headline">{t('ins.resourcepacksCount', { n: resourcePacks.length })}</span>
-              <Button
-                size="sm"
-                icon="folder"
-                onClick={() => void window.api.resources.open(versionId, 'resourcepacks').then(openFileManager)}
-              >
-                {t('ins.openDir')}
-              </Button>
-            </div>
-            {resourcePacks.length === 0 ? (
-              <div className="caption py-4 text-center opacity-60">{t('ins.noResourcepacks')}</div>
-            ) : visiblePacks.length === 0 ? (
-              <div className="caption py-4 text-center opacity-60">{t('ins.noUpdatable')}</div>
-            ) : (
-              visiblePacks.map((p) => {
-                const up = updates[p.path]
-                const pair = modListTitles(p, settings.modTitleStyle)
-                return (
-                  <div key={p.path} className="glass-soft flex items-center gap-2 rounded-xl px-3 py-2">
-                    {p.iconUrl ? (
-                      <img
-                        src={p.iconUrl}
-                        width={28}
-                        height={28}
-                        alt=""
-                        draggable={false}
-                        className="shrink-0 rounded-lg object-cover"
-                      />
-                    ) : (
-                      <Icon name="image" size={15} className="shrink-0 opacity-60" />
-                    )}
-                    <div className="min-w-0 flex-1" title={p.description ?? p.name}>
-                      <div className="truncate text-[13px] font-medium leading-tight">{pair.title}</div>
-                      {pair.detail && <div className="caption truncate leading-tight">{pair.detail}</div>}
-                    </div>
-                    {up && (
-                      <span className="caption shrink-0" title={`${up.title} · ${up.slug}`}>
-                        {up.currentVersion
-                          ? `${up.currentVersion} → ${up.latestVersion}`
-                          : t('ins.updateTo', { version: up.latestVersion })}
-                      </span>
-                    )}
-                    <span className="caption">{formatBytes(p.size)}</span>
-                    {up && (
-                      <button
-                        onClick={() => void applyUpdate(up, true)}
-                        disabled={busyId === p.path}
-                        className="mica no-drag shrink-0 rounded-lg px-2 py-1 text-[12px] font-medium"
-                        style={{ color: 'var(--fill-primary)' }}
-                      >
-                        {busyId === p.path ? t('ins.updating') : t('ins.update')}
-                      </button>
-                    )}
-                    {p.slug && (
-                      <button
-                        type="button"
-                        title={t('ins.openModrinthTitle')}
-                        onClick={() =>
-                          void window.api.shell.openExternal(
-                            p.pageUrl ?? `https://modrinth.com/resourcepack/${p.slug}`
-                          )
-                        }
-                        className="no-drag opacity-50 hover:opacity-100"
-                      >
-                        <Icon name="link" size={15} />
-                      </button>
-                    )}
-                    <button
-                      onClick={async () => {
-                        await window.api.resources.remove(p.path)
-                        void reload()
-                      }}
-                      className="no-drag opacity-50 hover:opacity-100"
-                    >
-                      <Icon name="trash" size={15} />
-                    </button>
-                  </div>
-                )
-              })
-            )}
-          </div>
+          <ResourcesPanel
+            variant="resourcepack"
+            versionId={versionId}
+            mcVersion={mcSel}
+            onMcVersionChange={setMcSel}
+            shaderLoader={shaderLoader}
+            onShaderLoaderChange={setShaderLoader}
+            dragOver={resDragOver}
+            setDragOver={setResDragOver}
+            onResDrop={onResDrop}
+            items={resourcePacks}
+            visibleItems={visiblePacks}
+            updates={updates}
+            busyId={busyId}
+            onApplyUpdate={applyUpdate}
+            onReload={reload}
+            onInstalled={handleInstalled}
+            onInstallLocal={installLocalResources}
+          />
         )}
 
         {tab === 'shaders' && (
-          <div className="space-y-3">
-            {settings.mode !== 'local' && (
-              <OnlineInstaller
-                type="shader"
-                versionId={versionId}
-                mcVersion={mcSel}
-                onMcVersionChange={setMcSel}
-                loaders={[
-                  { value: 'iris', label: 'Iris' },
-                  { value: 'optifine', label: 'OptiFine' }
-                ]}
-                loader={shaderLoader}
-                onLoaderChange={setShaderLoader}
-                onDone={handleInstalled}
-              />
-            )}
-
-            <div
-              className={`rounded-2xl border-2 border-dashed p-5 text-center transition-colors ${resDragOver ? 'opacity-80' : ''}`}
-              style={{ borderColor: resDragOver ? 'var(--fill-primary)' : 'var(--divider)' }}
-              onDragOver={(e) => {
-                e.preventDefault()
-                setResDragOver(true)
-              }}
-              onDragLeave={() => setResDragOver(false)}
-              onDrop={(e) => void onResDrop(e, 'shaderpacks')}
-            >
-              <Icon name="download" size={22} className="mx-auto mb-1 opacity-60" />
-              <p className="text-[13px] opacity-80">{t('ins.dropShaderFiles')}</p>
-              <Button
-                size="sm"
-                icon="folder"
-                className="mt-2"
-                onClick={async () => {
-                  const paths = await window.api.shell.pickFiles([
-                    { name: t('ins.filterShaders'), extensions: ['zip'] }
-                  ])
-                  if (paths.length > 0) await installLocalResources(paths, 'shaderpacks')
-                }}
-              >
-                {t('ins.selectLocalFiles')}
-              </Button>
-            </div>
-
-            <div className="flex items-center justify-between">
-              <span className="headline">{t('ins.shadersCount', { n: shaders.length })}</span>
-              <Button size="sm" icon="folder" onClick={() => void window.api.manage.openDir(versionId, 'shaderpacks').then(openFileManager)}>
-                {t('ins.openDir')}
-              </Button>
-            </div>
-            {shaders.length === 0 ? (
-              <div className="caption py-4 text-center opacity-60">{t('ins.noShaders')}</div>
-            ) : visibleShaders.length === 0 ? (
-              <div className="caption py-4 text-center opacity-60">{t('ins.noUpdatable')}</div>
-            ) : (
-              visibleShaders.map((s) => {
-                const up = updates[s.path]
-                const pair = modListTitles(s, settings.modTitleStyle)
-                return (
-                  <div key={s.path} className="glass-soft flex items-center gap-2 rounded-xl px-3 py-2">
-                    {s.iconUrl ? (
-                      <img
-                        src={s.iconUrl}
-                        width={28}
-                        height={28}
-                        alt=""
-                        draggable={false}
-                        className="shrink-0 rounded-lg object-cover"
-                      />
-                    ) : (
-                      <Icon name="palette" size={15} className="shrink-0 opacity-60" />
-                    )}
-                    <div className="min-w-0 flex-1" title={s.description ?? s.name}>
-                      <div className="truncate text-[13px] font-medium leading-tight">{pair.title}</div>
-                      {pair.detail && <div className="caption truncate leading-tight">{pair.detail}</div>}
-                    </div>
-                    {up && (
-                      <span className="caption shrink-0" title={`${up.title} · ${up.slug}`}>
-                        {up.currentVersion
-                          ? `${up.currentVersion} → ${up.latestVersion}`
-                          : t('ins.updateTo', { version: up.latestVersion })}
-                      </span>
-                    )}
-                    <span className="caption">{formatBytes(s.size)}</span>
-                    {up && (
-                      <button
-                        onClick={() => void applyUpdate(up, true)}
-                        disabled={busyId === s.path}
-                        className="mica no-drag shrink-0 rounded-lg px-2 py-1 text-[12px] font-medium"
-                        style={{ color: 'var(--fill-primary)' }}
-                      >
-                        {busyId === s.path ? t('ins.updating') : t('ins.update')}
-                      </button>
-                    )}
-                    {s.slug && (
-                      <button
-                        type="button"
-                        title={t('ins.openModrinthTitle')}
-                        onClick={() =>
-                          void window.api.shell.openExternal(
-                            s.pageUrl ?? `https://modrinth.com/shader/${s.slug}`
-                          )
-                        }
-                        className="no-drag opacity-50 hover:opacity-100"
-                      >
-                        <Icon name="link" size={15} />
-                      </button>
-                    )}
-                    <button
-                      onClick={async () => {
-                        await window.api.manage.deleteFile(s.path)
-                        void reload()
-                      }}
-                      className="no-drag opacity-50 hover:opacity-100"
-                    >
-                      <Icon name="trash" size={15} />
-                    </button>
-                  </div>
-                )
-              })
-            )}
-          </div>
+          <ResourcesPanel
+            variant="shader"
+            versionId={versionId}
+            mcVersion={mcSel}
+            onMcVersionChange={setMcSel}
+            shaderLoader={shaderLoader}
+            onShaderLoaderChange={setShaderLoader}
+            dragOver={resDragOver}
+            setDragOver={setResDragOver}
+            onResDrop={onResDrop}
+            items={shaders}
+            visibleItems={visibleShaders}
+            updates={updates}
+            busyId={busyId}
+            onApplyUpdate={applyUpdate}
+            onReload={reload}
+            onInstalled={handleInstalled}
+            onInstallLocal={installLocalResources}
+          />
         )}
 
         {tab === 'schematics' && (
-          <div className="space-y-3">
-            <div className="flex items-center justify-between">
-              <span className="headline">{t('ins.schematicsCount', { n: schematics.length })}</span>
-              <Button size="sm" icon="folder" onClick={() => void window.api.manage.openDir(versionId, 'schematics').then(openFileManager)}>
-                {t('ins.openDir')}
-              </Button>
-            </div>
-            {schematics.length === 0 ? (
-              <div className="caption py-4 text-center opacity-60">
-                {t('ins.noSchematics')}
-              </div>
-            ) : (
-              schematics.map((s) => (
-                <div key={s.path} className="glass-soft flex items-center gap-2 rounded-xl px-3 py-2">
-                  <Icon name="box" size={15} className="opacity-60" />
-                  <span className="min-w-0 flex-1 truncate text-[13px]">{s.name}</span>
-                  <span className="caption">{formatBytes(s.size)}</span>
-                  <button
-                    onClick={async () => {
-                      await window.api.manage.deleteFile(s.path)
-                      void reload()
-                    }}
-                    className="no-drag opacity-50 hover:opacity-100"
-                  >
-                    <Icon name="trash" size={15} />
-                  </button>
-                </div>
-              ))
-            )}
-          </div>
+          <SchematicsPanel versionId={versionId} schematics={schematics} onReload={reload} />
         )}
       </div>
 
@@ -1212,44 +589,26 @@ export function InstanceManagePage({
       )}
 
       {/* 删除实例的二次确认：删除后不可恢复 */}
+      <DeleteConfirmDialog
+        open={deleteConfirm}
+        versionId={versionId}
+        onCancel={() => setDeleteConfirm(false)}
+        onConfirm={() => void doDeleteVersion()}
+      />
+
+      {/* 导出弹窗与模组详情各自独立一个 AnimatePresence。
+          注意：AnimatePresence 要求每个「直接子节点」有唯一 key；把多个条件子节点塞进
+          同一个 AnimatePresence 时，退场元素可能无法被正确识别 / 卸载，于是残留一层
+          已经淡出（opacity: 0）却仍铺满全屏的遮罩，挡住所有点击 —— 表现就是「关掉
+          导出弹窗后界面卡死」。拆开并显式补 key 即可稳定卸载。 */}
       <AnimatePresence>
-        {deleteConfirm && (
-          <motion.div
-            className="fixed inset-0 z-[115] flex items-center justify-center p-6"
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-          >
-            <div className="absolute inset-0" style={{ background: 'var(--scrim)' }} onClick={() => setDeleteConfirm(false)} />
-            <motion.div
-              className="glass-strong relative z-10 w-full max-w-md rounded-[32px] p-7"
-              initial={{ scale: 0.92, opacity: 0, y: 24 }}
-              animate={{ scale: 1, opacity: 1, y: 0 }}
-              exit={{ scale: 0.94, opacity: 0, y: 16 }}
-              transition={{ type: 'spring', bounce: 0.2, duration: 0.45 }}
-            >
-              <div className="mb-2 flex items-center gap-2">
-                <Icon name="info" size={20} style={{ color: 'var(--fill-danger)' }} />
-                <span className="title">{t('ins.deleteConfirm.title')}</span>
-              </div>
-              <p className="caption mt-3">{t('ins.deleteConfirm.desc', { name: versionId })}</p>
-              <div className="mt-6 flex items-center gap-2">
-                <Button className="flex-1" onClick={() => setDeleteConfirm(false)}>
-                  {t('ins.deleteConfirm.cancel')}
-                </Button>
-                <Button variant="danger" className="flex-1" icon="trash" onClick={() => void doDeleteVersion()}>
-                  {t('ins.deleteConfirm.confirm')}
-                </Button>
-              </div>
-            </motion.div>
-          </motion.div>
-        )}
+        {exportOpen && <ExportPage key="modpack-export" versionId={versionId} onClose={() => setExportOpen(false)} />}
       </AnimatePresence>
 
       <AnimatePresence>
-        {exportOpen && <ExportPage versionId={versionId} onClose={() => setExportOpen(false)} />}
         {modDetail && (
           <ModDetailSheet
+            key="mod-detail"
             mod={mods.find((m) => m.path === modDetail.path) ?? modDetail}
             onClose={() => setModDetail(null)}
           />
@@ -1257,162 +616,4 @@ export function InstanceManagePage({
       </AnimatePresence>
     </div>
   )
-}
-
-function ModDetailSheet({ mod, onClose }: { mod: ModEntry; onClose: () => void }): JSX.Element {
-  const { t, settings } = useApp()
-  const [versions, setVersions] = useState<ModrinthVersion[]>([])
-  const [loading, setLoading] = useState(true)
-
-  useEffect(() => {
-    if (!mod.slug) {
-      setVersions([])
-      setLoading(false)
-      return
-    }
-    let alive = true
-    setLoading(true)
-    void window.api.mods
-      .versions(mod.slug, [], [])
-      .then((vs) => {
-        if (alive) setVersions(vs)
-      })
-      .catch(() => {
-        if (alive) setVersions([])
-      })
-      .finally(() => {
-        if (alive) setLoading(false)
-      })
-    return () => {
-      alive = false
-    }
-  }, [mod.slug])
-
-  const { title, detail } = modListTitles(mod, settings.modTitleStyle)
-
-  return (
-    <motion.div
-      className="fixed inset-0 z-[100] flex items-center justify-center p-6"
-      initial={{ opacity: 0 }}
-      animate={{ opacity: 1 }}
-      exit={{ opacity: 0 }}
-    >
-      <motion.div
-        className="absolute inset-0"
-        style={{ background: 'var(--scrim)' }}
-        initial={{ opacity: 0 }}
-        animate={{ opacity: 1 }}
-        exit={{ opacity: 0 }}
-        onClick={onClose}
-      />
-      <motion.div
-        className="glass-strong relative z-10 flex max-h-[80vh] w-full max-w-lg flex-col rounded-[32px] p-7"
-        initial={{ opacity: 0, scale: 0.92, y: 24 }}
-        animate={{ opacity: 1, scale: 1, y: 0 }}
-        exit={{ opacity: 0, scale: 0.94, y: 16 }}
-        transition={{ type: 'spring', bounce: 0.2, duration: 0.45 }}
-      >
-        <div className="mb-4 flex items-start gap-3">
-          {mod.iconUrl ? (
-            <img
-              src={mod.iconUrl}
-              width={52}
-              height={52}
-              alt=""
-              draggable={false}
-              className="shrink-0 rounded-xl object-cover"
-              style={{ background: 'var(--fill-secondary)' }}
-            />
-          ) : (
-            <div
-              className="flex shrink-0 items-center justify-center rounded-xl"
-              style={{ width: 52, height: 52, background: 'var(--fill-secondary)' }}
-            >
-              <Icon name="box" size={24} className="opacity-50" />
-            </div>
-          )}
-          <div className="min-w-0 flex-1">
-            <h2 className="title selectable">{title}</h2>
-            {detail && <p className="caption mt-0.5 truncate">{detail}</p>}
-          </div>
-          <div className="flex shrink-0 items-center gap-2">
-            {mod.slug && (
-              <button
-                onClick={() =>
-                  void window.api.shell.openExternal(mod.pageUrl ?? `https://modrinth.com/mod/${mod.slug}`)
-                }
-                className="mica no-drag shrink-0 rounded-lg px-2 py-1 text-[12px] font-medium"
-              >
-                {t('ins.moreInfo')}
-              </button>
-            )}
-            <button onClick={onClose} className="no-drag opacity-50 hover:opacity-100">
-              <Icon name="xmark" size={20} />
-            </button>
-          </div>
-        </div>
-
-        <div className="min-h-0 flex-1 overflow-y-auto pr-1">
-          {mod.description && <p className="caption selectable line-clamp-4">{mod.description}</p>}
-
-          <div className="mt-4 mb-2 flex items-center justify-between">
-            <span className="headline">{t('ins.version')}</span>
-            <span className="caption">{formatBytes(mod.size)}</span>
-          </div>
-
-          {!mod.slug ? (
-            <div className="caption rounded-xl px-3 py-4 text-center opacity-60" style={{ background: 'var(--fill-secondary)' }}>
-              {t('ins.notOnModrinth')}
-            </div>
-          ) : loading ? (
-            <div className="flex flex-col items-center gap-2 p-6">
-              <Spinner size={22} />
-              <span className="caption">{t('ins.loadingVersions')}</span>
-            </div>
-          ) : versions.length === 0 ? (
-            <div className="caption p-4 text-center opacity-60">{t('ins.noVersionInfo')}</div>
-          ) : (
-            <div className="space-y-1.5">
-              {versions.slice(0, 30).map((v) => (
-                <div key={v.id} className="glass-soft rounded-xl px-3.5 py-2.5">
-                  <div className="truncate text-[13px] font-medium">{v.version_number}</div>
-                  <div className="caption">
-                    {v.loaders.join(' / ') || t('ins.noLoader')} · {v.game_versions.join(', ')}
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-      </motion.div>
-    </motion.div>
-  )
-}
-
-function Row({ label, desc, children }: { label: string; desc?: string; children: ReactNode }): JSX.Element {
-  return (
-    <div className="glass-soft flex items-center justify-between gap-4 rounded-2xl p-4">
-      <div>
-        <div className="text-[14px] font-medium">{label}</div>
-        {desc && <div className="caption mt-0.5">{desc}</div>}
-      </div>
-      {children}
-    </div>
-  )
-}
-
-function loaderLabel(loader: string): string {
-  return loader.charAt(0).toUpperCase() + loader.slice(1)
-}
-
-function formatBytes(n: number): string {
-  if (!n) return '0 B'
-  const units = ['B', 'KB', 'MB', 'GB']
-  let i = 0
-  let v = n
-  while (v >= 1024 && i < units.length - 1) {
-    v /= 1024
-    i++
-  }
-  return `${v.toFixed(1)} ${units[i]}`
 }

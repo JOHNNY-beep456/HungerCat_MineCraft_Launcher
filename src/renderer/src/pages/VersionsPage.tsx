@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { motion } from 'motion/react'
-import type { ForgeKind, InstalledVersion, LoaderKind, VersionManifest } from '@shared/types'
+import type { ForgeKind, InstalledVersion, LoaderKind, VersionDirInstance, VersionManifest } from '@shared/types'
 import { useRuntime } from '../runtime'
-import { useApp } from '../store'
+import { allVersionDirs, useApp, versionDirLabel } from '../store'
 import { Button, Checkbox, GlassCard, Icon, LoadingState, ProgressBar, Segmented, Select } from '../components/ui'
 
 type Filter = 'all' | 'release' | 'snapshot'
@@ -77,7 +77,7 @@ function supportsOfflineTranslate(mc: string): boolean {
 
 export function VersionsPage({ presetSearch }: { presetSearch?: string }): JSX.Element {
   const { download, installingId, busy, installVersion } = useRuntime()
-  const { t } = useApp()
+  const { t, settings } = useApp()
 
   const [manifest, setManifest] = useState<VersionManifest | null>(null)
   const [loading, setLoading] = useState(true)
@@ -97,6 +97,12 @@ export function VersionsPage({ presetSearch }: { presetSearch?: string }): JSX.E
   const [loaderLog, setLoaderLog] = useState<string[]>([])
   const [customName, setCustomName] = useState('')
   const [nameTouched, setNameTouched] = useState(false)
+  // 安装目标版本目录：空串表示「跟随当前生效目录」；用户显式选择后按所选安装。
+  const [installDirId, setInstallDirId] = useState('')
+  const dirOptions = useMemo(
+    () => allVersionDirs(settings).map((d) => ({ value: d.id, label: versionDirLabel(d) })),
+    [settings]
+  )
   const [installFabricApi, setInstallFabricApi] = useState(true)
   // 是否一并安装「游戏内离线翻译模组」：仅在 Fabric + 目标版本支持时为可选（默认勾选）。
   const [installOfflineTranslate, setInstallOfflineTranslate] = useState(true)
@@ -230,7 +236,10 @@ export function VersionsPage({ presetSearch }: { presetSearch?: string }): JSX.E
       setLoaderError(t('res.versions.invalidName'))
       return
     }
-    if (installed.some((v) => v.id === name)) {
+    // 重名按「目标版本目录」判断（定向安装到非生效目录时，生效目录的列表不作数）。
+    const targetDirId = installDirId || settings.selectedVersionDirId || 'default'
+    const allDirs = await window.api.installed.listAll().catch(() => [] as VersionDirInstance[])
+    if (allDirs.some((v) => v.dirId === targetDirId && v.id === name)) {
       setLoaderError(t('res.versions.nameExists', { name }))
       return
     }
@@ -253,18 +262,25 @@ export function VersionsPage({ presetSearch }: { presetSearch?: string }): JSX.E
     setLoaderLog([])
     setLoaderTarget(null)
     try {
+      // 定向安装到所选版本目录：dirId 一路透传到安装接口，不改动全局「生效目录」。
+      const targetDirId = installDirId || settings.selectedVersionDirId || 'default'
       if (loaderKind === 'vanilla') {
-        await window.api.versions.createVanilla(loaderTarget, name)
-        await installVersion(name)
+        await window.api.versions.createVanilla(loaderTarget, name, targetDirId)
+        await installVersion(name, targetDirId)
+      } else if (loaderKind === 'forge' || loaderKind === 'neoforge') {
+        // Forge / NeoForge：安装器 jar 的下载与原版下载并发；但安装器必须等原版下载完成
+        // 再运行（传 waitForVersion，主进程会等该版本的安装 Promise 完成后才运行安装器）。
+        const vanillaJob = installVersion(loaderTarget, targetDirId)
+        const id = await window.api.forge.install(loaderKind, loaderTarget, loaderVersion, name, loaderTarget, targetDirId)
+        await Promise.all([vanillaJob, installVersion(id, targetDirId)])
       } else {
-        // 带加载器：先下载原版，再安装加载器
-        await installVersion(loaderTarget)
-        const id =
-          loaderKind === 'forge' || loaderKind === 'neoforge'
-            ? await window.api.forge.install(loaderKind, loaderTarget, loaderVersion, name)
-            : await window.api.loaders.install(loaderKind, loaderTarget, loaderVersion, name)
-        await installVersion(id)
-        if (loaderKind === 'fabric' && installFabricApi) {
+        // Fabric / Quilt：加载器只是一份 profile JSON + 一批库文件。
+        // 并发启动原版下载，同时取得加载器 profile，再并发下载加载器版本——
+        // 两边重叠的库 / 资源由下载层自动去重，加载器独有的库可与原版文件同时下载。
+        const vanillaJob = installVersion(loaderTarget, targetDirId)
+        const id = await window.api.loaders.install(loaderKind, loaderTarget, loaderVersion, name, targetDirId)
+        await Promise.all([vanillaJob, installVersion(id, targetDirId)])
+        if (installFabricApi) {
           try {
             await window.api.mods.installFabricApi(loaderTarget, id)
           } catch (err) {
@@ -274,7 +290,7 @@ export function VersionsPage({ presetSearch }: { presetSearch?: string }): JSX.E
           }
         }
         // 可选：游戏内离线翻译模组（仅 Fabric + 目标版本支持时提供，需依赖 Fabric API）。
-        if (loaderKind === 'fabric' && installFabricApi && installOfflineTranslate && supportsOfflineTranslate(loaderTarget)) {
+        if (installFabricApi && installOfflineTranslate && supportsOfflineTranslate(loaderTarget)) {
           try {
             await window.api.mods.installOfflineTranslate(id)
           } catch (err) {
@@ -505,6 +521,18 @@ export function VersionsPage({ presetSearch }: { presetSearch?: string }): JSX.E
                       {t('res.versions.nameExists', { name: sanitizeName(customName) })}
                     </div>
                   )}
+                </div>
+
+                <div className="mt-5">
+                  <div className="caption mb-2">{t('res.versions.installDir')}</div>
+                  <Select
+                    value={installDirId || settings.selectedVersionDirId || 'default'}
+                    onChange={setInstallDirId}
+                    className="w-full"
+                    disabled={loaderBusy}
+                    options={dirOptions}
+                  />
+                  <div className="caption mt-1.5">{t('res.versions.installDirDesc')}</div>
                 </div>
               </GlassCard>
 

@@ -5,19 +5,16 @@
  * 而 Chromium 对解析出的 URL 有长度上限（url::kMaxURLChars ≈ 2MB）。超过上限时该 url()
  * 会被判为无效 —— 大图（base64 后动辄好几 MB）设了却不生效就是这个原因。
  * 改挂一个只有几十字节的 blob: 地址即可绕开长度限制，且不损失画质。
+ *
+ * 实现用 `fetch(dataUrl)` 交给浏览器解码，避免旧写法里 `atob` + 逐字节 charCodeAt 的
+ * 大循环 —— 数 MB 的壁纸会在渲染线程产生明显的同步 CPU 尖峰，拖慢启动首帧。
  */
-export function dataUrlToBlobUrl(dataUrl: string): string {
+export async function dataUrlToBlobUrl(dataUrl: string): Promise<string> {
   if (!dataUrl) return ''
-  const comma = dataUrl.indexOf(',')
-  if (comma < 0) return ''
-  const meta = dataUrl.slice(5, comma)
-  if (!/;base64$/i.test(meta)) return ''
-  const mime = meta.replace(/;base64$/i, '') || 'application/octet-stream'
   try {
-    const binary = atob(dataUrl.slice(comma + 1))
-    const bytes = new Uint8Array(binary.length)
-    for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i)
-    return URL.createObjectURL(new Blob([bytes], { type: mime }))
+    const res = await fetch(dataUrl)
+    const blob = await res.blob()
+    return URL.createObjectURL(blob)
   } catch {
     return ''
   }

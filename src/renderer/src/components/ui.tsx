@@ -571,11 +571,16 @@ export function Select({
   disabled,
   placeholder,
   variant = 'default',
+  align = 'left',
   className = ''
 }: {
   value: string
   onChange: (v: string) => void
-  options: Array<{ value: string; label: string }>
+  /**
+   * 选项：`note` 为可选的「备注」，显示在标题下方一行（比标题更小更淡）。
+   * 用于版本目录等需要「名称 + 路径」两行展示、又不想另开一个框的场景。
+   */
+  options: Array<{ value: string; label: string; note?: string }>
   disabled?: boolean
   placeholder?: string
   /**
@@ -583,6 +588,8 @@ export function Select({
    * 用于「行内选择器」（如版本目录那一行），避免灰底在三套皮肤下观感不一且偏突兀。
    */
   variant?: 'default' | 'seamless'
+  /** 触发器内文字对齐方式；`right` 用于把选择器文字靠右（如首页版本目录）。 */
+  align?: 'left' | 'right'
   className?: string
 }): JSX.Element {
   const { t } = useApp()
@@ -652,6 +659,9 @@ export function Select({
   }, [open])
 
   const current = options.find((o) => o.value === value)
+  // 有「备注」的选项会显示成两行（标题 + 备注）；此时需放开 .input 的固定高度，
+  // 否则两行会被挤在 36px 里（表现为「太拥挤」）。
+  const hasNote = options.some((o) => o.note)
 
   return (
     <div ref={rootRef} className={`relative inline-block text-left ${className}`}>
@@ -661,18 +671,41 @@ export function Select({
         onClick={() => setOpen((v) => !v)}
         aria-haspopup="listbox"
         aria-expanded={open}
-        className={`input flex w-full items-center justify-between gap-2 no-drag ${
-          variant === 'seamless' ? 'select-seamless' : ''
-        }`}
+        className={`input flex w-full items-center gap-2 no-drag ${
+          align === 'right' ? 'justify-end' : 'justify-between'
+        } ${variant === 'seamless' ? 'select-seamless' : ''} ${hasNote ? 'select-2line' : ''}`}
         style={{ opacity: disabled ? 0.5 : 1, cursor: disabled ? 'default' : 'pointer' }}
       >
-        <span className="truncate">{current ? current.label : placeholder ?? t('cmp.select.placeholder')}</span>
-        <Icon
-          name="chevronRight"
-          size={14}
-          className="shrink-0 opacity-50 transition-transform duration-200"
-          style={{ transform: open ? 'rotate(-90deg)' : 'rotate(90deg)' }}
-        />
+        {align === 'right' && (
+          <Icon
+            name="chevronRight"
+            size={14}
+            className="shrink-0 opacity-50 transition-transform duration-200"
+            style={{ transform: open ? 'rotate(-90deg)' : 'rotate(90deg)' }}
+          />
+        )}
+        <span
+          className={`flex min-w-0 flex-1 flex-col gap-0.5 ${
+            align === 'right' ? 'items-end text-right' : 'items-start text-left'
+          }`}
+        >
+          <span className="w-full truncate">
+            {current ? current.label : placeholder ?? t('cmp.select.placeholder')}
+          </span>
+          {current?.note && (
+            <span className="caption w-full truncate" style={{ opacity: 0.6 }}>
+              {current.note}
+            </span>
+          )}
+        </span>
+        {align !== 'right' && (
+          <Icon
+            name="chevronRight"
+            size={14}
+            className="shrink-0 opacity-50 transition-transform duration-200"
+            style={{ transform: open ? 'rotate(-90deg)' : 'rotate(90deg)' }}
+          />
+        )}
       </button>
 
       {createPortal(
@@ -703,7 +736,9 @@ export function Select({
                           onChange(o.value)
                           setOpen(false)
                         }}
-                        className="flex w-full items-center justify-between gap-2 rounded-xl px-3 py-2 text-left no-drag transition-colors"
+                        className={`flex w-full items-center gap-2 rounded-xl px-3 py-2 no-drag transition-colors ${
+                          align === 'right' ? 'justify-end' : 'justify-between'
+                        } ${align === 'right' ? 'text-right' : 'text-left'}`}
                         style={{ background: active ? 'var(--fill-secondary)' : 'transparent' }}
                         onMouseEnter={(e) => {
                           if (!active) e.currentTarget.style.background = 'var(--fill-secondary)'
@@ -712,8 +747,24 @@ export function Select({
                           if (!active) e.currentTarget.style.background = 'transparent'
                         }}
                       >
-                        <span className="truncate text-[13px] font-medium">{o.label}</span>
-                        {active && <Icon name="check" size={14} style={{ color: 'var(--fill-primary)' }} />}
+                        {align === 'right' && active && (
+                          <Icon name="check" size={14} style={{ color: 'var(--fill-primary)' }} />
+                        )}
+                        <span
+                          className={`flex min-w-0 flex-1 flex-col gap-0.5 ${
+                            align === 'right' ? 'items-end text-right' : 'items-start text-left'
+                          }`}
+                        >
+                          <span className="w-full truncate text-[13px] font-medium">{o.label}</span>
+                          {o.note && (
+                            <span className="caption w-full truncate" style={{ opacity: 0.6 }}>
+                              {o.note}
+                            </span>
+                          )}
+                        </span>
+                        {align !== 'right' && active && (
+                          <Icon name="check" size={14} style={{ color: 'var(--fill-primary)' }} />
+                        )}
                       </button>
                     )
                   })
@@ -782,14 +833,74 @@ export function Avatar({
   const [srcIndex, setSrcIndex] = useState(0)
   // skinFailed = 皮肤贴图本身也无法加载时，跳过本地合成候选，绝不显示问号。
   const [skinFailed, setSkinFailed] = useState(false)
+  /** 经 uapis.cn 查询到的皮肤地址（仅正版 / 第三方、且本地无 skinUrl 时补全）。 */
+  const [remoteSkin, setRemoteSkin] = useState('')
+
+  const isOffline = offline === true || authType === 'offline'
+  const isOnline = !isOffline
+
   useEffect(() => {
     setSrcIndex(0)
     setSkinFailed(false)
+    setRemoteSkin('')
   }, [uuid, skinUrl, authType, yggdrasilServer, offline])
 
+  // 皮肤补全（仅在线账号、且本地无 skinUrl 时）：
+  // - 第三方（yggdrasil）：走**认证站的会话服**取皮肤贴图，不做正版查询；
+  // - 正版（microsoft）：走 uapis.cn 按玩家名补全皮肤地址。
+  // 离线账号直接使用本地默认头像，不查询任何接口。
+  useEffect(() => {
+    if (!isOnline || skinUrl || !name) return
+    let alive = true
+    if (authType === 'yggdrasil') {
+      // 第三方：需认证站地址与角色 UUID 才能查会话服。
+      if (!yggdrasilServer || !uuid) return
+      void window.api.accounts
+        .yggdrasilSkin(yggdrasilServer, uuid)
+        .then((info) => {
+          if (alive && info?.skinUrl) setRemoteSkin(info.skinUrl)
+        })
+        .catch(() => undefined)
+    } else {
+      void window.api.minecraft
+        .userinfo(name)
+        .then((info) => {
+          if (alive && info.skinUrl) setRemoteSkin(info.skinUrl)
+        })
+        .catch(() => undefined)
+    }
+    return () => {
+      alive = false
+    }
+  }, [isOnline, skinUrl, name, authType, yggdrasilServer, uuid])
+
   // 皮肤贴图统一升级为 https（Mojang 贴图地址默认是 http://），避免混合内容被拦。
-  const skinSrc = skinUrl ? skinUrl.replace(/^http:\/\//i, 'https://') : ''
-  const hash = skinUrl?.match(/([0-9a-f]{64})/i)?.[1]
+  const effectiveSkin = skinUrl || remoteSkin
+  const skinSrc = effectiveSkin ? effectiveSkin.replace(/^http:\/\//i, 'https://') : ''
+  const hash = effectiveSkin?.match(/([0-9a-f]{64})/i)?.[1]
+
+  // 皮肤贴图就绪（或切换）时回到首选候选并清除旧的失败标记：
+  // 保证一旦拿到皮肤，就优先用「本地合成」渲染——像游戏那样把帽子 / 外套外层露出，
+  // 而不是停留在站点返回的平面头像兜底上。
+  useEffect(() => {
+    setSrcIndex(0)
+    setSkinFailed(false)
+  }, [skinSrc])
+
+  // 离线账号：直接使用本地回退图片，不查询任何接口。
+  if (isOffline) {
+    return (
+      <img
+        src={defaultAvatar}
+        width={size}
+        height={size}
+        alt={name ?? t('cmp.avatar.defaultAlt')}
+        className="rounded-xl"
+        draggable={false}
+        style={{ objectFit: 'cover', flexShrink: 0 }}
+      />
+    )
+  }
 
   /**
    * 候选顺序（失败逐个回退）：
@@ -797,8 +908,7 @@ export function Avatar({
    *   比头部大一圈露出来（见下方 layer 说明）。实测 minotar / crafatar 等第三方
    *   面像源是把外层「平贴」在脸上的（外层宽度 = 脸宽），看不出外层，
    *   与期望效果不符，所以只作为兜底。
-   * - 离线账号的 UUID 是按名字推导的假 UUID，uuid 类头像源只会返回通用 Steve
-   *   （既不是本账号皮肤、也没有外层），因此直接跳过 uuid 类源。
+   * - 离线账号已在上方直接返回本地图，不会走到这里。
    */
   const steps: FaceStep[] = []
   if (skinSrc) steps.push({ local: true })
@@ -832,7 +942,7 @@ export function Avatar({
           console.warn(`头像源加载失败，回退下一候选：${faceUrl}`)
           setSrcIndex((i) => i + 1)
         }}
-        style={{ imageRendering: 'auto', boxShadow: 'inset 0 0 0 1px rgba(0,0,0,0.1)' }}
+        style={{ imageRendering: 'auto' }}
       />
     )
   }

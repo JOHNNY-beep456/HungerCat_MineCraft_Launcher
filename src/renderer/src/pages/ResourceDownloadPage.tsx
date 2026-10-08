@@ -1,15 +1,20 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { AnimatePresence, motion } from 'motion/react'
-import type { InstalledVersion, ModEntry, ModpackProbe, ModrinthProject, ModrinthProjectDetail, ModrinthType, ModrinthVersion, SourceFilter, VersionManifest } from '@shared/types'
+import type { ModEntry, ModpackProbe, ModrinthProject, ModrinthProjectDetail, ModrinthType, ModrinthVersion, SourceFilter, VersionDirInstance, VersionManifest } from '@shared/types'
 import { useRuntimeActions } from '../runtime'
 import { Button, Icon, LoadingState, Markdown, Segmented, Select, Spinner } from '../components/ui'
 import { VersionsPage } from './VersionsPage'
 import { useAutoTranslate } from '../translate'
 import { compileMarkdown } from '../markdown-translate'
-import { useApp } from '../store'
+import { allVersionDirs, useApp, versionDirLabel } from '../store'
 import { modTitlePair } from '../mod-title'
 import type { TFunction } from '../i18n'
+
+/** 实例在「跨目录」列表里的唯一键：同名实例可能同时存在于多个版本目录。 */
+function insKey(ins: VersionDirInstance): string {
+  return `${ins.dirId}|${ins.id}`
+}
 
 export type Tab = 'mod' | 'resourcepack' | 'shader' | 'modpack' | 'versions'
 type BrowseTab = Exclude<Tab, 'versions'>
@@ -113,7 +118,7 @@ function Browser({ type }: { type: BrowseTab }): JSX.Element {
   const { t, settings } = useApp()
 
   const [manifest, setManifest] = useState<VersionManifest | null>(null)
-  const [installed, setInstalled] = useState<InstalledVersion[]>([])
+  const [installed, setInstalled] = useState<VersionDirInstance[]>([])
   const [mcVersion, setMcVersion] = useState('')
   const [loader, setLoader] = useState('all')
   const [category, setCategory] = useState('all')
@@ -140,7 +145,7 @@ function Browser({ type }: { type: BrowseTab }): JSX.Element {
   const scrollRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
-    void Promise.all([window.api.versions.list(), window.api.installed.list()]).then(([m, i]) => {
+    void Promise.all([window.api.versions.list(), window.api.installed.listAll()]).then(([m, i]) => {
       setManifest(m)
       setInstalled(i)
       setMcVersion(m.latest.release || m.versions[0]?.id || '')
@@ -150,7 +155,7 @@ function Browser({ type }: { type: BrowseTab }): JSX.Element {
   // 整合包安装完成后刷新已安装列表，避免改名导入后的实例不显示、重名判断失效。
   useEffect(() => {
     return window.api.modpack.onProgress((p) => {
-      if (p.phase === 'done') void window.api.installed.list().then(setInstalled).catch(() => {})
+      if (p.phase === 'done') void window.api.installed.listAll().then(setInstalled).catch(() => {})
     })
   }, [])
 
@@ -347,7 +352,7 @@ function ProjectDetail({
 }: {
   project: ModrinthProject
   type: ModrinthType
-  installed: InstalledVersion[]
+  installed: VersionDirInstance[]
   filterMcVersion: string
   filterLoader: string
   onBack: () => void
@@ -382,6 +387,12 @@ function ProjectDetail({
   const isModpack = type === 'modpack'
   const [modpackPending, setModpackPending] = useState<{ temp: string; probe: ModpackProbe } | null>(null)
   const [modpackRename, setModpackRename] = useState('')
+  // 整合包导入目标版本目录：空串表示跟随当前生效目录。
+  const [modpackDirId, setModpackDirId] = useState('')
+  const dirOptions = useMemo(
+    () => allVersionDirs(settings).map((d) => ({ value: d.id, label: versionDirLabel(d) })),
+    [settings]
+  )
   const [modpackBusy, setModpackBusy] = useState(false)
   const [notice, setNotice] = useState<string | null>(null)
   // 「完整介绍」弹窗开关
@@ -393,14 +404,16 @@ function ProjectDetail({
     [versions]
   )
   const [instanceMods, setInstanceMods] = useState<Record<string, string[]>>({})
-  const installedIds = installed.map((ins) => ins.id).join('|')
+  // 跨目录：同名实例可能出现在多个目录，用「dirId|id」作键；查询时带上 dirId 定向读取。
+  const installedKeys = installed.map(insKey).join('\n')
   useEffect(() => {
-    if (!needsRuntimeCheck || !installedIds) return
+    if (!needsRuntimeCheck || !installedKeys) return
     let cancelled = false
     void Promise.all(
-      installedIds.split('|').map(async (id) => {
-        const list = await window.api.manage.mods(id).catch(() => [] as ModEntry[])
-        return [id, list.map((m) => m.name)] as const
+      installedKeys.split('\n').map(async (key) => {
+        const [dirId, id] = key.split('|')
+        const list = await window.api.manage.mods(id, dirId).catch(() => [] as ModEntry[])
+        return [key, list.map((m) => m.name)] as const
       })
     ).then((pairs) => {
       if (!cancelled) setInstanceMods(Object.fromEntries(pairs))
@@ -408,7 +421,7 @@ function ProjectDetail({
     return () => {
       cancelled = true
     }
-  }, [needsRuntimeCheck, installedIds])
+  }, [needsRuntimeCheck, installedKeys])
 
   const installModpack = async (v: ModrinthVersion): Promise<void> => {
     const file = v.files.find((f) => f.primary) ?? v.files[0]
@@ -428,8 +441,12 @@ function ProjectDetail({
     }
   }
 
+  // 目标版本目录：整合包重名判断按它（而非跨所有目录）判断。
+  const modpackTargetDirId = modpackDirId || settings.selectedVersionDirId || 'default'
   const modpackNameTaken =
-    modpackPending !== null && modpackRename.trim() !== '' && installed.some((ins) => ins.id === modpackRename.trim())
+    modpackPending !== null &&
+    modpackRename.trim() !== '' &&
+    installed.some((ins) => ins.dirId === modpackTargetDirId && ins.id === modpackRename.trim())
 
   const uniqueInstanceName = (base: string, mcVersion?: string): string => {
     const taken = (n: string): boolean => installed.some((ins) => ins.id === n) || (!!mcVersion && mcVersion === n)
@@ -445,7 +462,7 @@ function ProjectDetail({
     if (!modpackPending) return
     const name = modpackRename.trim()
     if (!name) return
-    if (installed.some((ins) => ins.id === name)) {
+    if (installed.some((ins) => ins.dirId === modpackTargetDirId && ins.id === name)) {
       setNotice(t('res.nameExists', { name }))
       return
     }
@@ -454,7 +471,7 @@ function ProjectDetail({
     setModpackBusy(true)
     setNotice(null)
     try {
-      await window.api.modpack.import(temp, name)
+      await window.api.modpack.import(temp, name, modpackTargetDirId)
       setNotice(t('res.modpackInstalled', { name }))
     } catch (err) {
       setNotice(t('res.installFailed', { msg: err instanceof Error ? err.message : String(err) }))
@@ -573,7 +590,14 @@ function ProjectDetail({
                 onChange={(e) => setModpackRename(e.target.value)}
                 onKeyDown={(e) => e.key === 'Enter' && modpackRename.trim() && !modpackNameTaken && void confirmModpackImport()}
                 placeholder={t('res.modpack.namePlaceholder')}
-                className="input mb-5 w-full"
+                className="input mb-3 w-full"
+              />
+              <div className="caption mb-2">{t('res.modpack.installDir')}</div>
+              <Select
+                value={modpackDirId || settings.selectedVersionDirId || 'default'}
+                onChange={setModpackDirId}
+                className="mb-5 w-full"
+                options={dirOptions}
               />
               {modpackNameTaken && (
                 <p className="mb-4 -mt-3 text-[12px]" style={{ color: 'var(--fill-danger)' }}>
@@ -737,7 +761,7 @@ function LoaderDrawer({
   loader: string
   versions: ModrinthVersion[]
   type: ModrinthType
-  installed: InstalledVersion[]
+  installed: VersionDirInstance[]
   instanceMods: Record<string, string[]>
   preferredLoader?: string
   isModpack?: boolean
@@ -791,7 +815,7 @@ interface DepMissing {
 
 /** 依赖确认弹窗要用的上下文（缺哪个前置、装到哪个实例）。 */
 interface DepPrompt {
-  target: InstalledVersion
+  target: VersionDirInstance
   missing: DepMissing[]
 }
 
@@ -806,7 +830,7 @@ interface DepPrompt {
  */
 async function findMissingDependencies(
   version: ModrinthVersion,
-  target: InstalledVersion,
+  target: VersionDirInstance,
   type: ModrinthType
 ): Promise<DepMissing[]> {
   if (type !== 'mod' && type !== 'modpack') return []
@@ -816,7 +840,7 @@ async function findMissingDependencies(
   let names = new Set<string>()
   let slugs = new Set<string>()
   try {
-    const mods = await window.api.manage.mods(target.id)
+    const mods = await window.api.manage.mods(target.id, target.dirId)
     names = new Set(mods.map((m) => m.name.toLowerCase()))
     slugs = new Set(
       mods
@@ -869,14 +893,19 @@ function VersionEntry({
 }: {
   v: ModrinthVersion
   type: ModrinthType
-  installed: InstalledVersion[]
+  installed: VersionDirInstance[]
   instanceMods: Record<string, string[]>
   isModpack?: boolean
   onInstallModpack?: (v: ModrinthVersion) => void
   modpackBusy?: boolean
 }): JSX.Element {
   const { triggerFly } = useRuntimeActions()
-  const { t } = useApp()
+  const { t, settings } = useApp()
+  /** 「版本名 - 目录别名」里的目录别名：按实例所属版本目录解析。 */
+  const dirLabelOf = (dirId: string): string => {
+    const d = allVersionDirs(settings).find((x) => x.id === dirId)
+    return d ? versionDirLabel(d) : dirId
+  }
   const [expanded, setExpanded] = useState(false)
   const [busy, setBusy] = useState(false)
   /** 安装 / 下载失败的提示（非空即展示）；成功或重试时清空。 */
@@ -901,12 +930,12 @@ function VersionEntry({
       const key = l.toLowerCase()
       // 光影声明的加载器是运行时模组：实例装了 Iris / OptiFine 才能用
       const pattern = RUNTIME_LOADER_PATTERNS[key]
-      if (pattern) return (instanceMods[ins.id] ?? []).some((name) => pattern.test(name))
+      if (pattern) return (instanceMods[insKey(ins)] ?? []).some((name) => pattern.test(name))
       return key === insLoader
     })
   })
 
-  const fire = async (e: React.MouseEvent, target: InstalledVersion | null): Promise<void> => {
+  const fire = async (e: React.MouseEvent, target: VersionDirInstance | null): Promise<void> => {
     const r = (e.currentTarget as HTMLElement).getBoundingClientRect()
     triggerFly(r.left + r.width / 2, r.top + r.height / 2)
     // CurseForge 上「禁止第三方分发」的资源拿不到下载地址：只能去官网下，
@@ -928,7 +957,7 @@ function VersionEntry({
           setDepPrompt({ target, missing })
           return
         }
-        await window.api.mods.install(file.url, file.filename, target.id, type, file.size)
+        await window.api.mods.install(file.url, file.filename, target.id, type, file.size, target.dirId)
       } else {
         const dest = await window.api.shell.saveFile(file.filename)
         if (dest) await window.api.mods.downloadTo(file.url, dest, file.size)
@@ -942,7 +971,7 @@ function VersionEntry({
     }
   }
 
-  /** 用户确认后：先装缺失的前置，再装本体（顺序执行，避免并发写同一 mods 目录）。 */
+  /** 用户确认后：并发安装所有缺失的前置与本体（各写各自独立的文件，无写冲突）。 */
   const installWithDependencies = async (): Promise<void> => {
     const p = depPrompt
     const file = v.files.find((f) => f.primary) ?? v.files[0]
@@ -951,11 +980,14 @@ function VersionEntry({
     setBusy(true)
     setError(null)
     try {
+      // 前置与本体是各自独立的文件：并发下载才能缩短总时长（原先逐个串行等待）。
+      const jobs: Array<Promise<unknown>> = []
       for (const m of p.missing) {
         const f = m.version.files.find((x) => x.primary) ?? m.version.files[0]
-        if (f) await window.api.mods.install(f.url, f.filename, p.target.id, 'mod', f.size)
+        if (f) jobs.push(window.api.mods.install(f.url, f.filename, p.target.id, 'mod', f.size, p.target.dirId))
       }
-      await window.api.mods.install(file.url, file.filename, p.target.id, type, file.size)
+      jobs.push(window.api.mods.install(file.url, file.filename, p.target.id, type, file.size, p.target.dirId))
+      await Promise.all(jobs)
       setExpanded(false)
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
@@ -1005,7 +1037,7 @@ function VersionEntry({
               className="flex w-full items-center justify-between rounded-lg px-3 py-1.5 text-[13px] no-drag hover:opacity-80"
               style={{ background: 'var(--chip-bg)' }}
             >
-              <span className="truncate">{ins.id}</span>
+              <span className="truncate">{ins.id} - {dirLabelOf(ins.dirId)}</span>
               <span className="caption shrink-0">
                 {ins.mcVersion} · {loaderLabel(ins.loader, t)}
               </span>

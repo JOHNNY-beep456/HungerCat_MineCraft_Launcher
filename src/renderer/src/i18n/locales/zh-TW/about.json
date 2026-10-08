@@ -1,0 +1,10 @@
+{
+  "about.title": "關於",
+  "about.subtitle": "HungerCat MineCraft Launcher · 製作團隊與相關連結",
+  "about.refresh": "重新整理",
+  "about.loadError": "取得關於資訊失敗：{msg}",
+  "about.loading": "正在取得關於資訊…",
+  "about.empty": "暫無關於資訊",
+  "about.more": "更多…",
+  "about.chooseLink": "選擇一個連結前往："
+}

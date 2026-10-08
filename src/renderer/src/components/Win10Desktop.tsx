@@ -8,7 +8,7 @@
 // 桌面里只有启动器自己的窗口：不再捕获 / 搬动任何外部窗口（MC 由启动参数强制全屏，
 // 就是一个普通的独立全屏窗口），因此不涉及任何 Win32 窗口句柄操作。
 //
-// 与「仿 Mac 玻璃」皮肤互斥：设置里两者共用一个 experimental 字段。
+// 与「液态玻璃」皮肤互斥：设置里两者共用一个 experimental 字段。
 // ---------------------------------------------------------------------------
 
 import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
@@ -79,7 +79,7 @@ function Glyph({ d, size = 12 }: { d: string; size?: number }): JSX.Element {
 /* ---------------- 桌面 ---------------- */
 
 export function Win10Desktop(): JSX.Element {
-  const { settings, selectedAccount, fileManagerPath, fileManagerSeq, openFileManager, closeFileManager, t } =
+  const { settings, selectedAccount, fileManagerPath, fileManagerSeq, openFileManager, closeFileManager, navRequest, t } =
     useApp()
   const { downloads } = useRuntime()
   const [wins, setWins] = useState<WinState[]>([])
@@ -207,6 +207,14 @@ export function Win10Desktop(): JSX.Element {
     },
     [metaOf]
   )
+
+  // 消费全局导航请求：桌面模式下把目标页面作为窗口打开（如启动游戏后自动打开「启动游戏」）。
+  useEffect(() => {
+    if (!navRequest) return
+    const target = navRequest.page as PageId
+    if (nav.some((n) => n.id === target)) openPage(target)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [navRequest?.seq])
 
   const openManage = useCallback((versionId: string) => {
     const key = `manage:${versionId}`
@@ -474,7 +482,9 @@ export function Win10Desktop(): JSX.Element {
                   ? t('sidebar.localMode')
                   : settings.mode === 'minimal'
                     ? t('sidebar.minimalMode')
-                    : t('shell.win10.modeNormal')}
+                    : settings.mode === 'lowUsage'
+                      ? t('sidebar.lowUsageMode')
+                      : t('shell.win10.modeNormal')}
               </div>
             </div>
           </div>

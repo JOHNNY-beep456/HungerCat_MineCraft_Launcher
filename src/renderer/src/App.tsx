@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState } from 'react'
 import { AnimatePresence, MotionConfig, motion } from 'motion/react'
 import { AppProvider, useApp } from './store'
-import { RuntimeProvider } from './runtime'
+import { RuntimeProvider, useRuntime } from './runtime'
 import { TitleBar } from './components/TitleBar'
-import { Sidebar, type PageId } from './components/Sidebar'
+import { Sidebar, TopNav, type PageId } from './components/Sidebar'
 import { JavaPrompt } from './components/JavaPrompt'
 import { FlyDot } from './components/FlyDot'
 import { AgreementModal } from './components/AgreementModal'
@@ -16,17 +16,22 @@ import { DownloadOrb } from './components/DownloadOrb'
 import { MultiplayerSession } from './components/MultiplayerSession'
 import { Win10Desktop } from './components/Win10Desktop'
 import { FileManager } from './components/FileManager'
-import { Button, Icon, Markdown } from './components/ui'
+import { Button, Icon, Markdown, ProgressBar } from './components/ui'
 import { renderPage, type ResourcePreset } from './pages/router'
 import { InstanceManagePage } from './pages/InstanceManagePage'
 
 function Shell(): JSX.Element {
-  const { settings, t, reloadAccounts, securityAlert, clearSecurityAlert, fileManagerPath, closeFileManager, lowUsageNotice, dismissLowUsageNotice, launcherUpdateNotice, dismissLauncherUpdateNotice, needAgreement, announcements, dismissAnnouncements } = useApp()
+  const { settings, t, reloadAccounts, securityAlert, clearSecurityAlert, fileManagerPath, closeFileManager, lowUsageNotice, dismissLowUsageNotice, launcherUpdateNotice, dismissLauncherUpdateNotice, needAgreement, announcements, dismissAnnouncements, navRequest } = useApp()
+  const { launchReport, analyzingReport, dismissLaunchReport } = useRuntime()
   const [page, setPage] = useState<PageId>('home')
   const [managingId, setManagingId] = useState<string | null>(null)
   const [tokenExpiredError, setTokenExpiredError] = useState<string | null>(null)
   const [onboardingOpen, setOnboardingOpen] = useState(false)
   const [resourcePreset, setResourcePreset] = useState<ResourcePreset>(null)
+  // 「发现新版本」弹窗内「下载并安装」的进度与结果（直接在弹窗内完成下载 / 运行安装）。
+  const [updPhase, setUpdPhase] = useState<'idle' | 'downloading' | 'done' | 'error'>('idle')
+  const [updPercent, setUpdPercent] = useState(0)
+  const [updError, setUpdError] = useState('')
 
   // 首次同意协议后自动弹出新手引导（仅一次；之后通过双击左上角图标再次唤起）。
   useEffect(() => {
@@ -37,6 +42,66 @@ function Shell(): JSX.Element {
     setManagingId(null)
     setPage(p)
   }
+
+  // 更新下载进度：仅在弹窗内发起下载时用于显示进度条。
+  useEffect(
+    () =>
+      window.api.update.onProgress((p) => {
+        if (p.phase === 'done') {
+          setUpdPhase('done')
+          setUpdPercent(100)
+        } else {
+          setUpdPhase('downloading')
+          setUpdPercent(p.percent ?? 0)
+        }
+      }),
+    []
+  )
+
+  // 弹窗出现 / 变更时重置进度状态。
+  useEffect(() => {
+    setUpdPhase('idle')
+    setUpdPercent(0)
+    setUpdError('')
+  }, [launcherUpdateNotice])
+
+  /** 在弹窗内直接下载并安装：exe → 下载并运行安装程序；有文件名 → 下载；否则 → 浏览器打开链接。 */
+  const installUpdate = async (): Promise<void> => {
+    const info = launcherUpdateNotice
+    if (!info) return
+    const isExe = /\.exe(\?|#|$)/i.test(info.url)
+    const hasFile = !!(info.filename && info.filename.trim())
+    if (!isExe && !hasFile) {
+      try {
+        await window.api.shell.openExternal(info.url)
+        dismissLauncherUpdateNotice()
+      } catch (err) {
+        setUpdPhase('error')
+        setUpdError(err instanceof Error ? err.message : String(err))
+      }
+      return
+    }
+    setUpdPhase('downloading')
+    setUpdPercent(0)
+    setUpdError('')
+    try {
+      if (isExe) await window.api.update.downloadAndRun(info)
+      else await window.api.update.download(info)
+      setUpdPhase('done')
+    } catch (err) {
+      setUpdPhase('error')
+      setUpdError(err instanceof Error ? err.message : String(err))
+    }
+  }
+
+  // 消费全局导航请求（如启动游戏后自动跳到「启动游戏」页）。
+  // 依赖 navRequest.seq：同一页面被请求多次也能触发一次跳转。
+  useEffect(() => {
+    if (!navRequest) return
+    setManagingId(null)
+    setPage(navRequest.page as PageId)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [navRequest?.seq])
 
   // 引导「安装 26.2 原版」：跳到资源下载的「版本」标签并预填版本号。
   const installVanillaGuide = (): void => {
@@ -80,7 +145,7 @@ function Shell(): JSX.Element {
   }, [settings.mode, page])
 
   // 实验性 Win10 桌面整块替换外壳（侧栏 / 标题栏 / 玻璃背景），
-  // 仿 Mac 玻璃只是皮肤，外壳保持不变。
+  // 液态玻璃只是皮肤，外壳保持不变。
   const desktop = settings.experimental === 'win10'
 
   // 安全拦截：命中危险代码时强制系统全屏（连 Windows 任务栏一起盖住），
@@ -113,28 +178,35 @@ function Shell(): JSX.Element {
 
             <TitleBar onLogoDoubleClick={() => setOnboardingOpen(true)} />
 
-            <div className="flex h-full pt-12">
-              <div className="w-[224px] shrink-0">
-                <Sidebar active={page} onNavigate={navigate} />
-              </div>
+            <div className="flex h-full flex-col pt-12">
+              {/* 实验性「导航栏置于顶部」：左侧竖栏换成顶部圆弧长条，两者互斥显示。 */}
+              {settings.topNav && <TopNav active={page} onNavigate={navigate} />}
 
-              <main className="min-w-0 flex-1 p-5 pl-2">
-                {/* 页面 ⇄ 实例管理整页：用 key 切换同一容器内的两态视图，做淡入 + 轻微 y/scale 过渡。
-                    这里只做入场（不加 AnimatePresence 退场），避免退场延后新页面挂载。 */}
-                <motion.div
-                  key={managingId ? 'manage' : page}
-                  className="h-full"
-                  initial={{ opacity: 0, y: 12, scale: 0.995 }}
-                  animate={{ opacity: 1, y: 0, scale: 1 }}
-                  transition={{ type: 'spring', bounce: 0, duration: 0.35 }}
-                >
-                  {managingId ? (
-                    <InstanceManagePage versionId={managingId} onBack={() => setManagingId(null)} onRename={setManagingId} />
-                  ) : (
-                    renderPage(page, setManagingId, resourcePreset, navigate, settings.enableMultiplayer)
-                  )}
-                </motion.div>
-              </main>
+              <div className="flex min-h-0 flex-1">
+                {!settings.topNav && (
+                  <div className="w-[224px] shrink-0">
+                    <Sidebar active={page} onNavigate={navigate} />
+                  </div>
+                )}
+
+                <main className={settings.topNav ? 'min-w-0 flex-1 p-5' : 'min-w-0 flex-1 p-5 pl-2'}>
+                  {/* 页面 ⇄ 实例管理整页：用 key 切换同一容器内的两态视图，做淡入 + 轻微 y/scale 过渡。
+                      这里只做入场（不加 AnimatePresence 退场），避免退场延后新页面挂载。 */}
+                  <motion.div
+                    key={managingId ? 'manage' : page}
+                    className="h-full"
+                    initial={{ opacity: 0, y: 12, scale: 0.995 }}
+                    animate={{ opacity: 1, y: 0, scale: 1 }}
+                    transition={{ type: 'spring', bounce: 0, duration: 0.35 }}
+                  >
+                    {managingId ? (
+                      <InstanceManagePage versionId={managingId} onBack={() => setManagingId(null)} onRename={setManagingId} />
+                    ) : (
+                      renderPage(page, setManagingId, resourcePreset, navigate, settings.enableMultiplayer)
+                    )}
+                  </motion.div>
+                </main>
+              </div>
             </div>
 
             <DownloadOrb onNavigate={navigate} />
@@ -312,30 +384,126 @@ function Shell(): JSX.Element {
                   >
                     <Icon name="download" size={22} />
                   </div>
-                  <div>
-                    <h2 className="title">{t('shell.update.title', { n: launcherUpdateNotice.version })}</h2>
+                  <div className="min-w-0">
+                    <h2 className="title flex items-center gap-2">
+                      {t('shell.update.title', { n: launcherUpdateNotice.version })}
+                      {launcherUpdateNotice.important && (
+                        <span className="chip" style={{ color: 'var(--fill-danger)' }}>
+                          {t('shell.update.important')}
+                        </span>
+                      )}
+                    </h2>
                     <p className="caption">{t('shell.update.subtitle')}</p>
                   </div>
                 </div>
                 {launcherUpdateNotice.notes?.trim() && (
                   <Markdown
                     text={launcherUpdateNotice.notes}
+                    breaks
                     className="glass-soft mb-5 max-h-[30vh] overflow-y-auto rounded-2xl p-4 text-[13px] leading-relaxed opacity-80"
                   />
                 )}
-                <div className="flex gap-2">
-                  <Button className="flex-1" onClick={dismissLauncherUpdateNotice}>
-                    {t('shell.update.later')}
-                  </Button>
-                  <Button
-                    variant="primary"
-                    className="flex-1"
-                    onClick={() => {
-                      dismissLauncherUpdateNotice()
-                      navigate('settings')
-                    }}
+                {updPhase === 'downloading' ? (
+                  <div className="flex flex-col gap-2">
+                    <div className="caption">
+                      {t('settings.update.downloadingVersion', { v: launcherUpdateNotice.version })}
+                    </div>
+                    <ProgressBar percent={updPercent} />
+                  </div>
+                ) : updPhase === 'done' ? (
+                  <div className="flex flex-col gap-3">
+                    <div className="caption" style={{ color: 'var(--fill-success)' }}>
+                      {t('shell.update.done')}
+                    </div>
+                    <Button className="flex-1" onClick={dismissLauncherUpdateNotice}>
+                      {t('shell.update.close')}
+                    </Button>
+                  </div>
+                ) : (
+                  <>
+                    {updPhase === 'error' && (
+                      <div className="mb-3 text-[12px]" style={{ color: 'var(--fill-danger, #e5484d)' }}>
+                        {updError}
+                      </div>
+                    )}
+                    <div className="flex gap-2">
+                      <Button className="flex-1" onClick={dismissLauncherUpdateNotice}>
+                        {t('shell.update.later')}
+                      </Button>
+                      <Button variant="primary" className="flex-1" icon="download" onClick={() => void installUpdate()}>
+                        {t('shell.update.goUpdate')}
+                      </Button>
+                    </div>
+                  </>
+                )}
+              </motion.div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        {/* 启动失败：非侵入式显示「错误分析中…」，分析完成后弹出可读报告。
+            放在 Shell 层，任意页面 / 自定义主页下都能看到，不再只限内置启动页。 */}
+        <AnimatePresence>
+          {analyzingReport && (
+            <motion.div
+              className="glass-strong pointer-events-none fixed bottom-5 left-1/2 z-[125] flex -translate-x-1/2 items-center gap-2 rounded-full px-4 py-2 text-[13px]"
+              initial={{ opacity: 0, y: 12 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: 12 }}
+              transition={{ type: 'spring', bounce: 0.18, duration: 0.4 }}
+            >
+              <span
+                className="h-3.5 w-3.5 shrink-0 animate-spin rounded-full border-2 border-current border-t-transparent opacity-70"
+                aria-hidden
+              />
+              <span>{t('home.report.analyzing')}</span>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        <AnimatePresence>
+          {launchReport && (
+            <motion.div
+              className="fixed inset-0 z-[130] flex items-center justify-center p-6"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+            >
+              <div className="absolute inset-0" style={{ background: 'var(--scrim)' }} onClick={dismissLaunchReport} />
+              <motion.div
+                className="glass-strong relative z-10 flex max-h-[80vh] w-full max-w-lg flex-col rounded-[28px] p-6"
+                initial={{ scale: 0.95, opacity: 0, y: 16 }}
+                animate={{ scale: 1, opacity: 1, y: 0 }}
+                exit={{ scale: 0.96, opacity: 0, y: 12 }}
+                transition={{ type: 'spring', bounce: 0.16, duration: 0.45 }}
+              >
+                <div className="mb-3 flex items-center gap-3">
+                  <div
+                    className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl text-white"
+                    style={{ background: 'var(--fill-danger)' }}
                   >
-                    {t('shell.update.goUpdate')}
+                    <Icon name="xmark" size={22} />
+                  </div>
+                  <div className="min-w-0">
+                    <h2 className="title">{t('home.report.title')}</h2>
+                    <p className="caption">{launchReport.summary}</p>
+                  </div>
+                </div>
+                {launchReport.advice && (
+                  <p className="caption mb-3 rounded-xl px-3 py-2" style={{ background: 'var(--chip-bg)' }}>
+                    {launchReport.advice}
+                  </p>
+                )}
+                <div className="mb-1.5 text-[13px] font-semibold">{t('home.report.detail')}</div>
+                <pre
+                  className="selectable max-h-[40vh] overflow-auto whitespace-pre-wrap break-all rounded-2xl p-3 font-mono text-[12px] leading-relaxed"
+                  style={{ background: 'rgba(0,0,0,0.28)', color: 'rgba(255,255,255,0.82)' }}
+                >
+                  {launchReport.detail}
+                </pre>
+                <div className="mt-4 flex gap-2">
+                  <Button className="flex-1" onClick={dismissLaunchReport}>
+                    {t('home.report.close')}
                   </Button>
                 </div>
               </motion.div>

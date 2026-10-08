@@ -523,14 +523,16 @@ async function downloadInstance(
   id: string,
   gameDir: string,
   onProgress: (p: DownloadProgress) => void,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  /** 进度归属的任务键；并发阶段（如加载器）用独立键，避免两条进度互相覆盖。 */
+  taskId = 'modpack'
 ): Promise<void> {
   const s = settings.get()
   const json = await resolveVersionJson(id, gameDir)
   // 按「下载加速档位」换算实际并发：无线网络下自动收敛连接数，避免拥塞反而更慢。
   const eff = effectiveConcurrency(s.downloadAcceleration, s.downloadConnections, s.maxDownloadConcurrency)
   await installVersion(json, gameDir, eff.fileConcurrency, (p) => {
-    onProgress({ ...p, taskId: 'modpack' })
+    onProgress({ ...p, taskId })
   }, signal, eff.connections)
 }
 
@@ -557,18 +559,36 @@ async function installInstance(
   }
 
   if (loader === 'fabric' || loader === 'quilt') {
-    await downloadInstance(mcVersion, gameDir, onProgress, signal)
+    // 加载器只多一份 profile JSON + 一批库：并发下载原版与加载器版本，
+    // 两边重叠的库 / 资源由下载层去重（见 downloader.ts 的并发去重），
+    // 加载器独有的库可与原版文件同时下载。
+    const vanillaJob = downloadInstance(mcVersion, gameDir, onProgress, signal)
     const id = await installLoader(loader as LoaderKind, mcVersion, loaderVersion, gameDir, instanceName)
-    await downloadInstance(id, gameDir, onProgress, signal)
+    await Promise.all([vanillaJob, downloadInstance(id, gameDir, onProgress, signal, 'modpack-loader')])
     return
   }
 
   if (loader === 'forge' || loader === 'neoforge') {
-    await downloadInstance(mcVersion, gameDir, onProgress, signal)
+    // 安装器 jar 的下载与原版下载并发；但安装器必须等原版下载完成后再运行（beforeRun）。
+    const vanillaJob = downloadInstance(mcVersion, gameDir, onProgress, signal)
+    // 保证 vanillaJob 始终被处理，避免中途抛错时留下未处理的 rejection。
+    vanillaJob.catch(() => {})
     const s = settings.get()
     const java = await pickInstallerJava(allVersionDirs(s).map((d) => d.path), s.javaPath, requiredJavaForMc(mcVersion))
     if (!java) throw new Error('未找到 Java，无法安装 Forge/NeoForge 加载器')
-    const id = await installForge(loader as ForgeKind, mcVersion, loaderVersion, gameDir, java.path, onLog, instanceName, onProgress, signal)
+    const id = await installForge(
+      loader as ForgeKind,
+      mcVersion,
+      loaderVersion,
+      gameDir,
+      java.path,
+      onLog,
+      instanceName,
+      onProgress,
+      signal,
+      vanillaJob
+    )
+    await vanillaJob
     await downloadInstance(id, gameDir, onProgress, signal)
     return
   }

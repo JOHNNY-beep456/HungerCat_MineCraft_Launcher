@@ -9,7 +9,7 @@
 // 直接引用本地文件会被拦掉。这里读成 data URL 返回，走 img-src 的 data: 放行。
 // ---------------------------------------------------------------------------
 
-import { app, dialog } from 'electron'
+import { app, dialog, nativeImage } from 'electron'
 import { promises as fsp } from 'fs'
 import { basename, extname, join } from 'path'
 import type { LauncherSettings } from '@shared/types'
@@ -25,8 +25,53 @@ const MIME: Record<string, string> = {
   '.bmp': 'image/bmp'
 }
 
-/** 壁纸体积上限：base64 后还要过一次 IPC，太大没有意义。 */
+/**
+ * 壁纸体积上限：超过就「缩放 + 重编码」后再存，而不是直接拒掉 ——
+ * base64 后还要过一次 IPC，几十 MB 的原图没有意义。
+ */
 const MAX_SIZE = 8 * 1024 * 1024
+/** 缩放重编码后的长边上限（4K 屏当壁纸绰绰有余）。 */
+const MAX_EDGE = 2560
+/**
+ * GIF 动图的上限：nativeImage 只能解出首帧，重编码会丢掉动画，
+ * 所以 GIF 超限时宁可大一点也不重编码，只用一个更高的上限兜底。
+ */
+const GIF_MAX_SIZE = 32 * 1024 * 1024
+
+/**
+ * 把用户选中的原图规范化成「能直接当壁纸用」的字节：
+ *   · 体积在上限内：原样保留（GIF 动图 / PNG 透明 / 原画质都不动）；
+ *   · 超过上限：用 nativeImage 缩到长边 MAX_EDGE 再重编码（有透明通道走 PNG，
+ *     否则走 JPEG），让 4K / 8K 大图也能用，而不是弹「图片过大」被拒。
+ */
+async function normalizeWallpaper(src: string, ext: string): Promise<{ data: Buffer; ext: string }> {
+  const stat = await fsp.stat(src)
+  if (stat.size <= MAX_SIZE) return { data: await fsp.readFile(src), ext }
+  // GIF 动图：重编码会丢动画，超限也按原图接受（仅用一个更高的上限兜底）。
+  if (ext === '.gif') {
+    if (stat.size > GIF_MAX_SIZE) throw new Error('GIF 动图过大（上限 32MB），请先压缩后再选择')
+    return { data: await fsp.readFile(src), ext }
+  }
+  const img = nativeImage.createFromPath(src)
+  if (img.isEmpty()) throw new Error('无法读取该图片，请换一张再试')
+  const { width, height } = img.getSize()
+  const edge = Math.max(width, height) || 1
+  const scaled =
+    edge > MAX_EDGE
+      ? img.resize({
+          width: Math.round((width * MAX_EDGE) / edge),
+          height: Math.round((height * MAX_EDGE) / edge),
+          quality: 'good'
+        })
+      : img
+  // PNG 保留透明通道；其余（含 JPG / WebP / BMP）用 JPEG 压得更小。
+  // 若 PNG 重编码后仍超上限，再退回 JPEG。
+  if (ext === '.png') {
+    const png = scaled.toPNG()
+    if (png.byteLength <= MAX_SIZE) return { data: png, ext: '.png' }
+  }
+  return { data: scaled.toJPEG(85), ext: '.jpg' }
+}
 
 function wallpaperDir(): string {
   return join(app.getPath('userData'), 'wallpapers')
@@ -66,16 +111,16 @@ export async function pickWallpaper(): Promise<LauncherSettings> {
   const src = result.filePaths[0]
   const ext = extname(src).toLowerCase()
   if (!MIME[ext]) throw new Error('不支持的图片格式，请选择 PNG / JPG / WebP / GIF / BMP')
-  const stat = await fsp.stat(src)
-  if (stat.size > MAX_SIZE) throw new Error('图片过大（上限 8MB），请先压缩后再选择')
+  // 大图不拒收：超过上限会缩到长边 MAX_EDGE 再重编码（GIF 原样保留动图）。
+  const { data, ext: outExt } = await normalizeWallpaper(src, ext)
 
   const dir = wallpaperDir()
   await fsp.mkdir(dir, { recursive: true })
   // 先落新文件再删旧文件，中途失败也不会把已有壁纸弄丢
   const prev = currentFile()
-  const name = `wallpaper-${Date.now()}${ext}`
+  const name = `wallpaper-${Date.now()}${outExt}`
   const dest = join(dir, name)
-  await fsp.copyFile(src, dest)
+  await fsp.writeFile(dest, data)
   const next = settings.set({ backgroundImage: name })
   if (prev && prev !== dest) {
     try {

@@ -81,6 +81,29 @@ export async function fetchYggdrasilSiteName(server: string): Promise<string | u
   }
 }
 
+/**
+ * 取第三方账号的皮肤 / 披风贴图地址：走认证站的标准 Yggdrasil 会话服
+ * （`{base}/sessionserver/session/minecraft/profile/{uuid}`），**不查正版 uapis 接口**。
+ * 用于没有本地 skinUrl 的第三方账号补全皮肤与披风，供头像本地合成与 3D 模型使用。
+ * 任何失败返回 undefined（调用方回退到站点头像接口）。
+ */
+export async function fetchYggdrasilSkin(
+  server: string,
+  uuid: string
+): Promise<{ skinUrl: string; skinModel: 'classic' | 'slim'; capeUrl: string } | undefined> {
+  const base = normalizeServer(server)
+  const id = String(uuid ?? '').replace(/-/g, '')
+  if (!base || !id) return undefined
+  try {
+    return await netRequest<{ skinUrl: string; skinModel: 'classic' | 'slim'; capeUrl: string }>('yggdrasil:profile', {
+      server: base,
+      uuid: id
+    })
+  } catch {
+    return undefined
+  }
+}
+
 /** 从 textures 属性（base64 JSON）解析皮肤 / 披风 / 模型。 */
 function extractSkin(profile?: YggdrasilProfile): {
   skinUrl?: string

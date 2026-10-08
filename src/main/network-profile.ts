@@ -22,7 +22,7 @@ export type Acceleration = LauncherSettings['downloadAcceleration']
 /** 单文件连接数的硬上限：再高对 CDN 只有害无益。 */
 const MAX_FILE_CONNECTIONS = 128
 /** 文件级并发的硬上限。 */
-const MAX_FILE_CONCURRENCY = 32
+const MAX_FILE_CONCURRENCY = 48
 
 /**
  * 各档位的基准倍率 / 基数。

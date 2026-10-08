@@ -1,5 +1,4 @@
 import { useEffect, useRef, useState } from 'react'
-import { AnimatePresence, motion } from 'motion/react'
 import { useApp } from '../store'
 import { Button, Icon } from '../components/ui'
 import type { FeedbackFilePayload, FeedbackListItem, ServerLimits } from '@shared/types'
@@ -64,7 +63,7 @@ function statusKey(status: FeedbackListItem['status']): string {
  * 提交成功后按用户意愿弹出「是否允许收集日志」确认框（默认不收集）。
  */
 export function FeedbackPage(): JSX.Element {
-  const { t, settings, updateSettings } = useApp()
+  const { t, settings } = useApp()
 
   const [view, setView] = useState<View>('gate')
   const [email, setEmail] = useState('')
@@ -85,8 +84,6 @@ export function FeedbackPage(): JSX.Element {
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
   const [submittedId, setSubmittedId] = useState('')
-  // 提交成功后询问是否同意收集日志
-  const [askCollect, setAskCollect] = useState(false)
   // 服务端当前生效的上传限制（进入页面时拉取；拉取失败用兜底值）
   const [limits, setLimits] = useState<ServerLimits | null>(null)
   const fileInputRef = useRef<HTMLInputElement | null>(null)
@@ -274,7 +271,6 @@ export function FeedbackPage(): JSX.Element {
       setDescription('')
       setSubmitCode('')
       setFiles([])
-      setAskCollect(true)
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
     } finally {
@@ -544,7 +540,7 @@ export function FeedbackPage(): JSX.Element {
               <span className="caption">{t('feedback.privacy')}</span>
             </div>
 
-            {submittedId && !askCollect && (
+            {submittedId && (
               <div className="glass-soft rounded-xl p-3 text-[13px]">
                 <div className="mb-1 font-semibold">{t('feedback.done.title')}</div>
                 <div className="caption">{t('feedback.done.desc', { id: submittedId })}</div>
@@ -553,57 +549,6 @@ export function FeedbackPage(): JSX.Element {
           </div>
         )}
       </div>
-
-      {/* 提交成功 → 询问是否允许收集日志 */}
-      <AnimatePresence>
-        {askCollect && (
-          <motion.div
-            className="absolute inset-0 z-50 flex items-center justify-center p-6"
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            style={{ background: 'rgba(0,0,0,0.45)' }}
-          >
-            <motion.div
-              className="glass-strong w-full max-w-md rounded-[24px] p-6"
-              initial={{ scale: 0.94, y: 12 }}
-              animate={{ scale: 1, y: 0 }}
-              exit={{ scale: 0.94, opacity: 0 }}
-              transition={{ type: 'spring', bounce: 0.2, duration: 0.35 }}
-            >
-              <div className="mb-2 flex items-center gap-2">
-                <Icon name="info" size={18} />
-                <span className="title">{t('feedback.collect.title')}</span>
-              </div>
-              <p className="caption mb-4">{t('feedback.collect.desc')}</p>
-              <div className="flex justify-end gap-2">
-                <Button
-                  variant="ghost"
-                  onClick={() => {
-                    setAskCollect(false)
-                    void closeCompose()
-                  }}
-                >
-                  {t('feedback.collect.decline')}
-                </Button>
-                <Button
-                  variant="primary"
-                  icon="check"
-                  onClick={async () => {
-                    // 同意：打开 debugMode 并标记「已同意收集」，等待站长发放密钥后自动回传。
-                    await updateSettings({ debugMode: true, feedbackLogConsent: true })
-                    setAskCollect(false)
-                    setNotice(t('feedback.collect.enabled'))
-                    void closeCompose()
-                  }}
-                >
-                  {t('feedback.collect.accept')}
-                </Button>
-              </div>
-            </motion.div>
-          </motion.div>
-        )}
-      </AnimatePresence>
     </div>
   )
 }

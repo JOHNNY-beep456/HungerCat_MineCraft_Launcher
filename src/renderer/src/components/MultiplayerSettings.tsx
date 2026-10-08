@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { AnimatePresence, motion } from 'motion/react'
 import { useApp } from '../store'
-import { Button, Icon, Segmented, Switch } from './ui'
+import { Button, Icon, Switch } from './ui'
 import { MCTIER_REPO, MCTIER_LICENSE, MCTIER_WEBSITE } from './MultiplayerLicenseGate'
 
 /** 自定义节点条目（内置节点不存进设置）。 */
@@ -214,21 +214,6 @@ export function MultiplayerSettings({ onBack }: { onBack: () => void }): JSX.Ele
                 {t('mp.set.playerNameSync')}
               </Button>
             </div>
-          </div>
-        </Card>
-
-        {/* ============ 界面主题 ============ */}
-        <Card icon="palette" color="var(--fill-success)" title={t('mp.set.card.appearance')} desc={t('mp.set.card.appearanceDesc')}>
-          <div className="flex justify-center">
-            <Segmented
-              value={s.multiplayerTheme}
-              onChange={(v) => set('multiplayerTheme', v)}
-              options={[
-                { value: 'system', label: t('mp.set.theme.system') },
-                { value: 'light', label: t('mp.set.theme.light') },
-                { value: 'dark', label: t('mp.set.theme.dark') }
-              ]}
-            />
           </div>
         </Card>
 

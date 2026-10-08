@@ -4,6 +4,7 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs'
 import { cpus, totalmem } from 'os'
 import { join } from 'path'
 import type { LauncherSettings, MinecraftAccount, SystemHardwareInfo, VersionDir } from '@shared/types'
+import { defaultSettings } from '@shared/settings'
 import { hasUapisKey, setUapisKey } from './secret'
 import { setSourceStrategies } from './mirror'
 
@@ -102,109 +103,121 @@ export async function flushWrites(): Promise<void> {
 }
 
 /**
- * 探测本机硬件配置，并判定是否为「低配电脑」（2010 年代老机器）。
- * 判定阈值：逻辑核心数 ≤ 2，或物理内存 < 4GB。
- * 用于首次启动自动开启「超低占用模式」并提醒用户。
+ * 虚拟机 / 云主机特征：CPU 型号里常出现这些厂商或产品名。
+ * 命中即视为虚拟化环境（常见于云主机、沙盒，硬件能力不可靠）。
+ */
+const VM_MARKERS = [
+  'virtual',
+  'qemu',
+  'vmware',
+  'virtualbox',
+  'vbox',
+  'kvm',
+  'hyper-v',
+  'hyperv',
+  'microsoft hv',
+  'xen',
+  'bochs',
+  'parallels',
+  'bhyve',
+  'openstack',
+  'amazon ec2',
+  'google compute',
+  'droplet'
+]
+
+/**
+ * Intel 桌面 / 移动 CPU 世代 → 首发年份（粗略）。取该世代的主力上市年份即可：
+ * 我们的判定只关心「是否 ≤ 2020」，同一世代跨 1~2 年对结论影响很小。
+ */
+function intelCoreYear(model: string): number {
+  const m = model.toLowerCase()
+  // Core 代数：i3/i5/i7/i9-<gen><digits>。末两位以上数字的前段即世代号（如 i7-10700 → 10）。
+  const core = m.match(/i[3579][-_ ]?(\d{4,5})/)
+  if (core) {
+    const digits = core[1]
+    const gen = digits.length >= 5 ? Number(digits.slice(0, 2)) : Number(digits[0])
+    const genYear: Record<number, number> = {
+      1: 2008,
+      2: 2011,
+      3: 2012,
+      4: 2013,
+      5: 2014,
+      6: 2015,
+      7: 2016,
+      8: 2017,
+      9: 2018,
+      10: 2020,
+      11: 2021,
+      12: 2021,
+      13: 2022,
+      14: 2023
+    }
+    if (genYear[gen]) return genYear[gen]
+  }
+  return 0
+}
+
+/** AMD Ryzen → 首发年份；更老的 AMD（FX / A 系列 / Phenom 等）一律算 2010 年代。 */
+function amdYear(model: string): number {
+  const m = model.toLowerCase()
+  const ryzen = m.match(/ryzen\s*(?:[3579]\s*)?(\d)(\d{3})/)
+  if (ryzen) {
+    const series = Number(ryzen[1])
+    const seriesYear: Record<number, number> = { 1: 2017, 2: 2018, 3: 2019, 4: 2020, 5: 2020, 6: 2021, 7: 2022, 8: 2024, 9: 2024 }
+    if (seriesYear[series]) return seriesYear[series]
+  }
+  if (/fx|phenom|athlon|a\d{1,2}-\d|sempron|opteron/.test(m)) return 2014
+  return 0
+}
+
+/**
+ * 从 CPU 型号字符串估算发布年份（0 = 无法识别）。
+ * 覆盖 Intel Core / Xeon、AMD Ryzen 等常见台式与笔记本型号；识别不出返回 0，
+ * 由调用方按「未知即不因 CPU 判低配」处理，避免误伤新机型。
+ */
+function estimateCpuYear(model: string): number {
+  if (!model) return 0
+  const m = model.toLowerCase()
+  const intel = intelCoreYear(m)
+  if (intel) return intel
+  const amd = amdYear(m)
+  if (amd) return amd
+  // 老 Xeon（E5-26xx v3 等）按世代粗估：整体落后于消费级，给一个偏早的年份。
+  if (/xeon/.test(m)) {
+    const v = m.match(/v(\d)\b/)
+    if (v) return 2013 + Math.max(0, Number(v[1]) - 3)
+    return 2013
+  }
+  return 0
+}
+
+/**
+ * 探测本机硬件配置，并判定是否为「低配电脑」。
+ * 判定规则（满足其一即为低配，用于自动开启「超低占用模式」）：
+ *   1. CPU 为 2000~2020 年的产物（按型号估算年份 ≤ 2020）；
+ *   2. 运行在虚拟机 / 云主机中（性能不可靠）；
+ *   3. 物理内存 < 16GB。
+ * 型号无法识别时不因 CPU 判低配，避免误伤较新的机器。
  */
 export function detectHardware(): SystemHardwareInfo {
+  const info = cpus()?.[0]
   const cpuCores = cpus()?.length ?? 0
+  const cpuModel = (info?.model ?? '').trim()
   const totalMemMb = Math.round(totalmem() / 1024 / 1024)
-  const lowEnd = cpuCores <= 2 || totalMemMb < 4096
-  return { cpuCores, totalMemMb, lowEnd }
+  const lower = cpuModel.toLowerCase()
+  const isVirtualMachine = VM_MARKERS.some((k) => lower.includes(k))
+  const cpuYear = estimateCpuYear(cpuModel)
+  const lowEnd = isVirtualMachine || (cpuYear > 0 && cpuYear <= 2020) || totalMemMb < 16384
+  return { cpuCores, cpuModel, cpuYear, isVirtualMachine, totalMemMb, lowEnd }
 }
 
 export function getDefaultSettings(): LauncherSettings {
+  // 默认值来自共享注册表（@shared/settings），与渲染层兜底对象同源。
+  // 这里只覆盖「依赖运行时」的一项：默认版本目录取系统「文档」目录下的固定子目录。
   return {
-    theme: 'system',
-    language: 'zh-CN',
-    memoryMb: 4096,
-    maxDownloadConcurrency: 8,
-    // 单文件连接数默认降到 16：64 连接在无线网络下会引发拥塞 / 丢包，反而更慢；
-    // 需要更高并发的稳定网络可在设置里调高，或把加速档位设为「极速」。
-    downloadConnections: 16,
-    downloadAcceleration: 'auto',
-    downloadSource: 'auto',
-    versionListSource: 'auto',
-    communitySource: 'auto',
-    modTitleStyle: 'translated-first',
-    gameDir: join(app.getPath('documents'), 'HungerCatMC'),
-    versionDirs: [],
-    selectedVersionDirId: '',
-    // 联机为实验性功能，默认隐藏（不在侧栏出现，也不接受导航）。
-    enableMultiplayer: false,
-    javaAutoDetect: true,
-    closeOnLaunch: false,
-    reducedMotion: false,
-    lowUsageMode: false,
-    hardwareChecked: false,
-    versionIsolation: false,
-    accentColor: '#0a84ff',
-    background: 'midnight',
-    backgroundImage: '',
-    autoThemeFromWallpaper: false,
-    gameWindowSize: '720p',
-    gameWindowWidth: 1280,
-    gameWindowHeight: 720,
-    mode: 'normal',
-    disabledVersions: [],
-    isolatedVersions: [],
-    agreementAcceptedAt: 0,
-    agreementAcceptedVersion: '',
-    announcementDisplay: 'all',
-    announcementSeen: {},
-    onboardingDone: false,
-    debugMode: false,
-    debugKey: '',
-    feedbackLogConsent: false,
-    metadataOnlyMods: false,
-    homepageId: '',
-    selectedVersionId: '',
-    experimental: 'off',
-    devModeGrantedUntil: 0,
-    devModeToken: '',
-    devModeEmailMasked: '',
-    devModeEnabled: false,
-    devModeSecurityMode: 'full',
-    autoCheckLauncherUpdate: true,
-    autoCheckHomepageUpdate: true,
-    autoTranslateResources: false,
-    translateResourceNames: true,
-    uapisApiKeySet: false,
-    multiplayerLicenseAcceptedAt: 0,
-    multiplayerPlayerName: '',
-    multiplayerUsePrivateServer: false,
-    multiplayerEasytierServer: 'udp://us01.225284.xyz:11010',
-    multiplayerSignalingServer: 'wss://mctier.pmhs.top/signaling',
-    multiplayerUseDomain: false,
-    multiplayerAutoLobbyEnabled: false,
-    multiplayerLobbyName: '',
-    multiplayerLobbyPassword: '',
-    multiplayerCustomNodes: [],
-    multiplayerSoundVolume: 0.8,
-    multiplayerSoundNewMsg: true,
-    multiplayerSoundJoined: true,
-    multiplayerSoundLeft: true,
-    multiplayerDndEnabled: false,
-    multiplayerDndStart: 1320,
-    multiplayerDndEnd: 480,
-    multiplayerMicHotkey: 'Ctrl+M',
-    multiplayerGlobalMuteHotkey: 'Ctrl+T',
-    multiplayerPushToTalkHotkey: 'F2',
-    multiplayerSummonHotkey: 'Ctrl+Alt+M',
-    multiplayerDanmakuEnabled: true,
-    multiplayerDanmakuFontSize: 16,
-    multiplayerDanmakuSpeed: 8,
-    multiplayerDanmakuOpacity: 0.85,
-    multiplayerDanmakuTracks: 4,
-    multiplayerHudEnabled: false,
-    multiplayerHudOpacity: 0.8,
-    multiplayerVoiceChanger: 'off',
-    multiplayerMicDeviceId: '',
-    multiplayerSpeakerDeviceId: '',
-    multiplayerTheme: 'system',
-    multiplayerStatsMinutes: 0,
-    multiplayerJoinCount: 0,
-    multiplayerHostCount: 0
+    ...defaultSettings(),
+    gameDir: join(app.getPath('documents'), 'HungerCatMC')
   }
 }
 
@@ -283,10 +296,10 @@ export const settings = {
   }
 }
 
-/** 汇总全部版本目录：默认目录（gameDir）恒在首位。 */
+/** 汇总全部版本目录：默认目录（gameDir）恒在首位，别名固定为「默认」。 */
 export function allVersionDirs(s: LauncherSettings): VersionDir[] {
   return [
-    { id: 'default', alias: '', path: s.gameDir, isDefault: true },
+    { id: 'default', alias: '默认', path: s.gameDir, isDefault: true },
     ...(s.versionDirs ?? []).map((d) => ({ id: d.id, alias: d.alias ?? '', path: d.path }))
   ]
 }

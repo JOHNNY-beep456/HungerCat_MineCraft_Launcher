@@ -1,7 +1,8 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { AnimatePresence, motion } from 'motion/react'
 import type { AboutGroup, AboutPerson } from '@shared/types'
 import { useApp } from '../store'
+import { useAutoTranslate } from '../translate'
 import { Button, Icon, LoadingState } from '../components/ui'
 
 export function AboutPage(): JSX.Element {
@@ -9,6 +10,22 @@ export function AboutPage(): JSX.Element {
   const [groups, setGroups] = useState<AboutGroup[] | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [linkPerson, setLinkPerson] = useState<AboutPerson | null>(null)
+
+  // 「关于」文案自动翻译：仅收集**可译文本**——分组名、职位描述、链接名。
+  // 人名（person.name）是专有名词，**始终不翻译**，故不纳入待译集合；语言检测后
+  // 已是设置语言的条目会自动跳过（不发起请求）。
+  const translatables = useMemo(() => {
+    const list: string[] = []
+    for (const g of groups ?? []) {
+      list.push(g.name)
+      for (const p of g.people ?? []) {
+        if (p.role) list.push(p.role)
+        for (const l of p.links ?? []) list.push(l.name)
+      }
+    }
+    return list
+  }, [groups])
+  const tr = useAutoTranslate(translatables)
 
   const load = async (): Promise<void> => {
     setError(null)
@@ -57,7 +74,7 @@ export function AboutPage(): JSX.Element {
             {groups.map((group) => (
               <div key={group.id}>
                 <div className="mb-3 flex items-center gap-2">
-                  <span className="title">{group.name}</span>
+                  <span className="title">{tr(group.name)}</span>
                   <span className="chip">{(group.people ?? []).length}</span>
                 </div>
                 <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3">
@@ -68,7 +85,7 @@ export function AboutPage(): JSX.Element {
                       animate={{ opacity: 1, y: 0 }}
                       transition={{ type: 'spring', bounce: 0, duration: 0.3, delay: Math.min(i * 0.03, 0.2) }}
                     >
-                      <PersonCard person={person} onMore={() => setLinkPerson(person)} onOpen={openUrl} />
+                      <PersonCard person={person} tr={tr} onMore={() => setLinkPerson(person)} onOpen={openUrl} />
                     </motion.div>
                   ))}
                 </div>
@@ -100,6 +117,7 @@ export function AboutPage(): JSX.Element {
               transition={{ type: 'spring', bounce: 0.18, duration: 0.4 }}
             >
               <div className="mb-1 flex items-center justify-between">
+                {/* 人名始终原文。 */}
                 <span className="title">{linkPerson.name}</span>
                 <button className="no-drag opacity-60 hover:opacity-100" onClick={() => setLinkPerson(null)}>
                   <Icon name="xmark" size={18} />
@@ -116,7 +134,7 @@ export function AboutPage(): JSX.Element {
                       setLinkPerson(null)
                     }}
                   >
-                    <span className="text-[14px] font-medium">{link.name}</span>
+                    <span className="text-[14px] font-medium">{tr(link.name)}</span>
                     <Icon name="link" size={16} className="opacity-60" />
                   </button>
                 ))}
@@ -131,10 +149,12 @@ export function AboutPage(): JSX.Element {
 
 function PersonCard({
   person,
+  tr,
   onMore,
   onOpen
 }: {
   person: AboutPerson
+  tr: (text: string | undefined) => string
   onMore: () => void
   onOpen: (url: string) => void
 }): JSX.Element {
@@ -146,13 +166,14 @@ function PersonCard({
     <div className="glass flex items-center gap-3 rounded-[20px] p-4">
       <PersonAvatar person={person} />
       <div className="min-w-0 flex-1">
+        {/* 人名是专有名词，始终显示原文、不翻译。 */}
         <div className="truncate text-[14px] font-semibold">{person.name}</div>
-        {person.role && <div className="caption truncate">{person.role}</div>}
+        {person.role && <div className="caption truncate">{tr(person.role)}</div>}
       </div>
       <div className="shrink-0">
         {single && (
           <Button size="sm" icon="link" onClick={() => onOpen(links[0].url)}>
-            {links[0].name}
+            {tr(links[0].name)}
           </Button>
         )}
         {multiple && (

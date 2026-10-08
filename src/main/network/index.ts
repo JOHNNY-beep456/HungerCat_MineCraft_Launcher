@@ -14,6 +14,7 @@ import { BMCLAPI, OFFICIAL, getVersionListStrategy, manifestUrls } from '../mirr
 import { streamDownload } from './stream-download'
 import { nativeStreamDownload } from '../native-downloader'
 import { translateTexts, testUapisKey } from './translate'
+import { fetchMinecraftUserinfo, fetchMinecraftServerStatus } from './minecraft'
 import type {
   LoaderKind,
   McmodHit,
@@ -500,6 +501,42 @@ async function yggdrasilMeta(server: string): Promise<string | undefined> {
   return typeof name === 'string' && name.trim() ? name.trim() : undefined
 }
 
+/**
+ * 从 Yggdrasil 会话服取角色档案的皮肤 / 披风贴图地址。
+ *
+ *   GET {base}/sessionserver/session/minecraft/profile/{uuid}
+ *   返回 properties[textures].value（base64 JSON），内含 textures.SKIN.url / model 与 textures.CAPE.url。
+ *
+ * 这是标准 Yggdrasil 接口，Blessing Skin / LittleSkin 等站点通用；用于第三方账号
+ * （不查正版 uapis 接口）补全皮肤贴图，供头像本地合成与 3D 模型使用。
+ */
+async function yggdrasilProfile(
+  server: string,
+  uuid: string
+): Promise<{ skinUrl: string; skinModel: 'classic' | 'slim'; capeUrl: string }> {
+  const base = server.trim().replace(/\/+$/, '')
+  const id = String(uuid ?? '').replace(/-/g, '')
+  if (!id) throw new Error('角色 UUID 为空')
+  const res = await yggdrasilFetch(`${base}/sessionserver/session/minecraft/profile/${id}`)
+  if (!res.ok) throw new Error(await yggdrasilError(res))
+  const data = (await res.json()) as { properties?: Array<{ name: string; value: string }> }
+  const tex = data.properties?.find((p) => p.name === 'textures')
+  if (!tex) throw new Error('该角色未设置皮肤')
+  let obj: { textures?: { SKIN?: { url?: string; metadata?: { model?: string } }; CAPE?: { url?: string } } }
+  try {
+    obj = JSON.parse(Buffer.from(tex.value, 'base64').toString('utf-8'))
+  } catch {
+    throw new Error('皮肤数据解析失败')
+  }
+  const skin = obj.textures?.SKIN
+  if (!skin?.url) throw new Error('该角色未设置皮肤')
+  return {
+    skinUrl: skin.url,
+    skinModel: skin.metadata?.model === 'slim' ? 'slim' : 'classic',
+    capeUrl: obj.textures?.CAPE?.url ?? ''
+  }
+}
+
 /* ------------------------------------------------------------------ */
 /* 全局连接预算                                                        */
 /*                                                                     */
@@ -510,8 +547,8 @@ async function yggdrasilMeta(server: string): Promise<string | undefined> {
 /* 所有下载任务共享同一上限，跨队列协调。                               */
 /* ------------------------------------------------------------------ */
 
-/** 进程内总连接预算：所有并发下载共享。128 是「够快但不会打爆 CDN」的折中。 */
-const GLOBAL_CONNECTION_BUDGET = 128
+/** 进程内总连接预算：所有并发下载共享。256 = 默认「16 文件 × 16 连接」，够快又不易打爆 CDN。 */
+const GLOBAL_CONNECTION_BUDGET = 256
 let budgetUsed = 0
 const budgetWaiters: Array<() => void> = []
 
@@ -940,6 +977,8 @@ const handlers: Record<string, NetHandler> = {
   'yggdrasil:refresh': (p: YggAuthParams) =>
     yggdrasilRefresh(p.server, p.accessToken ?? '', p.clientToken ?? ''),
   'yggdrasil:meta': (p: { server: string }) => yggdrasilMeta(p.server),
+  // 第三方角色皮肤：从认证站的会话服取皮肤贴图地址（不查正版 uapis 接口）。
+  'yggdrasil:profile': (p: { server: string; uuid: string }) => yggdrasilProfile(p.server, p.uuid),
   'net:fetchJson': (p: NetJsonParams, ctx: NetHandlerCtx) => netFetchJson(p, ctx),
   'net:fetchText': (p: FetchTextParams, ctx: NetHandlerCtx) => netFetchText(p, ctx),
   'net:detectFilename': (p: DetectFilenameParams) => netDetectFilename(p),
@@ -948,6 +987,11 @@ const handlers: Record<string, NetHandler> = {
   'mcmod:search': (p: { query: string }) => mcmodSearch(p.query),
   'translate:texts': (p: { texts: string[]; target: string; apiKey?: string }) => translateTexts(p),
   'translate:testKey': (p: { apiKey: string }) => testUapisKey(p.apiKey),
+  // 正版 / 第三方玩家信息：名字 → UUID 与皮肤地址（uapis.cn）。
+  'minecraft:userinfo': (p: { name: string; apiKey?: string }) => fetchMinecraftUserinfo(p.name, p.apiKey),
+  // 服务器状态：地址（可含端口）→ 在线状态 / 在线人数 / MOTD / 图标（uapis.cn）。
+  'minecraft:serverstatus': (p: { address: string; apiKey?: string }) =>
+    fetchMinecraftServerStatus(p.address, p.apiKey),
   'auth:deviceBegin': (p: DeviceBeginParams) => msDeviceBegin(p),
   'auth:devicePoll': (p: DevicePollParams) => msDevicePoll(p),
   'auth:chain': (p: { msAccessToken: string }) => msChain(p.msAccessToken),
