@@ -20,7 +20,9 @@ import { useRuntime } from '../runtime'
 import { renderPage } from '../pages/router'
 import { InstanceManagePage } from '../pages/InstanceManagePage'
 import { FileManager } from './FileManager'
-import logo from '../assets/logo.png'
+
+/** 启动器 logo 的 URL（与 TitleBar 同一份文件；理由见该处注释）。 */
+const logo = `${import.meta.env.BASE_URL}logo.png`
 
 /** 任务栏高度，窗口拖动与最大化都以此留边。 */
 const TASKBAR_H = 48
@@ -482,9 +484,7 @@ export function Win10Desktop(): JSX.Element {
                   ? t('sidebar.localMode')
                   : settings.mode === 'minimal'
                     ? t('sidebar.minimalMode')
-                    : settings.mode === 'lowUsage'
-                      ? t('sidebar.lowUsageMode')
-                      : t('shell.win10.modeNormal')}
+                    : t('shell.win10.modeNormal')}
               </div>
             </div>
           </div>

@@ -41,8 +41,8 @@ export function registerAccountsHandlers(ctx: IpcContext): void {
     accounts.select(result.account.id)
     return { account: result.account }
   })
-  ipcMain.handle('accounts:addYggdrasilProfiles', (_e, ids: string[]) => {
-    const list = commitYggdrasilProfiles(ids)
+  ipcMain.handle('accounts:addYggdrasilProfiles', async (_e, ids: string[]) => {
+    const list = await commitYggdrasilProfiles(ids)
     for (const acc of list) accounts.upsert(acc)
     if (list[0]) accounts.select(list[0].id)
     return list

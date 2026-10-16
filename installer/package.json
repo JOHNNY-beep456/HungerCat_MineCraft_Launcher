@@ -1,0 +1,8 @@
+{
+  "name": "hungercat-installer",
+  "version": "0.6.10",
+  "description": "HungerCat MineCraft Launcher 安装程序",
+  "author": "Hunger Cat",
+  "license": "SEE LICENSE IN LICENSE",
+  "main": "main.js"
+}

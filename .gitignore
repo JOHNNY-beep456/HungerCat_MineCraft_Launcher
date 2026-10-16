@@ -16,6 +16,8 @@ resources/easytier
 resources/native
 # Rust 构建缓存与产物。
 native/*/target
+# 安装器内置载荷（打包时由 scripts/build-installer.mjs 复制生成，属可再生成物）。
+installer/payload
 # 本地草稿/临时文件：打包产物、调试页、截图与调试日志。
 *.zip
 homepage-debug.html
@@ -27,3 +29,5 @@ scripts/_*.out.txt
 /*.png
 # 根目录误创建的临时可执行占位文件（非真实程序，勿提交）。
 /*.exe
+# 本地会话记录草稿（历次排障 / 实现的对话日志，非项目文档）。
+/修复资源下载与实例匹配问题.md

@@ -37,7 +37,11 @@ export function HomeRoute(): JSX.Element {
 }
 
 export function CustomHomePage({ id }: { id: string }): JSX.Element {
-  const { settings, selectedAccount, theme, updateSettings, reloadSettings, raiseSecurityAlert } = useApp()
+  // 传 effectiveTheme 而不是 theme：主页脚本的配色完全由 theme.get().mode 决定，
+  // 而 GitHub（Primer）皮肤的配色子主题独立于明暗设置（可以在「主题 = 浅色」下
+  // 选 Dark / Dark dimmed / Dark High Contrast）。传 theme 会让深色启动器里嵌进
+  // 一块浅色主页（iframe 本身透明，白底全是脚本自己按浅色模式画的）。
+  const { settings, selectedAccount, effectiveTheme, updateSettings, reloadSettings, raiseSecurityAlert } = useApp()
   const { launchState, launchLog, launchPid, busy, launch, stopLaunch } = useRuntime()
 
   /** 装载主页条目、启动器版本号、内存、版本目录、选中版本与账号信息。 */
@@ -56,7 +60,13 @@ export function CustomHomePage({ id }: { id: string }): JSX.Element {
   // CSP、能力桥（openExternal）与运行期探针共用这一份清单，任何清单外的源都视为越权外泄。
   const avatarOrigin = data.accountInfo?.avatarUrl ? httpOrigin(data.accountInfo.avatarUrl) : ''
   // 玩家皮肤贴图来源（供主页 3D 模型加载）：与脚本外链无关，单独放行 CSP img-src 并在探针中豁免。
-  const skinOrigin = data.modelSkin ? httpOrigin(data.modelSkin.skinUrl) : ''
+  // 第三方账号的皮肤多半托管在认证站（与头像接口同源），而 skinUrl 可能要等一次联网补全才落库，
+  // 所以皮肤还没到手时也先把该源列为皮肤源——否则要等 skinUrl 落库才放宽 CSP，iframe 会被整体重建。
+  const skinOrigin = data.modelSkin
+    ? httpOrigin(data.modelSkin.skinUrl)
+    : data.accountInfo?.authType === 'yggdrasil'
+      ? httpOrigin(avatarOrigin)
+      : ''
   const approvedOrigins = useMemo(
     () => homepageOrigins(data.entry?.risk.externals, avatarOrigin ? [avatarOrigin] : []),
     [data.entry, avatarOrigin]
@@ -68,7 +78,6 @@ export function CustomHomePage({ id }: { id: string }): JSX.Element {
   const { helloRef } = useHostBridge({
     frameRef,
     settings,
-    theme,
     securityMode,
     securityHit,
     entry: data.entry,
@@ -94,7 +103,8 @@ export function CustomHomePage({ id }: { id: string }): JSX.Element {
     updateSettings,
     approvedOrigins,
     avatarOrigin,
-    skinOrigin
+    skinOrigin,
+    theme: effectiveTheme
   })
 
   const srcDoc = useMemo(

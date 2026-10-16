@@ -1,4 +1,4 @@
-﻿<#
+﻿﻿<#
 .SYNOPSIS
   从 EasyTier 源码构建「不链接 Npcap」的 easytier-core / easytier-cli，用于随启动器分发。
 

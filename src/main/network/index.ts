@@ -376,7 +376,7 @@ function fetchModrinthVersions(slug: string, loaders: string[], gameVersions: st
 /* server：远程服务端 JSON API（about / agreement / update）            */
 /* ------------------------------------------------------------------ */
 
-const SERVER_BASE = 'https://adhc.johnnyblog.top'
+const SERVER_BASE = 'https://hcmcl.johnnyblog.top'
 
 function serverApi(path: string): Promise<unknown> {
   return fetchJson(`${SERVER_BASE}/api.php?action=${path}`, AbortSignal.timeout(10_000))
@@ -464,7 +464,9 @@ async function yggdrasilAuthenticate(
       username: email,
       password,
       clientToken: clientToken || requireCryptoClientToken(),
-      requestUser: false
+      // 必须为 true：否则服务端只回「无 properties 的空壳档案」，登录后就拿不到
+      // textures（皮肤 / 披风 / 模型），自定义主页的 3D 模型会因缺 skinUrl 而不显示。
+      requestUser: true
     })
   })
   if (!res.ok) throw new Error(await yggdrasilError(res))
@@ -480,7 +482,8 @@ async function yggdrasilRefresh(
   const res = await yggdrasilFetch(`${base}/authserver/refresh`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ accessToken, clientToken, requestUser: false })
+    // 同 authenticate：带回完整档案，刷新才不会把已解析到的皮肤冲掉。
+    body: JSON.stringify({ accessToken, clientToken, requestUser: true })
   })
   if (!res.ok) throw new Error(await yggdrasilError(res))
   const data = (await res.json()) as YggAuthResponse
@@ -812,16 +815,32 @@ async function msDevicePoll(p: DevicePollParams): Promise<AuthPollResult> {
 interface RefreshTokenParams {
   clientId: string
   refreshToken: string
+  /**
+   * 授权时使用的 scope（auth.ts 传入 `service::user.auth.xboxlive.com::MBI_SSL`）。
+   * MSA 的 refresh token 与授权 scope 绑定，刷新时必须原样带回；缺了它微软会以
+   * `invalid_grant` 拒绝 —— 这正是「刷新令牌失败，请重新登录」的根因。
+   */
+  scope?: string
 }
 
 /** 用 refresh_token 换取新的 access/refresh token。 */
 async function msRefreshToken(p: RefreshTokenParams): Promise<{ accessToken: string; refreshToken: string }> {
-  const res = await postFormNet(MS_TOKEN, {
+  const body: Record<string, string> = {
     grant_type: 'refresh_token',
     client_id: p.clientId,
     refresh_token: p.refreshToken
-  })
-  if (!res.ok) throw new Error('刷新令牌失败，请重新登录')
+  }
+  if (p.scope) body.scope = p.scope
+  const res = await postFormNet(MS_TOKEN, body)
+  if (!res.ok) {
+    // 不能把响应体丢掉：微软的 error / error_description 是区分「令牌已过期 / 被轮换 /
+    // scope 不匹配 / 被限流」的唯一依据。之前一律抛「请重新登录」，用户和开发者都无法定位。
+    const err = (await res
+      .json()
+      .catch(() => ({}))) as { error?: string; error_description?: string }
+    const reason = err.error_description || err.error || res.statusText || `HTTP ${res.status}`
+    throw new Error(`刷新令牌失败（HTTP ${res.status}）：${reason}`)
+  }
   const data = (await res.json()) as { access_token: string; refresh_token: string }
   // 防止用旋转后空 refresh_token 覆盖有效的旧值（否则下次刷新必然失败）
   return { accessToken: data.access_token, refreshToken: data.refresh_token || p.refreshToken }

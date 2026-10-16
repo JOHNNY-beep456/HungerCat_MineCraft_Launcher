@@ -157,6 +157,23 @@ function toAccount(
   }
 }
 
+/**
+ * 皮肤兜底：账号没有 skinUrl 时（老账号、或服务端未随 authenticate / refresh 回传 textures），
+ * 走认证站会话服补一次。失败静默返回原账号 —— 内置头像与 3D 模型组件自己还有一层兜底，
+ * 但主页脚本的模型数据只认账号字段，所以这里必须补上。
+ */
+async function withSkinFallback(account: MinecraftAccount): Promise<MinecraftAccount> {
+  if (account.skinUrl || !account.yggdrasilServer || !account.id) return account
+  const skin = await fetchYggdrasilSkin(account.yggdrasilServer, account.id)
+  if (!skin?.skinUrl) return account
+  return {
+    ...account,
+    skinUrl: skin.skinUrl,
+    skinModel: skin.skinModel,
+    capeUrl: skin.capeUrl || account.capeUrl
+  }
+}
+
 export async function loginYggdrasil(
   server: string,
   email: string,
@@ -194,7 +211,7 @@ export async function loginYggdrasil(
     }
     const profile = data.selectedProfile ?? profiles[0]
     pendingYgg = null
-    return { kind: 'ok', account: toAccount(profile, data, base, clientToken, siteName) }
+    return { kind: 'ok', account: await withSkinFallback(toAccount(profile, data, base, clientToken, siteName)) }
   } catch (err) {
     console.error(`[登录] 第三方登录失败：${base} / ${email} ${err instanceof Error ? err.message : String(err)}`)
     throw err
@@ -205,7 +222,7 @@ export async function loginYggdrasil(
  * 依据「多角色选择」弹窗的多选结果批量建号。
  * 同一账号下的各角色共用同一份 accessToken / clientToken，仅角色档案不同。
  */
-export function commitYggdrasilProfiles(ids: string[]): MinecraftAccount[] {
+export async function commitYggdrasilProfiles(ids: string[]): Promise<MinecraftAccount[]> {
   const ctx = pendingYgg
   pendingYgg = null
   if (!ctx) throw new Error('登录会话已失效，请重新登录')
@@ -213,11 +230,38 @@ export function commitYggdrasilProfiles(ids: string[]): MinecraftAccount[] {
   const available = ctx.data.availableProfiles ?? []
   const picked = available.filter((p) => wanted.has(withoutDashes(p.id)))
   if (picked.length === 0) throw new Error('请至少选择一个角色')
-  return picked.map((p) => toAccount(p, ctx.data, ctx.base, ctx.clientToken, ctx.siteName))
+  return Promise.all(picked.map((p) => withSkinFallback(toAccount(p, ctx.data, ctx.base, ctx.clientToken, ctx.siteName))))
 }
 
-export async function refreshYggdrasil(account: MinecraftAccount): Promise<MinecraftAccount> {
+/**
+ * 按账号 id 串行化的在途刷新（与微软链路同理，见 auth.ts 的 inFlightRefresh）。
+ *
+ * Yggdrasil 的 accessToken 在**每次刷新成功后即被服务端作废**，而刷新有两个互不感知的
+ * 入口 —— 启动时（App.tsx 的令牌检查）与启动前（launch:start 的过期检查）。两者一旦并发，
+ * 后到的一方拿着已被作废的 token 去刷新，服务端便回
+ * `ForbiddenOperationException: Invalid access token` —— 正是该错误的直接成因。
+ */
+const inFlightYggdrasilRefresh = new Map<string, Promise<MinecraftAccount>>()
+
+/** 刷新第三方账号令牌（同账号并发只发一次，其余调用复用在途结果）。 */
+export function refreshYggdrasil(account: MinecraftAccount): Promise<MinecraftAccount> {
+  const key = account.id
+  const existing = inFlightYggdrasilRefresh.get(key)
+  if (existing) return existing
+  const run = doRefreshYggdrasil(account).finally(() => {
+    if (inFlightYggdrasilRefresh.get(key) === run) inFlightYggdrasilRefresh.delete(key)
+  })
+  inFlightYggdrasilRefresh.set(key, run)
+  return run
+}
+
+async function doRefreshYggdrasil(account: MinecraftAccount): Promise<MinecraftAccount> {
   console.info(`[登录] 开始刷新第三方账号令牌：${account.name}`)
+  // 空 token 本地就拒掉：发一个空 accessToken 过去只会拿到服务端一句
+  //「Invalid access token」，既浪费一次往返、又把问题推给用户去猜。
+  if (!account.accessToken) {
+    throw new Error('该账号缺少访问令牌，请重新登录第三方账号')
+  }
   try {
     // 账号里存的是完整认证基址；这里同样走规范化，兼容只存域名的旧数据。
     const base = normalizeServer(account.yggdrasilServer ?? '')
@@ -241,16 +285,28 @@ export async function refreshYggdrasil(account: MinecraftAccount): Promise<Minec
     console.info(`[登录] 刷新第三方账号令牌成功：${account.name}`)
     // 站点名称：沿用已存值；旧账号缺失时顺带补全（best-effort，失败不阻塞刷新）。
     const siteName = account.siteName ?? (await fetchYggdrasilSiteName(base))
-    return {
-      ...toAccount(profile, data, base, clientToken, siteName),
-      addedAt: account.addedAt
+    const refreshed = toAccount(profile, data, base, clientToken, siteName)
+    const merged: MinecraftAccount = {
+      ...refreshed,
+      // accessToken 兜底：个别实现（或旧版服务端）refresh 响应里不回 access_token，
+      // 此时若按原样覆盖成 undefined，账号会**永久无法再刷新**——每次都是
+      //「Invalid access token」。因此响应缺失时沿用本地仍有效的那个。
+      accessToken: refreshed.accessToken || account.accessToken,
+      addedAt: account.addedAt,
+      // 服务端没回传 textures 时，别把账号里已解析到的皮肤 / 披风 / 模型冲掉
+      //（否则刷新一次，主页 3D 模型就又变回占位）。
+      skinUrl: refreshed.skinUrl ?? account.skinUrl,
+      capeUrl: refreshed.capeUrl ?? account.capeUrl,
+      skinModel: refreshed.skinModel ?? account.skinModel
     }
+    return await withSkinFallback(merged)
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
     console.error(`[登录] 刷新第三方账号令牌失败：${account.name} ${msg}`)
     // 服务端判为「令牌无效」时，accessToken 或 clientToken 已不再被认可，
     // 本地无法凭空补齐，只能重新登录——给一句可操作的提示，而不是把服务端原文抛给用户。
-    if (/invalid token|forbiddenoperationexception|无效/i.test(msg)) {
+    // 覆盖各家常见措辞：Invalid access token / invalid token / ForbiddenOperationException。
+    if (/invalid access|invalid token|forbiddenoperationexception|无效|过期/i.test(msg)) {
       throw new Error(`第三方账号登录凭据已失效，请在「账号」页重新登录该账号（${msg}）`)
     }
     throw err

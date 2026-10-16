@@ -140,6 +140,14 @@ export const SETTINGS_DEFS: SettingsDefs = {
 
   /* ============ 实验性功能（板块 id：experimental） ============ */
   experimental: { default: 'off', ui: { section: 'experimental', control: 'custom' } },
+  materialStyle: {
+    default: 'you',
+    ui: { section: 'experimental', control: 'custom' }
+  },
+  githubStyle: {
+    default: 'system',
+    ui: { section: 'experimental', control: 'custom' }
+  },
   autoThemeFromWallpaper: {
     default: false,
     ui: {
@@ -310,7 +318,6 @@ export const SETTINGS_DEFS: SettingsDefs = {
   homepageId: { default: '' },
   selectedVersionId: { default: '' },
   hardwareChecked: { default: false },
-  hardwareLowEnd: { default: false },
   /** 派生字段：真实 KEY 由主进程安全存储持有，这里只反映「有没有」。 */
   uapisApiKeySet: { default: false },
 

@@ -9,7 +9,8 @@
 | `src/renderer/` | 渲染进程（React 界面） |
 | `src/shared/` | 主进程 / preload / 渲染层三方共享的契约与纯逻辑 |
 | `native/downloader/` | Rust 原生下载内核（napi-rs） |
-| `scripts/` | 构建脚本（原生内核、EasyTier 二进制准备等） |
+| `installer/` | **自研 Electron 安装程序**（复刻启动器风格；内置载荷 + 快捷方式 + 卸载注册） |
+| `scripts/` | 构建脚本（原生内核、EasyTier 二进制、自研安装器打包等） |
 | `server/` | PHP 服务端 —— **不纳入版本控制，不要提交** |
 | `docs/` | 本开发文档 |
 

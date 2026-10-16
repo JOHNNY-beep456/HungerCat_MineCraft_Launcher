@@ -7,6 +7,15 @@ files:
   - out/**
   - package.json
 asar: true
+# 只保留启动器实际支持的 3 种界面语言对应的 Chromium 语言包。
+# Electron 自带 55 个 .pak 共 40.3 MB（全量），逐个平均 0.73 MB；
+# 裁到 3 个只余 ~1.4 MB，单份运行时省 38.8 MB。
+# 影响面仅为**原生**对话框与右键菜单：系统语言不在列表内时回落英文。
+# 启动器自身界面全是自绘的，不受影响；日期/数字格式化走 icudtl.dat，也不受影响。
+electronLanguages:
+  - zh-CN
+  - zh-TW
+  - en-US
 extraResources:
   - from: build/icon.png
     to: icon.png
@@ -38,8 +47,19 @@ mac:
   darkModeSupport: true
 win:
   icon: build/icon.ico
+  # 两个目标并存，各有用途：
+  #   portable 主产物 —— Setup.exe **就是启动器自身**（electron-builder 的 portable
+  #     目标把应用封成单文件 exe）。主进程检测到 PORTABLE_EXECUTABLE_FILE 就切到
+  #     安装模式（src/main/installer/），因此安装包里只有**一份** Electron 运行时。
+  #     早前是把启动器当载荷塞进另一个 Electron 安装器，等于带了两份运行时
+  #     （约 2 × 268 MB 未压缩），这是安装包体积的最大来源。
+  #   nsis 应急兜底 —— electron-builder 自带的安装器，不依赖安装模式那条代码路径，
+  #     万一便携包在实机上出问题，仍可出一条 100% 可靠的安装包。
   target:
+    - portable
     - nsis
+portable:
+  artifactName: "HCMCL-${version} Setup.exe"
 linux:
   icon: build/icon.png
   target:
