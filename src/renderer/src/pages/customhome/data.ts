@@ -121,8 +121,8 @@ export function useHomepageData({
     }
   }, [id])
 
-  // 已用内存轮询：常规 30s；超低占用模式下放宽周期并在窗口不可见时暂停。
-  useAdaptivePolling(refreshMemory, 30000, settings.mode === 'lowUsage')
+  // 已用内存轮询：常规 30s。
+  useAdaptivePolling(refreshMemory, 30000)
 
   // 已安装版本随「当前版本目录」收敛：切换目录后重新拉取，内置选择器与脚本接口随之更新。
   // 首次挂载延后到首屏空闲：installed:list 要全量扫描版本目录，避免与首屏渲染抢 IO。
@@ -219,6 +219,10 @@ export function useHomepageData({
   /**
    * 当前账号的 3D 模型皮肤数据（供主页 hc.model3d 使用）。
    * 仅正版 / 第三方账号有皮肤；离线账号或未设置皮肤时为 null（模型显示占位）。
+   *
+   * 第三方账号可能没有本地 skinUrl（老账号，或服务端未随登录回传 textures），
+   * 内置的 PlayerModel3D / Avatar 会自己去认证站会话服补，这里也必须补 ——
+   * 否则第三方账号下主页 3D 模型永远只有占位。
    */
   const modelSkin = useMemo<ModelSkin | null>(() => {
     if (!selectedAccount) return null
@@ -231,6 +235,37 @@ export function useHomepageData({
       skinModel: selectedAccount.skinModel ?? 'classic'
     }
   }, [selectedAccount])
+  // 皮肤补全（仅在线账号、且本地无 skinUrl 时）：第三方走认证站会话服，正版走 uapis.cn；
+  // 离线账号不查。拿到后直接替换上面的 modelSkin。
+  const [remoteSkin, setRemoteSkin] = useState<ModelSkin | null>(null)
+  useEffect(() => {
+    setRemoteSkin(null)
+    const acc = selectedAccount
+    if (!acc || acc.offline === true || acc.authType === 'offline' || acc.skinUrl || !acc.name) return
+    let alive = true
+    const promise =
+      acc.authType === 'yggdrasil'
+        ? acc.yggdrasilServer && acc.id
+          ? window.api.accounts.yggdrasilSkin(acc.yggdrasilServer, acc.id)
+          : Promise.resolve(undefined)
+        : window.api.minecraft.userinfo(acc.name)
+    void promise
+      .then((info) => {
+        if (!alive || !info?.skinUrl) return
+        const skinModel =
+          'skinModel' in info && info.skinModel ? info.skinModel : ('classic' as const)
+        setRemoteSkin({
+          skinUrl: info.skinUrl.replace(/^http:\/\//i, 'https://'),
+          capeUrl: (info.capeUrl ?? '').replace(/^http:\/\//i, 'https://'),
+          skinModel
+        })
+      })
+      .catch(() => undefined)
+    return () => {
+      alive = false
+    }
+  }, [selectedAccount])
+  const effectiveModelSkin = useMemo<ModelSkin | null>(() => modelSkin ?? remoteSkin, [modelSkin, remoteSkin])
 
   return {
     entry,
@@ -246,6 +281,6 @@ export function useHomepageData({
     versionDirInfos,
     selectVersionDir,
     accountInfo,
-    modelSkin
+    modelSkin: effectiveModelSkin
   }
 }

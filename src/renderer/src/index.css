@@ -37,8 +37,14 @@
   /* 悬停时略微提亮（深色模式下提亮更明显，浅色下更实） */
   --control-hover-brightness: 1.03;
 
-  --fill-primary: #0a84ff;
-  --fill-primary-hover: #0a78f0;
+  /* 主题色「种子」。用户自定义的主题色由渲染层以内联样式写在 --accent-user 上
+     （见 store.tsx），由下面两个令牌转成真正上色的 fill-*。
+     刻意不把 --fill-primary 本身设成内联：内联优先级高于样式表，一旦内联，
+     任何皮肤都改不动它（GitHub 皮肤的 accent.emphasis 就上不了主按钮）。
+     M3 的调色板从 --fill-primary 取种子，行为与之前完全一致。 */
+  --accent-user: #0a84ff;
+  --fill-primary: var(--accent-user);
+  --fill-primary-hover: var(--accent-user);
   --fill-secondary: rgba(0, 0, 0, 0.06);
   --fill-secondary-hover: rgba(0, 0, 0, 0.1);
   --fill-danger: #ff453a;
@@ -353,7 +359,9 @@ body {
    + 顶部高光（.glass::before）+ 倒角亮/暗边 + 接触/中层/环境三层投影
    （--glass-shadow 的 5 段）。厚度是这几层堆出来的，不靠提高透明度。
    液态玻璃（[data-skin='mac']）：底色更透、模糊更强、饱和度更高，
-   并把 --surface-shade 关掉（见文件末尾），避免变成「半透 + 白雾」的中间态。 */
+并把 --surface-shade 关掉（见文件末尾），避免变成「半透 + 白雾」的中间态；
+    厚度改由 1px 镜边（双背景渐变）+ 水膜 inset 反光 + 中间碟面来表达。
+    Material Design 3 风格（[data-skin='material']）：实色色调表面 + 层级投影，不吃磨砂。 */
 .glass {
   position: relative;
   isolation: isolate;
@@ -756,51 +764,6 @@ textarea.input {
   transform: none;
 }
 
-/* ------------------------------------------------------------------ */
-/*  超低占用模式：强制极简 + 减少动态效果之上，再尽可能关闭一切            */
-/*  动画 / 过渡 / 模糊 / 阴影渲染，只保留必要的静态界面（功能不变）。       */
-/*  由 store 映射：data-mode='minimal' + data-reduced-motion='true'       */
-/*  + data-low-usage='true'（三者叠加，见下方规则）。                     */
-/* ------------------------------------------------------------------ */
-/* 窗口最小化 / 被完全遮挡时暂停装饰动画，重新可见立即恢复。 */
-[data-low-usage='true'][data-window-hidden='true'] .app-background .blob,
-[data-low-usage='true'][data-window-hidden='true'] .catfish-bob,
-[data-low-usage='true'][data-window-hidden='true'] .catfish-wag {
-  animation-play-state: paused !important;
-}
-/* 关闭跟随鼠标的持续重绘光晕（老机器上典型的无谓开销）。 */
-[data-low-usage='true'] .cursor-glow {
-  display: none;
-}
-/* 尽可能掐断一切动画与过渡：只保留必要的即时反馈（无补间），不改任何功能。 */
-[data-low-usage='true'] *,
-[data-low-usage='true'] *::before,
-[data-low-usage='true'] *::after {
-  animation-duration: 0.001ms !important;
-  animation-delay: 0ms !important;
-  animation-iteration-count: 1 !important;
-  transition-duration: 0.001ms !important;
-  transition-delay: 0ms !important;
-  scroll-behavior: auto !important;
-}
-/* 彻底停掉装饰性动画，避免 0.001ms 循环仍触发合成层重绘。 */
-[data-low-usage='true'] .app-background .blob,
-[data-low-usage='true'] .catfish-bob,
-[data-low-usage='true'] .catfish-wag,
-[data-low-usage='true'] .translate-dot--pulse {
-  animation: none !important;
-}
-/* 去掉所有模糊：背景装饰、玻璃、滚动条等一律不参与合成。 */
-[data-low-usage='true'] .app-background,
-[data-low-usage='true'] .app-background * {
-  filter: none !important;
-  backdrop-filter: none !important;
-}
-[data-low-usage='true'] :is(.glass, .glass-strong, .glass-soft, .mica, .mica-well) {
-  backdrop-filter: none !important;
-  box-shadow: none !important;
-}
-
 /* --- Utility for safe-area / selectable text --- */
 .selectable {
   user-select: text;
@@ -878,43 +841,78 @@ textarea.input {
 /*      上缘最亮、左缘次之、右缘最淡、下缘一道反向反光，像水膜挂在杯壁；    */
 /*    · 微微凹陷：顶部一道柔内影 + 中心极淡的暗部（环境光遮蔽）+ 底部内侧  */
 /*      反光，让表面读起来是一个浅浅下凹的「碟面」，而不是平铺的玻璃。      */
-/*  仍用 :not([data-mode='minimal']) 让极简 / 超低占用优先（它们各自会     */
-/*  关掉模糊与阴影）。                                                    */
+/*  仍用 :not([data-mode='minimal']) 让极简优先（它会关掉模糊与阴影）。      */
 /* ------------------------------------------------------------------ */
 /* 只有用户未要求「减少透明度」且不是极简模式时，才启用磨砂 */
 @media (prefers-reduced-transparency: no-preference) {
   [data-skin='mac']:not([data-mode='minimal']) .glass {
-    backdrop-filter: blur(44px) saturate(190%) brightness(1.05);
+    backdrop-filter: blur(48px) saturate(215%) brightness(1.08);
   }
   [data-skin='mac']:not([data-mode='minimal']) .glass-strong {
-    backdrop-filter: blur(60px) saturate(200%) brightness(1.06);
+    backdrop-filter: blur(64px) saturate(230%) brightness(1.1);
   }
   [data-skin='mac']:not([data-mode='minimal']) .glass-soft {
-    backdrop-filter: blur(22px) saturate(170%) brightness(1.04);
+    backdrop-filter: blur(24px) saturate(190%) brightness(1.06);
+  }
+  /* 镜面高光描边（1px）——液态玻璃最有辨识度的一道「镜边」。
+     做法是「填充 → padding-box、高光渐变 → border-box」的双背景：把 1px 边框那一圈留给
+     渐变来画，就能得到一条真正的 1px 渐变边（inset box-shadow 只能做纯色亮边，
+     且左右等亮，做不出 iOS 那种「上缘最亮 → 左右衰减 → 下缘反光」的走向）。
+     --lg-fill 各元素自行指向自己的底色令牌，因此三者共用这一条规则。
+     必须放在这个 media 里：用户要求「减少透明度」时要把表面交回不透明回退，
+     这条规则若写在 media 外（优先级更高）会把那层兜底盖掉。 */
+  [data-skin='mac']:not([data-mode='minimal']) :is(.glass, .glass-strong, .glass-soft) {
+    border-color: transparent;
+    background:
+      linear-gradient(var(--lg-fill), var(--lg-fill)) padding-box,
+      linear-gradient(
+          180deg,
+          var(--lg-rim-top) 0%,
+          var(--lg-rim-side) 14%,
+          var(--lg-rim-low) 46%,
+          var(--lg-rim-side) 78%,
+          var(--lg-rim-bottom) 100%
+        )
+        border-box;
   }
 }
 /* 水的反光：沿周界一圈略厚、带轻微模糊的润泽高光——上缘最亮、左缘次之、
    右缘最淡、下缘一道反向反光（像水膜挂在杯壁，而非干玻璃的硬边）。
    后两段是「微微凹陷」：顶部一道柔内影（表面向下弯折的起点）+ 底部内侧反光
    （远端唇口把光反回来），与 ::after 的中心暗部合起来形成浅浅的「碟面」。 */
+/* 镜边渐变的四档取样在文件末尾的令牌段定义：
+   顶部聚光最亮 → 左右侧光快速衰减 → 中段几乎只剩底色 → 底部一道反向反光。
+   这样才像「光扫过一块有厚度的玻璃」，而不是四边同亮的一条白框。 */
+[data-skin='mac']:not([data-mode='minimal']) .glass {
+  --lg-fill: var(--glass-bg);
+}
+[data-skin='mac']:not([data-mode='minimal']) .glass-strong {
+  --lg-fill: var(--glass-bg-strong);
+}
+[data-skin='mac']:not([data-mode='minimal']) .glass-soft {
+  --lg-fill: var(--glass-bg-soft);
+}
+/* 水膜反光（inset）：比上面那道镜边更「湿」的一层——沿周界的柔光 + 表面的微折射。
+   顶部柔内影是光线在玻璃上沿折弯的起点，底部内侧反光把远端唇口的光弹回来，
+   两者合起来让表面读起来「有厚度的一块玻璃」，而不是一张平铺的半透明膜。 */
 [data-skin='mac']:not([data-mode='minimal']) :is(.glass, .glass-strong) {
   box-shadow:
-    inset 0 1px 1.5px rgba(255, 255, 255, 0.92),
-    inset 1px 0 1.5px -0.25px rgba(255, 255, 255, 0.45),
-    inset -1px 0 1.5px -0.25px rgba(255, 255, 255, 0.18),
-    inset 0 -1px 1.5px -0.25px rgba(255, 255, 255, 0.34),
-    inset 0 14px 22px -16px rgba(15, 23, 42, 0.2),
-    inset 0 -12px 20px -16px rgba(255, 255, 255, 0.3),
+    inset 0 1px 1px rgba(255, 255, 255, 0.62),
+    inset 1.5px 0 2px -1px rgba(255, 255, 255, 0.3),
+    inset -1.5px 0 2px -1px rgba(255, 255, 255, 0.12),
+    inset 0 -1px 1px rgba(255, 255, 255, 0.45),
+    inset 0 12px 20px -14px rgba(15, 23, 42, 0.14),
+    inset 0 -14px 22px -18px rgba(255, 255, 255, 0.34),
     var(--glass-shadow);
 }
 [data-skin='mac'][data-theme='dark']:not([data-mode='minimal']) :is(.glass, .glass-strong) {
   box-shadow:
-    inset 0 1px 1.5px rgba(255, 255, 255, 0.42),
-    inset 1px 0 1.5px -0.25px rgba(255, 255, 255, 0.18),
-    inset -1px 0 1.5px -0.25px rgba(255, 255, 255, 0.06),
-    inset 0 -1px 1.5px -0.25px rgba(255, 255, 255, 0.12),
-    inset 0 14px 22px -16px rgba(0, 0, 0, 0.5),
-    inset 0 -12px 20px -16px rgba(255, 255, 255, 0.1),
+    inset 0 1px 1px rgba(255, 255, 255, 0.4),
+    inset 1.5px 0 2px -1px rgba(255, 255, 255, 0.16),
+    inset -1.5px 0 2px -1px rgba(255, 255, 255, 0.06),
+    inset 0 -1px 1px rgba(255, 255, 255, 0.14),
+    inset 0 12px 20px -14px rgba(0, 0, 0, 0.5),
+    inset 0 -14px 22px -18px rgba(255, 255, 255, 0.1),
     var(--glass-shadow);
 }
 /* 水膜的润泽（::before）：顶部一层极淡内发光，越往下越透明——像杯壁上挂着
@@ -926,8 +924,8 @@ textarea.input {
   z-index: -1;
   border-radius: inherit;
   pointer-events: none;
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.5) 0%, rgba(255, 255, 255, 0) 30%);
-  opacity: 0.5;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.26) 0%, rgba(255, 255, 255, 0) 26%);
+  opacity: 0.55;
 }
 /* 中间微微凹陷（::after）：中心一层极淡的暗部（环境光遮蔽）向四周淡出，让
    表面读起来向下凹；再叠一道底部内侧反光，强化「浅浅的碟面」曲率。
@@ -972,6 +970,38 @@ textarea.input {
   opacity: 0.4;
 }
 
+/* 分段控件改胶囊形：iOS 的液态玻璃分段（Segmented）是「胶囊槽 + 胶囊选中块」，
+   选中的那块像一颗独立的小玻璃珠嵌在槽里。只改 Segmented（.mica-well）这一处，
+   不动侧栏滑块与行内小按钮上的 .mica。未分层，压得过 @layer components 里的
+   rounded-xl / rounded-lg 工具类。 */
+[data-skin='mac']:not([data-mode='minimal']) .mica-well,
+[data-skin='mac']:not([data-mode='minimal']) .mica-well > button,
+[data-skin='mac']:not([data-mode='minimal']) .mica-well .mica {
+  border-radius: 999px;
+}
+/* 选中块再给一道自己的镜边，读起来才是一颗玻璃珠而不是一块色片。
+   同样只在「未要求减少透明度」时画，避免与极简 / 减少透明度的实色回退打架。 */
+[data-skin='mac']:not([data-mode='minimal']) .mica-well .mica {
+  --lg-fill: var(--fill-secondary-hover);
+}
+@media (prefers-reduced-transparency: no-preference) {
+  [data-skin='mac']:not([data-mode='minimal']) .mica-well .mica {
+    border-color: transparent;
+    background:
+      linear-gradient(var(--lg-fill), var(--lg-fill)) padding-box,
+      linear-gradient(
+          180deg,
+          var(--lg-rim-top) 0%,
+          var(--lg-rim-side) 16%,
+          var(--lg-rim-low) 50%,
+          var(--lg-rim-side) 84%,
+          var(--lg-rim-bottom) 100%
+        )
+        border-box;
+    box-shadow: inset 0 1px 1px rgba(255, 255, 255, 0.4), var(--glass-shadow-control);
+  }
+}
+
 /* ------------------------------------------------------------------ */
 /*  纯 CSS 3D 玩家模型（默认主页）：缓慢自转，展示皮肤与帽子外层。        */
 /* ------------------------------------------------------------------ */
@@ -986,10 +1016,9 @@ textarea.input {
     transform: rotateX(-8deg) rotateY(360deg);
   }
 }
-/* 减少动态效果 / 极简 / 超低占用下不自转，避免无谓重绘。 */
+/* 减少动态效果 / 极简下不自转，避免无谓重绘。 */
 [data-reduced-motion='true'] .player3d-spin,
-[data-mode='minimal'] .player3d-spin,
-[data-low-usage='true'] .player3d-spin {
+[data-mode='minimal'] .player3d-spin {
   animation: none;
   transform: rotateX(-8deg) rotateY(-28deg);
 }
@@ -1304,6 +1333,14 @@ textarea.input {
   --text-secondary: rgba(60, 60, 67, 0.6);
   --text-tertiary: rgba(60, 60, 67, 0.32);
 
+  /* 镜边渐变（见上方皮肤段的双背景写法）四档取样：
+     顶部聚光最亮 → 左右侧光快速衰减 → 中段几乎只剩底色 → 底部一道反向反光。
+     这样才像「光扫过一块有厚度的玻璃」，而不是四边同亮的一条白框。 */
+  --lg-rim-top: rgba(255, 255, 255, 0.98);
+  --lg-rim-side: rgba(255, 255, 255, 0.34);
+  --lg-rim-low: rgba(255, 255, 255, 0.08);
+  --lg-rim-bottom: rgba(255, 255, 255, 0.72);
+
   /* 玻璃体：纯透明——只留极薄一层，让背景完全透出 */
   --glass-bg: rgba(255, 255, 255, 0.06);
   --glass-bg-strong: rgba(255, 255, 255, 0.09);
@@ -1329,6 +1366,12 @@ textarea.input {
   --text-primary: rgba(245, 245, 247, 0.95);
   --text-secondary: rgba(235, 235, 245, 0.62);
   --text-tertiary: rgba(235, 235, 245, 0.36);
+
+  /* 深色下镜边暗一档：亮边依旧是「白」，但强度压低，否则会盖过内容 */
+  --lg-rim-top: rgba(255, 255, 255, 0.52);
+  --lg-rim-side: rgba(255, 255, 255, 0.15);
+  --lg-rim-low: rgba(255, 255, 255, 0.05);
+  --lg-rim-bottom: rgba(255, 255, 255, 0.24);
 
   /* 纯透明：深色下也只留极薄一层提亮，不做深色实底 */
   --glass-bg: rgba(255, 255, 255, 0.045);
@@ -1510,4 +1553,1058 @@ textarea.input {
   --win10-surface: #202020;
   --win10-text: #f0f0f0;
   --win10-hover: rgba(255, 255, 255, 0.09);
+}
+
+/* ==================================================================== */
+/*  实验性皮肤 3：Material Design 3                                      */
+/*                                                                      */
+/*  M3 官方把「样式」分成六套可定制系统：Color / Shape / Typography /      */
+/*  Elevation / Motion / Icons；而风格本体有三类：                         */
+/*    · baseline  静态基线配色（官方默认色板，不跟随主题色）               */
+/*    · you       Material You：以主题色为种子生成色调板，再按 color role  */
+/*               取色（dynamic color）                                    */
+/*    · expressive M3 Expressive：you 的取色 + 更浓的容器色 / 更大的形状   */
+/*               （新形状阶）/ 强调排版（emphasized type）/ 更强层级       */
+/*  三类的「结构」完全相同（同样的 color role、形状阶、排版阶、组件），     */
+/*  只有取值不同 —— 这正是 M3 的做法：换 theme 不改组件。                  */
+/*                                                                      */
+/*  实现要点：                                                            */
+/*    · 色调板（tonal palette，与明暗无关）单独定义，明暗只改「取哪一档」  */
+/*      —— 与官方 dynamic color 的流程一致；CSS 里用 color-mix 近似 HCT   */
+/*      （真算法需要 HCT 色彩空间，浏览器暂不支持）。                       */
+/*    · color role 全部令牌化（--m3-primary / -on-primary /              */
+/*      -primary-container / … / -surface-container-*），组件只吃角色，    */
+/*      不直接吃色值。                                                    */
+/*    · 层级（Elevation）优先用色调阶而不是投影；                          */
+/*    · 动效（Motion）用 M3 的标准/强调缓动与时长档。                      */
+/* ==================================================================== */
+
+/* ---------- 通用：形状阶 / 动效 / 状态层（三种风格共用） ---------- */
+
+[data-skin='material'] body {
+  font-family: Roboto, 'Google Sans', 'Noto Sans', 'Segoe UI Variable Text', 'Segoe UI',
+    'Microsoft YaHei', system-ui, sans-serif;
+  /* M3 不做负追踪（负字距是 iOS 的做法） */
+  letter-spacing: 0.012em;
+}
+
+[data-skin='material'] {
+  /* 形状阶（Shape scale，M3 官方 7 档：none → full） */
+  --m3-shape-xs: 4px;
+  --m3-shape-sm: 8px;
+  --m3-shape-md: 12px;
+  --m3-shape-lg: 16px;
+  --m3-shape-xl: 28px;
+  --m3-shape-full: 999px;
+
+  /* 动效（Motion）：M3 的标准缓动与强调缓动，配三档时长 */
+  --m3-ease-standard: cubic-bezier(0.2, 0, 0, 1);
+  --m3-ease-emphasized: cubic-bezier(0.05, 0.7, 0.1, 1);
+  --m3-dur-short: 150ms;
+  --m3-dur-medium: 250ms;
+  --m3-dur-long: 400ms;
+
+  /* 层级（Elevation）：M3 三档影（色调阶才是主力，影只做兜底分界） */
+  --m3-elev-1: 0 1px 2px rgba(0, 0, 0, 0.1), 0 1px 3px 1px rgba(0, 0, 0, 0.06);
+  --m3-elev-2: 0 1px 2px rgba(0, 0, 0, 0.12), 0 2px 6px 2px rgba(0, 0, 0, 0.07);
+  --m3-elev-3: 0 4px 8px 3px rgba(0, 0, 0, 0.08), 0 1px 3px rgba(0, 0, 0, 0.14);
+
+  /* state layer：悬停/按下叠在既有表面上的一层油墨。
+     写成 background-image，这样不会顶掉组件自身的填充色。 */
+  --m3-state-hover: linear-gradient(rgba(0, 0, 0, 0.08), rgba(0, 0, 0, 0.08));
+  --m3-state-press: linear-gradient(rgba(0, 0, 0, 0.12), rgba(0, 0, 0, 0.12));
+
+  /* 控件不模糊（Material 是实心的） */
+  --control-raised-blur: none;
+  --control-well-blur: none;
+  --control-hover-brightness: 1;
+  /* 卡片没有描边：分界靠色阶 */
+  --glass-border: transparent;
+  --glass-highlight: transparent;
+  --surface-shade: none;
+  --surface-shade-inset: none;
+
+  /* 兜底角色值：万一风格类型还没写入 data-material，也有一套可用的 M3 基线色 */
+  --m3-primary: #6750a4;
+  --m3-on-primary: #ffffff;
+  --m3-secondary-container: #e8def8;
+  --m3-on-secondary-container: #1d192b;
+  --m3-surface: #fef7ff;
+  --m3-on-surface: #1c1b1d;
+  --m3-on-surface-variant: #49454b;
+  --m3-surface-container-lowest: #ffffff;
+  --m3-surface-container-low: #f7f2fa;
+  --m3-surface-container: #f3edf7;
+  --m3-surface-container-high: #ece6f0;
+  --m3-surface-container-highest: #e6e0e9;
+  --m3-outline: #79747e;
+  --m3-outline-variant: #cac4d0;
+}
+
+[data-skin='material'][data-theme='dark'] {
+  --m3-state-hover: linear-gradient(rgba(255, 255, 255, 0.08), rgba(255, 255, 255, 0.08));
+  --m3-state-press: linear-gradient(rgba(255, 255, 255, 0.12), rgba(255, 255, 255, 0.12));
+  --m3-elev-1: 0 1px 2px rgba(0, 0, 0, 0.5), 0 1px 3px 1px rgba(0, 0, 0, 0.35);
+  --m3-elev-2: 0 1px 2px rgba(0, 0, 0, 0.55), 0 2px 6px 2px rgba(0, 0, 0, 0.4);
+  --m3-elev-3: 0 4px 8px 3px rgba(0, 0, 0, 0.4), 0 1px 3px rgba(0, 0, 0, 0.55);
+
+  --m3-primary: #d0bcff;
+  --m3-on-primary: #381e72;
+  --m3-secondary-container: #4a4458;
+  --m3-on-secondary-container: #e8def8;
+  --m3-surface: #1c1b1f;
+  --m3-on-surface: #e6e1e5;
+  --m3-on-surface-variant: #cac4d0;
+  --m3-surface-container-lowest: #0f0d13;
+  --m3-surface-container-low: #1d1b20;
+  --m3-surface-container: #211f26;
+  --m3-surface-container-high: #2b2930;
+  --m3-surface-container-highest: #36343b;
+  --m3-outline: #938f99;
+  --m3-outline-variant: #49454f;
+}
+
+/* ---------- 风格 1：baseline（官方静态基线配色） ----------
+   表面 / 描边 / 二次容器一律用 M3 官方默认值（中性、不带主题色），
+   primary 仍取用户主题色 —— 否则设置里的「主题色」会被无声覆盖。
+   层级靠 surface 阶（tone 90→100），投影只做兜底。 */
+[data-skin='material'][data-material='baseline'] {
+  --glass-bg: var(--m3-surface-container-low);
+  --glass-bg-soft: var(--m3-surface-container);
+  --glass-bg-strong: var(--m3-surface-container-high);
+  --glass-shadow: var(--m3-elev-1);
+  --glass-shadow-control: var(--m3-elev-1);
+  --glass-shadow-well: inset 0 -1px 0 var(--m3-outline);
+  --fill-secondary: var(--m3-secondary-container);
+  --chip-bg: transparent;
+  --divider: var(--m3-outline-variant);
+  --scrim: rgba(0, 0, 0, 0.4);
+  --surface-flat: var(--m3-surface);
+  --bg-flat: var(--m3-surface-container);
+}
+[data-skin='material'][data-material='baseline'][data-theme='dark'] {
+  --glass-shadow: var(--m3-elev-1);
+  --scrim: rgba(0, 0, 0, 0.6);
+}
+
+/* ---------- 风格 2：you（Material You / dynamic color） ----------
+   与明暗无关的色调板（tone = 亮度，10 最暗 / 90 最亮）。
+   官方算法是 HCT；CSS 里以 color-mix 近似：向种子色混黑/白得到各档。
+   色序上把「白/黑」写在后面，构建管线生成的兜底值才是有意义的实色。
+   you 与 expressive 共用整套角色（expressive 只是把其中几项调浓、形状与
+   排版更激进），所以用 :is() 让两者都拿到这份定义，再由后面的 expressive
+   块覆盖差异项 —— 避免同一套角色抄两份、也避免漏掉某个 role。 */
+[data-skin='material']:is([data-material='you'], [data-material='expressive']) {
+  --m3-pal-p10: color-mix(in srgb, #000000 76%, var(--fill-primary));
+  --m3-pal-p20: color-mix(in srgb, #000000 56%, var(--fill-primary));
+  --m3-pal-p30: color-mix(in srgb, #000000 36%, var(--fill-primary));
+  --m3-pal-p40: var(--fill-primary);
+  --m3-pal-p80: color-mix(in srgb, #ffffff 26%, var(--fill-primary));
+  --m3-pal-p90: color-mix(in srgb, #ffffff 50%, var(--fill-primary));
+  --m3-pal-p95: color-mix(in srgb, #ffffff 68%, var(--fill-primary));
+  /* 中性色阶：M3 的中性色其实带一点种子色的色调，所以同样从种子色混 */
+  --m3-pal-n100: #ffffff;
+  --m3-pal-n99: color-mix(in srgb, #ffffff 98%, var(--fill-primary));
+  --m3-pal-n98: color-mix(in srgb, #ffffff 96%, var(--fill-primary));
+  --m3-pal-n96: color-mix(in srgb, #ffffff 92%, var(--fill-primary));
+  --m3-pal-n94: color-mix(in srgb, #ffffff 88%, var(--fill-primary));
+  --m3-pal-n92: color-mix(in srgb, #ffffff 84%, var(--fill-primary));
+  --m3-pal-n90: color-mix(in srgb, #ffffff 80%, var(--fill-primary));
+  --m3-pal-n87: color-mix(in srgb, #ffffff 74%, var(--fill-primary));
+  --m3-pal-n17: color-mix(in srgb, #000000 83%, var(--fill-primary));
+  --m3-pal-n12: color-mix(in srgb, #000000 88%, var(--fill-primary));
+  --m3-pal-n10: color-mix(in srgb, #000000 90%, var(--fill-primary));
+  --m3-pal-n06: color-mix(in srgb, #000000 94%, var(--fill-primary));
+  --m3-pal-n04: color-mix(in srgb, #000000 96%, var(--fill-primary));
+  /* 中性变体（surface-variant / outline 用，比中性阶更带色调） */
+  --m3-pal-nv30: color-mix(in srgb, #49454f 92%, var(--fill-primary));
+  --m3-pal-nv50: color-mix(in srgb, #79747e 88%, var(--fill-primary));
+  --m3-pal-nv80: color-mix(in srgb, #cac4d0 90%, var(--fill-primary));
+}
+
+/* 角色分配 + 应用令牌映射（浅色） */
+[data-skin='material']:is([data-material='you'], [data-material='expressive']) {
+  --m3-primary: var(--m3-pal-p40);
+  --m3-on-primary: #ffffff;
+  --m3-primary-container: var(--m3-pal-p90);
+  --m3-on-primary-container: var(--m3-pal-p10);
+  --m3-secondary-container: color-mix(in srgb, var(--m3-pal-n90) 78%, var(--m3-pal-p40) 22%);
+  --m3-on-secondary-container: color-mix(in srgb, #16121c 54%, var(--m3-pal-p40) 46%);
+  --m3-surface: var(--m3-pal-n98);
+  --m3-on-surface: var(--m3-pal-n10);
+  --m3-on-surface-variant: var(--m3-pal-nv30);
+  --m3-surface-container-lowest: var(--m3-pal-n100);
+  --m3-surface-container-low: var(--m3-pal-n96);
+  --m3-surface-container: var(--m3-pal-n94);
+  --m3-surface-container-high: var(--m3-pal-n92);
+  --m3-surface-container-highest: var(--m3-pal-n90);
+  --m3-outline: var(--m3-pal-nv50);
+  --m3-outline-variant: var(--m3-pal-nv80);
+  --scrim: rgba(0, 0, 0, 0.4);
+
+  /* 角色 → 应用令牌（三种风格共用同一套映射，只有角色值不同） */
+  --text-primary: var(--m3-on-surface);
+  --text-secondary: var(--m3-on-surface-variant);
+  --text-tertiary: color-mix(in srgb, var(--m3-on-surface-variant) 60%, transparent);
+  --glass-bg: var(--m3-surface-container-low);
+  --glass-bg-soft: var(--m3-surface-container);
+  --glass-bg-strong: var(--m3-surface-container-high);
+  --glass-shadow: var(--m3-elev-1);
+  --glass-shadow-control: var(--m3-elev-1);
+  --glass-shadow-well: inset 0 -1px 0 var(--m3-outline);
+  --fill-secondary: var(--m3-secondary-container);
+  --chip-bg: transparent;
+  --divider: var(--m3-outline-variant);
+  --surface-flat: var(--m3-surface);
+  --bg-flat: var(--m3-surface-container);
+}
+
+/* 角色分配 + 应用令牌映射（深色） */
+[data-skin='material']:is([data-material='you'], [data-material='expressive'])[data-theme='dark'] {
+  --m3-primary: var(--m3-pal-p80);
+  --m3-on-primary: var(--m3-pal-p20);
+  --m3-primary-container: var(--m3-pal-p30);
+  --m3-on-primary-container: var(--m3-pal-p90);
+  --m3-secondary-container: color-mix(in srgb, var(--m3-pal-n17) 76%, var(--m3-pal-p40) 24%);
+  --m3-on-secondary-container: color-mix(in srgb, #ffffff 66%, var(--m3-pal-p40) 34%);
+  --m3-surface: var(--m3-pal-n06);
+  --m3-on-surface: var(--m3-pal-n90);
+  --m3-on-surface-variant: var(--m3-pal-nv80);
+  --m3-surface-container-lowest: var(--m3-pal-n04);
+  --m3-surface-container-low: var(--m3-pal-n10);
+  --m3-surface-container: var(--m3-pal-n12);
+  --m3-surface-container-high: var(--m3-pal-n17);
+  --m3-surface-container-highest: var(--m3-pal-n17);
+  --m3-outline: var(--m3-pal-nv50);
+  --m3-outline-variant: var(--m3-pal-nv30);
+  --scrim: rgba(0, 0, 0, 0.6);
+}
+
+/* baseline 的角色 → 应用令牌映射（与上面同一套，角色值来自官方静态色板） */
+[data-skin='material'][data-material='baseline'] {
+  --text-primary: var(--m3-on-surface);
+  --text-secondary: var(--m3-on-surface-variant);
+  --text-tertiary: color-mix(in srgb, var(--m3-on-surface-variant) 60%, transparent);
+  --glass-bg: var(--m3-surface-container-low);
+  --glass-bg-soft: var(--m3-surface-container);
+  --glass-bg-strong: var(--m3-surface-container-high);
+  --glass-shadow: var(--m3-elev-1);
+  --glass-shadow-control: var(--m3-elev-1);
+  --glass-shadow-well: inset 0 -1px 0 var(--m3-outline);
+  --fill-secondary: var(--m3-secondary-container);
+  --chip-bg: transparent;
+  --divider: var(--m3-outline-variant);
+  --surface-flat: var(--m3-surface);
+  --bg-flat: var(--m3-surface-container);
+}
+
+/* ---------- 风格 3：expressive（M3 Expressive） ----------
+   与 you 同色调板、同角色，四处差异：
+     1) 容器色更浓：二次 / 表面阶的种子色占比整体提高；
+     2) 形状阶整体上移一档（Expressive 的「新形状」明显更圆更大）；
+     3) 强调排版：emphasized type 更粗、字距收紧，标题再大一级；
+     4) 层级影更重、动效走强调缓动 + 更长时长。
+   因为共用上面那份角色定义，这里只覆盖差异项即可。 */
+[data-skin='material'][data-material='expressive'] {
+  --m3-secondary-container: color-mix(in srgb, var(--m3-pal-n90) 64%, var(--m3-pal-p40) 36%);
+  --m3-on-secondary-container: color-mix(in srgb, #16121c 46%, var(--m3-pal-p40) 54%);
+  --m3-surface-container-low: color-mix(in srgb, var(--m3-pal-n96) 92%, var(--m3-pal-p40) 8%);
+  --m3-surface-container: color-mix(in srgb, var(--m3-pal-n94) 86%, var(--m3-pal-p40) 14%);
+  --m3-surface-container-high: color-mix(in srgb, var(--m3-pal-n92) 80%, var(--m3-pal-p40) 20%);
+  --m3-outline: color-mix(in srgb, var(--m3-pal-nv50) 70%, var(--m3-pal-p40) 30%);
+  --glass-shadow: var(--m3-elev-2);
+  --glass-shadow-control: var(--m3-elev-2);
+}
+[data-skin='material'][data-material='expressive'][data-theme='dark'] {
+  --m3-secondary-container: color-mix(in srgb, var(--m3-pal-n17) 62%, var(--m3-pal-p40) 38%);
+  --m3-on-secondary-container: color-mix(in srgb, #ffffff 60%, var(--m3-pal-p40) 40%);
+  --m3-surface-container-low: color-mix(in srgb, var(--m3-pal-n10) 88%, var(--m3-pal-p40) 12%);
+  --m3-surface-container: color-mix(in srgb, var(--m3-pal-n12) 82%, var(--m3-pal-p40) 18%);
+  --m3-surface-container-high: color-mix(in srgb, var(--m3-pal-n17) 76%, var(--m3-pal-p40) 24%);
+  --glass-shadow: var(--m3-elev-2);
+}
+
+/* 形状阶整体上移一档 */
+[data-skin='material'][data-material='expressive'] .glass {
+  border-radius: var(--m3-shape-xl);
+}
+[data-skin='material'][data-material='expressive'] .glass-soft {
+  border-radius: var(--m3-shape-lg);
+}
+[data-skin='material'][data-material='expressive'] .glass-strong {
+  border-radius: var(--m3-shape-xl);
+}
+[data-skin='material'][data-material='expressive'] .input:not(.select-seamless) {
+  border-radius: var(--m3-shape-sm) var(--m3-shape-sm) 0 0;
+}
+/* 强调排版 */
+[data-skin='material'][data-material='expressive'] .display {
+  font-size: 40px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+[data-skin='material'][data-material='expressive'] .title {
+  font-size: 24px;
+  font-weight: 600;
+  letter-spacing: -0.005em;
+}
+[data-skin='material'][data-material='expressive'] .headline {
+  font-size: 18px;
+  font-weight: 600;
+  letter-spacing: 0;
+}
+[data-skin='material'][data-material='expressive'] .caption {
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+[data-skin='material'][data-material='expressive'] .btn {
+  font-weight: 600;
+  height: 44px;
+}
+
+/* ---------- 组件（三套风格共用结构，只吃上面的 color role / shape） ---------- */
+
+/* 实色表面：去掉磨砂、顶部高光与碟面（那两个伪元素是玻璃皮肤用的） */
+[data-skin='material'] :is(.glass, .glass-strong, .glass-soft) {
+  backdrop-filter: none;
+}
+[data-skin='material'] :is(.glass, .glass-strong, .glass-soft)::before,
+[data-skin='material'] :is(.glass, .glass-strong, .glass-soft)::after {
+  display: none;
+}
+/* 鼠标光晕是玻璃皮肤的趣味件，Material 里没有，关掉 */
+[data-skin='material'] .cursor-glow {
+  display: none;
+}
+
+/* 形状阶：卡片 16dp、行内 12dp、浮层 20dp、选中态与按钮全胶囊 */
+[data-skin='material'] .glass {
+  border-radius: var(--m3-shape-lg);
+}
+[data-skin='material'] .glass-soft {
+  border-radius: var(--m3-shape-md);
+}
+[data-skin='material'] .glass-strong {
+  border-radius: var(--m3-shape-xl);
+}
+[data-skin='material'] .btn,
+[data-skin='material'] .chip,
+[data-skin='material'] .mica,
+[data-skin='material'] .mica-well,
+[data-skin='material'] .mica-well > button,
+[data-skin='material'] .mica-well .mica {
+  border-radius: var(--m3-shape-full);
+}
+
+/* ---- 填充输入框（Filled text field）----
+   M3 最有辨识度的控件之一：上圆角 4dp、底部齐平、底部一条指示线，
+   聚焦时指示线加粗成主题色；没有四周描边，也不做内凹阴影。 */
+[data-skin='material'] .input:not(.select-seamless) {
+  height: 46px;
+  padding: 0 14px;
+  border: 0;
+  border-bottom: 1px solid var(--m3-outline);
+  border-radius: var(--m3-shape-xs) var(--m3-shape-xs) 0 0;
+  background-color: var(--m3-surface-container-highest);
+  background-image: none;
+  box-shadow: none;
+  backdrop-filter: none;
+}
+[data-skin='material'] .input:not(.select-seamless)::placeholder {
+  color: var(--m3-on-surface-variant);
+}
+[data-skin='material'] .input:not(.select-seamless):focus {
+  border-bottom: 2px solid var(--m3-primary);
+  box-shadow: none;
+}
+[data-skin='material'] textarea.input,
+[data-skin='material'] .input.select-2line:not(.select-seamless) {
+  height: auto;
+  min-height: 46px;
+  padding: 13px 14px;
+  border-radius: var(--m3-shape-xs) var(--m3-shape-xs) 0 0;
+}
+/* 行内无缝选择器：不要填充底，只留一条与输入框同款的底部指示线 */
+[data-skin='material'] .glass-soft .select-seamless {
+  background-color: transparent;
+  border: 0;
+  border-bottom: 1px solid var(--m3-outline);
+  border-radius: var(--m3-shape-xs) var(--m3-shape-xs) 0 0;
+}
+[data-skin='material'] .glass-soft .select-seamless:hover {
+  background-color: color-mix(in srgb, var(--m3-primary) 8%, transparent);
+}
+[data-skin='material'] .glass-soft .select-seamless:focus-visible {
+  border-bottom: 2px solid var(--m3-primary);
+  box-shadow: none;
+}
+
+/* ---- 外描边分段按钮（Segmented button）----
+   M3 的分段不是「凹槽里放一颗滑块」，而是一排共用外描边的按钮，选中项填
+   secondary container。因此这里去掉 .mica-well 的底色，改成描边。
+   M3 的分段按钮有「带竖线分隔」与「纯分组」两种形态，这里取后者：相邻选项之间
+   不画任何线条，靠「未选中透明 / 选中填色」这一对比本身来区分，视觉更干净，
+   也不会因为分隔线顺着圆角走而出现弧线。 */
+[data-skin='material'] .mica-well {
+  background-color: transparent;
+  background-image: none;
+  border: 1px solid var(--m3-outline);
+  box-shadow: none;
+  backdrop-filter: none;
+}
+/* 选中的那一颗 = secondary container（M3 里所有「选中表面」都是这个角色） */
+[data-skin='material'] .mica-well .mica {
+  background-color: var(--m3-secondary-container);
+  background-image: none;
+  border-color: transparent;
+  box-shadow: none;
+}
+
+/* ---- 色调按钮 / 描边 chip / 侧栏选中项 ---- */
+[data-skin='material'] .mica {
+  background-color: var(--m3-secondary-container);
+  background-image: none;
+  border-color: transparent;
+  box-shadow: none;
+}
+/* 色调按钮（M3 filled tonal button）：容器底 + 容器上的文字色 */
+[data-skin='material'] .btn-secondary {
+  background-color: var(--m3-secondary-container);
+  background-image: none;
+  border-color: transparent;
+  box-shadow: none;
+  color: var(--m3-on-secondary-container);
+}
+/* 描边 chip（M3 outlined chip）：透明底 + 1px 描边 */
+[data-skin='material'] .chip {
+  background-color: transparent;
+  background-image: none;
+  border: 1px solid var(--m3-outline);
+  box-shadow: none;
+  color: var(--m3-on-surface-variant);
+}
+
+/* ---- 按钮排版（M3 label-large）---- */
+[data-skin='material'] .btn {
+  height: 40px;
+  padding: 0 22px;
+  font-weight: 500;
+  letter-spacing: 0.008em;
+  /* M3 不用内高光表达玻璃，按压也不用 scale */
+  box-shadow: none;
+  transform: none;
+}
+/* state layer：悬停 / 按下叠一层 8% / 12% 油墨（不会顶掉填充色） */
+[data-skin='material'] .btn:hover:not(:disabled),
+[data-skin='material'] .btn-secondary:hover:not(:disabled),
+[data-skin='material'] .chip:hover,
+[data-skin='material'] .mica-well > button:hover {
+  background-image: var(--m3-state-hover);
+}
+[data-skin='material'] .btn:active:not(:disabled),
+[data-skin='material'] .btn-secondary:active:not(:disabled),
+[data-skin='material'] .chip:active {
+  background-image: var(--m3-state-press);
+}
+
+/* ---- 动效（Motion）：M3 标准缓动 ---- */
+[data-skin='material'] :is(.btn, .chip, .input, .mica-well > button) {
+  transition-duration: var(--m3-dur-short);
+  transition-timing-function: var(--m3-ease-standard);
+}
+[data-skin='material'][data-material='expressive'] :is(.btn, .chip, .input, .mica-well > button) {
+  transition-duration: var(--m3-dur-medium);
+  transition-timing-function: var(--m3-ease-emphasized);
+}
+
+/* ---- 排版（M3 type scale：5 角色 × 3 尺寸）----
+   与默认皮肤的区别是字重与字距：M3 的标题用 400 / 500 而不是 600，
+   并且不做负追踪（-0.02em 这类是 iOS 的做法）。 */
+[data-skin='material'] .display {
+  font-size: 36px;
+  font-weight: 400;
+  letter-spacing: 0;
+}
+[data-skin='material'] .title {
+  font-size: 22px;
+  font-weight: 400;
+  letter-spacing: 0;
+}
+[data-skin='material'] .headline {
+  font-size: 16px;
+  font-weight: 500;
+  letter-spacing: 0.01em;
+}
+[data-skin='material'] .caption {
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.03em;
+}
+/* 完整的 M3 type scale（按官方数值，供后续界面直接用对应角色） */
+[data-skin='material'] .m3-display-large {
+  font-size: 57px;
+  line-height: 64px;
+  font-weight: 400;
+  letter-spacing: -0.25px;
+}
+[data-skin='material'] .m3-display-medium {
+  font-size: 45px;
+  line-height: 52px;
+  font-weight: 400;
+}
+[data-skin='material'] .m3-display-small {
+  font-size: 36px;
+  line-height: 44px;
+  font-weight: 400;
+}
+[data-skin='material'] .m3-headline-large {
+  font-size: 32px;
+  line-height: 40px;
+  font-weight: 400;
+}
+[data-skin='material'] .m3-headline-medium {
+  font-size: 28px;
+  line-height: 36px;
+  font-weight: 400;
+}
+[data-skin='material'] .m3-headline-small {
+  font-size: 24px;
+  line-height: 32px;
+  font-weight: 400;
+}
+[data-skin='material'] .m3-title-large {
+  font-size: 22px;
+  line-height: 28px;
+  font-weight: 400;
+}
+[data-skin='material'] .m3-title-medium {
+  font-size: 16px;
+  line-height: 24px;
+  font-weight: 500;
+  letter-spacing: 0.15px;
+}
+[data-skin='material'] .m3-title-small {
+  font-size: 14px;
+  line-height: 20px;
+  font-weight: 500;
+  letter-spacing: 0.1px;
+}
+[data-skin='material'] .m3-body-large {
+  font-size: 16px;
+  line-height: 24px;
+  font-weight: 400;
+  letter-spacing: 0.5px;
+}
+[data-skin='material'] .m3-body-medium {
+  font-size: 14px;
+  line-height: 20px;
+  font-weight: 400;
+  letter-spacing: 0.25px;
+}
+[data-skin='material'] .m3-body-small {
+  font-size: 12px;
+  line-height: 16px;
+  font-weight: 400;
+  letter-spacing: 0.4px;
+}
+[data-skin='material'] .m3-label-large {
+  font-size: 14px;
+  line-height: 20px;
+  font-weight: 500;
+  letter-spacing: 0.1px;
+}
+[data-skin='material'] .m3-label-medium {
+  font-size: 12px;
+  line-height: 16px;
+  font-weight: 500;
+  letter-spacing: 0.5px;
+}
+[data-skin='material'] .m3-label-small {
+  font-size: 11px;
+  line-height: 16px;
+  font-weight: 500;
+  letter-spacing: 0.5px;
+}
+/* Expressive 的强调排版（emphasized type）：同尺寸但更粗、字距收紧 */
+[data-skin='material'][data-material='expressive'] .m3-display-large,
+[data-skin='material'][data-material='expressive'] .m3-display-medium,
+[data-skin='material'][data-material='expressive'] .m3-display-small,
+[data-skin='material'][data-material='expressive'] .m3-headline-large,
+[data-skin='material'][data-material='expressive'] .m3-headline-medium,
+[data-skin='material'][data-material='expressive'] .m3-headline-small,
+[data-skin='material'][data-material='expressive'] .m3-title-large {
+  font-weight: 600;
+  letter-spacing: -0.2px;
+}
+
+/* ---- 背景：M3 规范是「实色 surface」----
+   M3 的色彩系统里 background 角色就是 surface 的实色（M3 起 background 已并入 surface）：
+   没有渐变、没有漂移光斑，也不用自定义壁纸 —— 层级靠 surface 色阶，不靠图片。
+   做法与 Win10 皮肤用自己的壁纸一致：M3 下背景预设（data-bg）与壁纸（data-wallpaper）
+   都不再生效。
+   选择器带上 :root 与 data-wallpaper 是为盖过上面那条为抬优先级而写的壁纸规则
+   （`:root[data-theme][data-skin][data-wallpaper='on'] .app-background`）。 */
+:root[data-skin='material'] .app-background,
+:root[data-skin='material'][data-theme][data-wallpaper='on'] .app-background {
+  background: var(--m3-surface);
+  background-image: none;
+}
+:root[data-skin='material'][data-theme][data-wallpaper='on'] .app-background::before {
+  display: none;
+}
+/* 装饰光斑一并去掉：M3 是扁平配色，不靠彩色雾团造氛围 */
+:root[data-skin='material'] .app-background .blob {
+  display: none;
+}
+
+/* ==================================================================== */
+/*  实验性皮肤 4：GitHub（Primer 设计系统）                             */
+/*                                                                    */
+/*  Primer 与 M3 的做法一致：结构固定、换 theme 不改组件。差别在配色   */
+/*  组织——Primer 没有「角色」抽象，而是按**配色方案**成组发布：        */
+/*    · light        日间                                             */
+/*    · dark         夜间                                             */
+/*    · dimmed       Dark dimmed：低对比夜间（GitHub 的招牌子主题）   */
+/*    · light-hc     Light High Contrast                             */
+/*    · dark-hc      Dark High Contrast                              */
+/*  五套方案的组件结构完全一致，只有中性阶 / 强调色 / 描边强度不同。      */
+/*                                                                    */
+/*  实现要点：                                                          */
+/*    · 五套令牌各挂在一个属性值下（[data-gh-theme='…']），因此「应用   */
+/*      哪一套」= 改这一个属性。设置页的悬停预览写的也是它，所以预览     */
+/*      不需要任何额外的预览专用 CSS，也不会和应用态规则打架。          */
+/*    · `system` 不在这五套里：它由渲染层解析成 light / dark（跟随外观  */
+/*      里的主题设置）再写进 data-gh-theme。其余子主题**不跟随**明暗    */
+/*      ——Primer 官方就允许暗色子主题配日间父主题，反之亦然。          */
+/*    · 高对比两档按 Primer 无障碍规范处理：描边加粗到 2px 且取实边、  */
+/*      阴影基本关掉、正文与交互元素目标对比度 ≥ 7:1。                  */
+/*    · 本皮肤**接管** --fill-primary：Primer 的 accent.emphasis 就是   */
+/*      它的品牌蓝（#0969da / #4493f8 等），不跟随用户的自定义主题色。  */
+/*      用户主题色仍以 --accent-user 的形式留在文档里，可在设置页看到。 */
+/* ==================================================================== */
+
+/* ---------- 五套配色方案（Primer functional themes） ---------- */
+
+/* 配色 1：Light（日间主题） */
+[data-gh-theme='light'] {
+  --gh-canvas-default: #ffffff;
+  --gh-canvas-subtle: #f6f8fa;
+  --gh-canvas-inset: #f6f8fa;
+  --gh-canvas-overlay: #ffffff;
+  --gh-border-default: #d1d9e0;
+  --gh-border-muted: #d8dee4;
+  --gh-fg-default: #1f2328;
+  --gh-fg-muted: #59636e;
+  --gh-fg-subtle: #6e7781;
+  --gh-accent-fg: #0969da;
+  --gh-accent-emphasis: #0969da;
+  --gh-accent-emphasis-hover: #0860ca;
+  --gh-accent-subtle: #ddf4ff;
+  --gh-accent-muted: rgba(9, 105, 218, 0.1);
+  --gh-neutral-muted: rgba(175, 184, 195, 0.2);
+  --gh-neutral-emphasis: #59636e;
+  --gh-success-fg: #1a7f37;
+  --gh-danger-fg: #cf222e;
+  --gh-attention-fg: #9a6700;
+  --gh-done-fg: #8250df;
+  --gh-shadow-rest: 0 1px 0 rgba(27, 31, 36, 0.04);
+  --gh-shadow-small: 0 1px 3px rgba(27, 31, 36, 0.1);
+  --gh-shadow-overlay: 0 8px 24px rgba(27, 31, 36, 0.15);
+  --gh-border-width: 1px;
+  --gh-scrim: rgba(27, 31, 36, 0.4);
+  --gh-on-emphasis: #ffffff;
+}
+
+/* 配色 2：Dark（夜间主题） */
+[data-gh-theme='dark'] {
+  --gh-canvas-default: #0d1117;
+  --gh-canvas-subtle: #161b22;
+  --gh-canvas-inset: #010409;
+  --gh-canvas-overlay: #161b22;
+  --gh-border-default: #3d444d;
+  --gh-border-muted: #262c36;
+  --gh-fg-default: #e6edf3;
+  --gh-fg-muted: #7d8590;
+  --gh-fg-subtle: #6e7681;
+  --gh-accent-fg: #4493f8;
+  --gh-accent-emphasis: #1f6feb;
+  --gh-accent-emphasis-hover: #1158c7;
+  --gh-accent-subtle: #121d2f;
+  --gh-accent-muted: rgba(68, 147, 248, 0.1);
+  --gh-neutral-muted: rgba(110, 118, 129, 0.4);
+  --gh-neutral-emphasis: #6e7681;
+  --gh-success-fg: #3fb950;
+  --gh-danger-fg: #f85149;
+  --gh-attention-fg: #d29922;
+  --gh-done-fg: #ab7df8;
+  --gh-shadow-rest: 0 1px 0 rgba(1, 4, 9, 0.4);
+  --gh-shadow-small: 0 1px 3px rgba(1, 4, 9, 0.4);
+  --gh-shadow-overlay: 0 8px 24px rgba(1, 4, 9, 0.8);
+  --gh-border-width: 1px;
+  --gh-scrim: rgba(1, 4, 9, 0.6);
+  --gh-on-emphasis: #ffffff;
+}
+
+/* 配色 3：Dark dimmed（低对比夜间，GitHub 的招牌观感）
+   Primer 明确说明这档「刻意追求低对比」：中性阶整体抬高一档、强调色更亮，
+   在 OLED 上更省电、在长时间阅读下更柔和。 */
+[data-gh-theme='dimmed'] {
+  --gh-canvas-default: #22272e;
+  --gh-canvas-subtle: #2d333b;
+  --gh-canvas-inset: #1c2128;
+  --gh-canvas-overlay: #2d333b;
+  --gh-border-default: #444c56;
+  --gh-border-muted: #373e47;
+  --gh-fg-default: #adbac7;
+  --gh-fg-muted: #768390;
+  --gh-fg-subtle: #636c75;
+  --gh-accent-fg: #539bf5;
+  --gh-accent-emphasis: #316dca;
+  --gh-accent-emphasis-hover: #2b61b4;
+  --gh-accent-subtle: #1c2431;
+  --gh-accent-muted: rgba(83, 155, 245, 0.1);
+  --gh-neutral-muted: rgba(99, 108, 117, 0.4);
+  --gh-neutral-emphasis: #636c75;
+  --gh-success-fg: #57ab5a;
+  --gh-danger-fg: #e5534b;
+  --gh-attention-fg: #c69026;
+  --gh-done-fg: #986ee2;
+  --gh-shadow-rest: 0 1px 0 rgba(1, 4, 9, 0.5);
+  --gh-shadow-small: 0 1px 3px rgba(1, 4, 9, 0.5);
+  --gh-shadow-overlay: 0 8px 24px rgba(1, 4, 9, 0.8);
+  --gh-border-width: 1px;
+  --gh-scrim: rgba(1, 4, 9, 0.6);
+  --gh-on-emphasis: #ffffff;
+}
+
+/* 配色 4：Light High Contrast
+   Primer 的无障碍规范：背景走中性阶 2–7、描边走阶 10、文字走阶 11–13，
+   目标是正文与交互元素 ≥ 7:1。因此这档描边加粗成实边、阴影基本关掉 ——
+   低对比的柔影在高对比档里反而会干扰读边。 */
+[data-gh-theme='light-hc'] {
+  --gh-canvas-default: #ffffff;
+  --gh-canvas-subtle: #ffffff;
+  --gh-canvas-inset: #ffffff;
+  --gh-canvas-overlay: #ffffff;
+  --gh-border-default: #20252c;
+  --gh-border-muted: #20252c;
+  --gh-fg-default: #0e1116;
+  --gh-fg-muted: #0e1116;
+  --gh-fg-subtle: #57606a;
+  --gh-accent-fg: #0349b4;
+  --gh-accent-emphasis: #0349b4;
+  --gh-accent-emphasis-hover: #033da8;
+  --gh-accent-subtle: #cfe8ff;
+  --gh-accent-muted: rgba(3, 73, 180, 0.12);
+  --gh-neutral-muted: rgba(1, 4, 9, 0.08);
+  --gh-neutral-emphasis: #0e1116;
+  --gh-success-fg: #116329;
+  --gh-danger-fg: #a40e26;
+  --gh-attention-fg: #7d4e00;
+  --gh-done-fg: #6639ba;
+  --gh-shadow-rest: none;
+  --gh-shadow-small: 0 1px 3px rgba(1, 4, 9, 0.2);
+  --gh-shadow-overlay: 0 8px 24px rgba(1, 4, 9, 0.3);
+  --gh-border-width: 2px;
+  --gh-scrim: rgba(1, 4, 9, 0.5);
+  --gh-on-emphasis: #ffffff;
+}
+
+/* 配色 5：Dark High Contrast（同上，反相） */
+[data-gh-theme='dark-hc'] {
+  --gh-canvas-default: #0a0c10;
+  --gh-canvas-subtle: #010409;
+  --gh-canvas-inset: #0a0c10;
+  --gh-canvas-overlay: #0a0c10;
+  --gh-border-default: #7a828e;
+  --gh-border-muted: #7a828e;
+  --gh-fg-default: #f0f3f6;
+  --gh-fg-muted: #f0f3f6;
+  --gh-fg-subtle: #9ea7b3;
+  --gh-accent-fg: #71b7ff;
+  --gh-accent-emphasis: #71b7ff;
+  --gh-accent-emphasis-hover: #91c0ff;
+  --gh-accent-subtle: #0c2d6d;
+  --gh-accent-muted: rgba(113, 183, 255, 0.14);
+  --gh-neutral-muted: rgba(240, 243, 246, 0.12);
+  --gh-neutral-emphasis: #f0f3f6;
+  --gh-success-fg: #4ac26b;
+  --gh-danger-fg: #ff8182;
+  --gh-attention-fg: #f0b72f;
+  --gh-done-fg: #dbb7ff;
+  --gh-shadow-rest: none;
+  --gh-shadow-small: 0 1px 3px rgba(1, 4, 9, 0.6);
+  --gh-shadow-overlay: 0 8px 24px rgba(1, 4, 9, 0.9);
+  --gh-border-width: 2px;
+  --gh-scrim: rgba(1, 4, 9, 0.7);
+  --gh-on-emphasis: #0a0c10;
+}
+
+/* ---------- 应用令牌映射（--gh-* → 启动器通用令牌） ---------- */
+/*   组件只吃通用令牌，不直接吃 Primer 色值 —— 与 M3 的 color role 同一思路。 */
+
+[data-skin='github'] {
+  /* 形状：Primer 的控件圆角是 6px（GitHub 标志性的小圆角），卡片 12px。 */
+  --gh-radius-control: 6px;
+  --gh-radius-medium: 12px;
+  --gh-radius-full: 999px;
+
+  /* 字体：沿用启动器默认栈并补上 Primer 里的几个面。
+     刻意不加 -apple-system / BlinkMacSystemFont（macOS 专有，见 body 上的约定）。 */
+  --text-primary: var(--gh-fg-default);
+  --text-secondary: var(--gh-fg-muted);
+  --text-tertiary: var(--gh-fg-subtle);
+
+  /* 实色表面：Primer 没有磨砂、没有受光渐变、没有高光伪元素。 */
+  --glass-bg: var(--gh-canvas-default);
+  --glass-bg-strong: var(--gh-canvas-overlay);
+  --glass-bg-soft: var(--gh-canvas-subtle);
+  --glass-border: var(--gh-border-default);
+  --glass-highlight: transparent;
+  --glass-shadow: var(--gh-shadow-rest);
+  --surface-shade: none;
+  --surface-shade-inset: none;
+  --control-raised-blur: none;
+  --control-well-blur: none;
+  --control-hover-brightness: 1;
+
+  /* Primer 的描边式控件：凸起用 shadow-small，凹陷用一条 border.default 实边 */
+  --glass-shadow-control: 0 0 0 1px var(--gh-border-default), var(--gh-shadow-small);
+  --glass-shadow-well: inset 0 0 0 1px var(--gh-border-default);
+
+  /* 接管强调色：Primer 的品牌蓝，不跟随用户的自定义主题色 */
+  --fill-primary: var(--gh-accent-emphasis);
+  --fill-primary-hover: var(--gh-accent-emphasis-hover);
+  --fill-secondary: var(--gh-neutral-muted);
+  --fill-secondary-hover: var(--gh-neutral-emphasis);
+  --fill-danger: var(--gh-danger-fg);
+  --fill-success: var(--gh-success-fg);
+
+  --chip-bg: var(--gh-accent-subtle);
+  --divider: var(--gh-border-muted);
+  --scrim: var(--gh-scrim);
+  --surface-flat: var(--gh-canvas-default);
+  --bg-flat: var(--gh-canvas-subtle);
+  --wallpaper-scrim: none;
+}
+
+/* 子主题可以与「外观 → 主题」的明暗不一致（Primer 就是这个行为），
+   所以 color-scheme（滚动条、原生控件、表单默认态）要跟着实际配色走，
+   不能继续吃 data-theme 推导出来的那个。 */
+[data-skin='github']:is([data-gh-theme='light'], [data-gh-theme='light-hc']) {
+  color-scheme: light;
+}
+[data-skin='github']:is([data-gh-theme='dark'], [data-gh-theme='dimmed'], [data-gh-theme='dark-hc']) {
+  color-scheme: dark;
+}
+
+/* Primer 的正文栈：在启动器默认栈之后补 Noto Sans / Helvetica / Arial */
+[data-skin='github'] body {
+  font-family: 'Noto Sans', Helvetica, Arial, 'Segoe UI Variable', 'Segoe UI Variable Text', 'Segoe UI',
+    'Microsoft YaHei UI', 'Microsoft YaHei', system-ui, sans-serif;
+}
+
+/* ---------- 组件（五套配色共用结构，只吃 --gh-*） ---------- */
+
+/* 实色表面：关掉磨砂、受光渐变与玻璃皮肤那两个伪元素 */
+[data-skin='github'] :is(.glass, .glass-strong, .glass-soft) {
+  backdrop-filter: none;
+}
+[data-skin='github'] :is(.glass, .glass-strong, .glass-soft)::before,
+[data-skin='github'] :is(.glass, .glass-strong, .glass-soft)::after {
+  display: none;
+}
+/* 鼠标光晕是玻璃皮肤的趣味件，Primer 里没有 */
+[data-skin='github'] .cursor-glow {
+  display: none;
+}
+
+/* 形状阶：卡片 12px、浮层 12px；控件一律 6px。
+   .chip 刻意不放进下面那条：Primer 的 Label 是全圆角药丸（见后面的 chip 规则），
+   而 :is() 取的是参数里最高的特异性 —— 其中 `.mica-well > button` 这一项把整条
+   抬到 (0,2,1)，会反过来压过后面那条 (0,2,0) 的单类 chip 规则。 */
+[data-skin='github'] .glass {
+  border-radius: var(--gh-radius-medium);
+}
+[data-skin='github'] .glass-strong {
+  border-radius: var(--gh-radius-medium);
+}
+[data-skin='github'] .glass-soft {
+  border-radius: var(--gh-radius-control);
+}
+[data-skin='github'] :is(.btn, .mica, .mica-well, .mica-well > button, .input) {
+  border-radius: var(--gh-radius-control);
+}
+/* 描边宽度也走令牌：高对比两档要的是「实打实的边界」而不是弱分隔线，
+   而 .glass 基础样式里写死了 1px，这里必须显式改写才能吃到 --gh-border-width。 */
+[data-skin='github'] :is(.glass, .glass-strong, .glass-soft) {
+  border: var(--gh-border-width) solid var(--gh-border-default);
+}
+
+/* 浮层（弹窗 / 下拉 / 右键菜单）用 Primer 的 overlay 阴影抬起来 */
+[data-skin='github'] .glass-strong {
+  box-shadow: var(--gh-shadow-overlay);
+}
+
+/* ---- 按钮（Button：描边 + 强调色实底）----
+   Primer 的按钮即使有底色也带 1px 描边，按下/悬停靠换底色而不是缩放。 */
+[data-skin='github'] .btn {
+  height: 32px;
+  padding: 0 12px;
+  font-size: 14px;
+  font-weight: 500;
+  letter-spacing: 0;
+  box-shadow: 0 0 0 1px var(--gh-border-default);
+}
+[data-skin='github'] .btn:active {
+  transform: none;
+}
+[data-skin='github'] .btn-primary {
+  background: var(--gh-accent-emphasis);
+  color: var(--gh-on-emphasis);
+  box-shadow: 0 0 0 1px transparent;
+}
+[data-skin='github'] .btn-primary:hover:not(:disabled) {
+  background: var(--gh-accent-emphasis-hover);
+  box-shadow: 0 0 0 1px transparent;
+}
+[data-skin='github'] .btn-secondary {
+  background-color: var(--gh-accent-subtle);
+  background-image: none;
+  color: var(--gh-accent-fg);
+  box-shadow: 0 0 0 1px var(--gh-border-default);
+}
+[data-skin='github'] .btn-secondary:hover:not(:disabled) {
+  background-color: var(--gh-accent-muted);
+  filter: none;
+  box-shadow: 0 0 0 1px var(--gh-border-default);
+}
+[data-skin='github'] .btn-danger {
+  background: var(--gh-danger-fg);
+  color: var(--gh-on-emphasis);
+  box-shadow: 0 0 0 1px transparent;
+}
+
+/* ---- 输入框（TextField：canvas-inset 底 + accent 焦点环）---- */
+[data-skin='github'] .input:not(.select-seamless) {
+  height: 32px;
+  padding: 0 8px;
+  background-color: var(--gh-canvas-inset);
+  background-image: none;
+  border: var(--gh-border-width) solid var(--gh-border-default);
+  box-shadow: none;
+  backdrop-filter: none;
+}
+[data-skin='github'] .input:not(.select-seamless)::placeholder {
+  color: var(--gh-fg-subtle);
+}
+[data-skin='github'] .input:not(.select-seamless):focus {
+  border-color: var(--gh-accent-emphasis);
+  box-shadow: 0 0 0 3px var(--gh-accent-muted);
+}
+[data-skin='github'] textarea.input,
+[data-skin='github'] .input.select-2line:not(.select-seamless) {
+  height: auto;
+  min-height: 32px;
+  padding: 6px 8px;
+}
+[data-skin='github'] .glass-soft .select-seamless {
+  background-color: transparent;
+  background-image: none;
+  border-color: transparent;
+  box-shadow: none;
+}
+[data-skin='github'] .glass-soft .select-seamless:hover {
+  background-color: var(--gh-neutral-muted);
+}
+[data-skin='github'] .glass-soft .select-seamless:focus-visible {
+  box-shadow: 0 0 0 3px var(--gh-accent-muted);
+}
+
+/* ---- 分段 / 按钮组（Button group）----
+   Primer 的按钮组是一排共用外描边的按钮、选中项填 canvas-subtle，
+   相邻之间不画分隔线（同 M3 现在的取法）。 */
+[data-skin='github'] .mica-well {
+  background-color: transparent;
+  background-image: none;
+  border: var(--gh-border-width) solid var(--gh-border-default);
+  box-shadow: none;
+  backdrop-filter: none;
+}
+[data-skin='github'] .mica-well .mica {
+  background-color: var(--gh-canvas-subtle);
+  background-image: none;
+  border-color: transparent;
+  box-shadow: none;
+}
+[data-skin='github'] .mica-well > button:hover {
+  background-color: var(--gh-neutral-muted);
+}
+
+/* ---- chip（Primer Label：accent-subtle 底 + 全圆角）---- */
+[data-skin='github'] .chip {
+  background-color: var(--gh-accent-subtle);
+  background-image: none;
+  border: var(--gh-border-width) solid transparent;
+  box-shadow: none;
+  color: var(--gh-accent-fg);
+  border-radius: var(--gh-radius-full);
+}
+
+/* ---- 焦点环（Primer 的标志性 2px accent 描边）----
+   键盘可达性不能靠 hover 反馈糊弄过去：所有可聚焦元素在 :focus-visible 下
+   都要有明确的外圈。高对比两档用更粗的环。 */
+[data-skin='github'] :is(button, a, input, textarea, select, [tabindex]):focus-visible {
+  outline: 2px solid var(--gh-accent-fg);
+  outline-offset: -1px;
+  border-radius: var(--gh-radius-control);
+}
+
+/* ---- 选中文本 / 滚动条 ---- */
+[data-skin='github'] ::selection {
+  background: var(--gh-accent-muted);
+  color: var(--gh-fg-default);
+}
+[data-skin='github'] ::-webkit-scrollbar-thumb {
+  background: var(--gh-neutral-emphasis);
+  border: 2px solid transparent;
+  background-clip: padding-box;
+  border-radius: 999px;
+}
+[data-skin='github'] ::-webkit-scrollbar-thumb:hover {
+  background: var(--gh-accent-fg);
+  background-clip: padding-box;
+}
+
+/* ---- 排版：Primer 的标题字重偏轻、正文无负追踪 ---- */
+[data-skin='github'] .display {
+  font-size: 32px;
+  font-weight: 400;
+  letter-spacing: 0;
+}
+[data-skin='github'] .title {
+  font-weight: 600;
+  letter-spacing: 0;
+}
+[data-skin='github'] .headline {
+  font-weight: 600;
+  letter-spacing: 0;
+}
+[data-skin='github'] .caption {
+  letter-spacing: 0;
+}
+
+/* ---- 背景：Primer 的画布是实色 ----
+   与 M3 同一处理：背景预设（data-bg）与自定义壁纸在 GitHub 皮肤下都不生效。
+   选择器带上 :root 与 data-wallpaper 才能压过上面那条为抬优先级而写的壁纸规则。 */
+:root[data-skin='github'] .app-background,
+:root[data-skin='github'][data-theme][data-wallpaper='on'] .app-background {
+  background: var(--gh-canvas-default);
+  background-image: none;
+}
+:root[data-skin='github'][data-theme][data-wallpaper='on'] .app-background::before {
+  display: none;
+}
+:root[data-skin='github'] .app-background .blob {
+  display: none;
 }

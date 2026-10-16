@@ -55,17 +55,40 @@ async function completeChain(
 async function refreshMsToken(refreshToken: string): Promise<{ accessToken: string; refreshToken: string }> {
   return netRequest<{ accessToken: string; refreshToken: string }>('auth:refreshToken', {
     clientId: CLIENT_ID,
-    refreshToken
+    refreshToken,
+    // 必须把授权时的 scope 原样带回：MSA 的 refresh token 与 scope 绑定，
+    // 缺 scope 会被微软判 invalid_grant（历史上的「刷新令牌失败」根因）。
+    scope: SCOPE
   })
 }
 
+/**
+ * 按账号 id 串行化的在途刷新。
+ *
+ * MSA 的 refresh token 是**轮换式**的：每次刷新成功都会让旧 token 立即失效。
+ * 而刷新有两个互不感知的入口 —— 启动时（App.tsx 的令牌检查）与启动前
+ * （launch:start 的过期检查）。两者若并发，后到的一方拿着已被轮换掉的旧 token
+ * 去刷新，必然拿到 invalid_grant。因此同一账号只发一次刷新，其余调用复用在途结果。
+ */
+const inFlightRefresh = new Map<string, Promise<MinecraftAccount>>()
+
 /** Refresh an existing account's tokens and return the updated account. */
-export async function refreshAccount(account: MinecraftAccount): Promise<MinecraftAccount> {
+export function refreshAccount(account: MinecraftAccount): Promise<MinecraftAccount> {
   // 防止向微软发送缺失/空 refresh token：老账号或异常数据会在首步就被清晰拒绝，
   // 而不是发无效 token 空跑一轮再抛晦涩错误。
-  if (!account.refreshToken) throw new Error('该账号缺少刷新令牌，请重新登录微软账号')
-  const tokens = await refreshMsToken(account.refreshToken)
-  return completeChain(tokens.accessToken, tokens.refreshToken, account.addedAt)
+  if (!account.refreshToken) return Promise.reject(new Error('该账号缺少刷新令牌，请重新登录微软账号'))
+  const key = account.id
+  const existing = inFlightRefresh.get(key)
+  if (existing) return existing
+  const run = (async (): Promise<MinecraftAccount> => {
+    const tokens = await refreshMsToken(account.refreshToken)
+    return completeChain(tokens.accessToken, tokens.refreshToken, account.addedAt)
+  })().finally(() => {
+    // 只清理自己这一次，避免误删后来者的记录
+    if (inFlightRefresh.get(key) === run) inFlightRefresh.delete(key)
+  })
+  inFlightRefresh.set(key, run)
+  return run
 }
 
 /** A single in-flight device-code login session. */

@@ -7,12 +7,14 @@
  */
 import { useEffect, useRef, useState } from 'react'
 import { AnimatePresence, motion } from 'motion/react'
+import { createPortal } from 'react-dom'
 import type { JavaRuntime, LauncherSettings } from '@shared/types'
 import { useApp } from '../../store'
 import { Button, Icon, Segmented, Select, Switch } from '../../components/ui'
 import { dataUrlToBlobUrl } from '../../wallpaper'
 import { LOCALES } from '../../i18n'
 import { Row } from './parts'
+import { GithubSkinPreview } from './GithubSkinPreview'
 
 /* ================================================================== */
 /* 外观：强调色 / 背景 / 壁纸                                          */
@@ -185,21 +187,18 @@ function WallpaperRow(): JSX.Element {
   )
 }
 
-/** 减少动态效果：超低占用模式下强制开启且禁用（与 store 的联动保持一致）。 */
+/** 减少动态效果：极简模式下强制开启且禁用。 */
 function ReducedMotionRow(): JSX.Element {
   const { settings, updateSettings, t } = useApp()
   return (
     <>
       <Row label={t('settings.row.reducedMotion')}>
         <Switch
-          checked={settings.reducedMotion || settings.mode === 'lowUsage'}
-          disabled={settings.mode === 'lowUsage'}
+          checked={settings.reducedMotion || settings.mode === 'minimal'}
+          disabled={settings.mode === 'minimal'}
           onChange={(v) => void updateSettings({ reducedMotion: v })}
         />
       </Row>
-      {settings.mode === 'lowUsage' && (
-        <p className="caption -mt-1">{t('settings.reducedMotion.lowUsageLocked')}</p>
-      )}
     </>
   )
 }
@@ -208,29 +207,25 @@ function ReducedMotionRow(): JSX.Element {
 /* 运行模式                                                            */
 /* ================================================================== */
 
-/** 运行模式：低配机器离开超低占用前需二次确认。 */
+/** 运行模式：切到极简时自动关闭实验性界面皮肤（极简下皮肤开关被禁用）。 */
 function ModeRow(): JSX.Element {
   const { settings, updateSettings, t } = useApp()
-  const [leaveConfirm, setLeaveConfirm] = useState<'normal' | 'local' | 'minimal' | null>(null)
   return (
     <>
       <Row label={t('settings.row.mode')}>
         <Segmented
           value={settings.mode}
           onChange={(v) => {
-            // 低配机器（老 CPU / 虚拟机 / 内存 < 16GB）默认锁定在超低占用模式：
-            // 想切到其它模式需二次确认，避免误操作把老机器拖卡。
-            if (settings.hardwareLowEnd && settings.mode === 'lowUsage' && v !== 'lowUsage') {
-              setLeaveConfirm(v)
-              return
-            }
-            void updateSettings({ mode: v })
+            const changes: Partial<LauncherSettings> = { mode: v }
+            // 极简模式下界面二维化，不再适用实验性皮肤：切入极简时自动把皮肤关掉，
+            // 避免「开了极简却还生效着 mica / M3 / GitHub」的矛盾状态。
+            if (v === 'minimal' && settings.experimental !== 'off') changes.experimental = 'off'
+            void updateSettings(changes)
           }}
           options={[
             { value: 'normal', label: t('settings.mode.normal') },
             { value: 'local', label: t('settings.mode.local') },
-            { value: 'minimal', label: t('settings.mode.minimal') },
-            { value: 'lowUsage', label: t('settings.mode.lowUsage') }
+            { value: 'minimal', label: t('settings.mode.minimal') }
           ]}
         />
       </Row>
@@ -238,52 +233,86 @@ function ModeRow(): JSX.Element {
         {settings.mode === 'normal' && t('settings.mode.normal.desc')}
         {settings.mode === 'local' && t('settings.mode.local.desc')}
         {settings.mode === 'minimal' && t('settings.mode.minimal.desc')}
-        {settings.mode === 'lowUsage' && t('settings.mode.lowUsage.desc')}
       </p>
-      {settings.hardwareLowEnd && <p className="caption -mt-1">{t('settings.mode.lockedHint')}</p>}
+    </>
+  )
+}
 
-      <AnimatePresence>
-        {leaveConfirm && (
-          <motion.div
-            className="fixed inset-0 z-[115] flex items-center justify-center p-6"
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-          >
-            <div className="absolute inset-0" style={{ background: 'var(--scrim)' }} onClick={() => setLeaveConfirm(null)} />
-            <motion.div
-              className="glass-strong relative z-10 w-full max-w-md rounded-[32px] p-7"
-              initial={{ scale: 0.92, opacity: 0, y: 24 }}
-              animate={{ scale: 1, opacity: 1, y: 0 }}
-              exit={{ scale: 0.94, opacity: 0, y: 16 }}
-              transition={{ type: 'spring', bounce: 0.2, duration: 0.45 }}
-            >
-              <div className="mb-2 flex items-center gap-2">
-                <Icon name="info" size={20} style={{ color: 'var(--fill-danger)' }} />
-                <span className="title">{t('settings.mode.leave.title')}</span>
-              </div>
-              <p className="caption mt-3">{t('settings.mode.leave.desc')}</p>
-              <div className="mt-6 flex items-center gap-2">
-                <Button className="flex-1" onClick={() => setLeaveConfirm(null)}>
-                  {t('settings.common.cancel')}
-                </Button>
-                <Button
-                  variant="primary"
-                  className="flex-1"
-                  icon="check"
-                  onClick={() => {
-                    const next = leaveConfirm
-                    setLeaveConfirm(null)
-                    void updateSettings({ mode: next })
-                  }}
-                >
-                  {t('settings.mode.leave.confirm')}
-                </Button>
-              </div>
-            </motion.div>
-          </motion.div>
-        )}
-      </AnimatePresence>
+/** uapis.cn API KEY：填写后经主进程做连通性测试，通过则加密保存到本机（系统安全存储，不写入设置文件，界面不回显）。
+ *  用于正版玩家信息（头像 / 皮肤 / 3D 模型）与提升翻译配额；留空则使用访客额度。 */
+export function UapisKeyRow(): JSX.Element {
+  const { settings, reloadSettings, t } = useApp()
+  const [key, setKey] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [msg, setMsg] = useState<{ text: string; kind: 'ok' | 'err' } | null>(null)
+
+  const saved = settings.uapisApiKeySet
+
+  const save = async (): Promise<void> => {
+    const k = key.trim()
+    if (!k) {
+      setMsg({ text: t('settings.uapisKey.empty'), kind: 'err' })
+      return
+    }
+    setBusy(true)
+    setMsg(null)
+    try {
+      const result = await window.api.translate.setKey(k)
+      if (result.ok) {
+        await reloadSettings()
+        setKey('')
+        setMsg({ text: t('settings.uapisKey.statusSet'), kind: 'ok' })
+      } else {
+        setMsg({ text: result.message, kind: 'err' })
+      }
+    } catch (err) {
+      setMsg({ text: err instanceof Error ? err.message : String(err), kind: 'err' })
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const remove = async (): Promise<void> => {
+    setBusy(true)
+    setMsg(null)
+    try {
+      const result = await window.api.translate.clearKey()
+      await reloadSettings()
+      setMsg({ text: result.message, kind: 'ok' })
+    } catch (err) {
+      setMsg({ text: err instanceof Error ? err.message : String(err), kind: 'err' })
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <>
+      <Row label={t('settings.row.uapisKey')}>
+        <div className="flex items-center gap-2">
+          <input
+            type="text"
+            value={key}
+            onChange={(e) => setKey(e.target.value)}
+            placeholder={saved ? t('settings.uapisKey.placeholderSet') : t('settings.uapisKey.placeholder')}
+            spellCheck={false}
+            autoComplete="off"
+            className="input w-56 no-drag"
+          />
+          <Button size="sm" disabled={busy || !key.trim()} onClick={save} className="no-drag">
+            {busy ? t('settings.uapisKey.testing') : t('settings.uapisKey.save')}
+          </Button>
+          {saved && (
+            <Button size="sm" variant="ghost" disabled={busy} onClick={remove} className="no-drag">
+              {t('settings.uapisKey.delete')}
+            </Button>
+          )}
+        </div>
+      </Row>
+      <p className="caption -mt-1" style={{ color: msg?.kind === 'err' ? 'var(--fill-danger)' : undefined }}>
+        {msg?.text ?? (saved ? t('settings.uapisKey.statusSet') : t('settings.uapisKey.statusUnset'))}
+      </p>
+      <p className="caption -mt-1 opacity-70">{t('settings.uapisKey.desc')}</p>
     </>
   )
 }
@@ -292,10 +321,10 @@ function ModeRow(): JSX.Element {
 /* 实验性功能                                                          */
 /* ================================================================== */
 
-/** 界面皮肤：三套互斥皮肤（极简 / 超低占用下禁用）+ Win10 桌面模式提示。 */
+/** 界面皮肤：四套互斥皮肤（极简下禁用）+ Win10 桌面模式提示。 */
 function ExperimentalRow(): JSX.Element {
   const { settings, updateSettings, t } = useApp()
-  const flatMode = settings.mode === 'minimal' || settings.mode === 'lowUsage'
+  const flatMode = settings.mode === 'minimal'
   const [win10Notice, setWin10Notice] = useState(false)
   return (
     <>
@@ -311,6 +340,20 @@ function ExperimentalRow(): JSX.Element {
           checked={settings.experimental === 'mac'}
           disabled={flatMode}
           onChange={(v) => void updateSettings({ experimental: v ? 'mac' : 'off' })}
+        />
+      </Row>
+      <Row label={t('settings.row.material')}>
+        <Switch
+          checked={settings.experimental === 'material'}
+          disabled={flatMode}
+          onChange={(v) => void updateSettings({ experimental: v ? 'material' : 'off' })}
+        />
+      </Row>
+      <Row label={t('settings.row.github')}>
+        <Switch
+          checked={settings.experimental === 'github'}
+          disabled={flatMode}
+          onChange={(v) => void updateSettings({ experimental: v ? 'github' : 'off' })}
         />
       </Row>
       <Row label={t('settings.row.win10')}>
@@ -329,50 +372,110 @@ function ExperimentalRow(): JSX.Element {
         {!flatMode && t('settings.exp.mutex')}
         {settings.experimental === 'mica' && t('settings.exp.mica.desc')}
         {settings.experimental === 'mac' && t('settings.exp.mac.desc')}
+        {settings.experimental === 'material' && t('settings.exp.material.desc')}
+        {settings.experimental === 'github' && t('settings.exp.github.desc')}
         {settings.experimental === 'win10' && t('settings.exp.win10.desc')}
       </p>
 
-      <AnimatePresence>
-        {win10Notice && (
-          <motion.div
-            className="fixed inset-0 z-[115] flex items-center justify-center p-6"
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-          >
-            <div className="absolute inset-0" style={{ background: 'var(--scrim)' }} onClick={() => setWin10Notice(false)} />
+      {/* Material Design 3 的风格类型：只有启用 M3 皮肤时才出现。
+          三类风格共用同一套组件与令牌结构，只有取值不同。 */}
+      {settings.experimental === 'material' && (
+        <>
+          <Row label={t('settings.row.materialStyle')}>
+            <Segmented
+              value={settings.materialStyle}
+              onChange={(v) => void updateSettings({ materialStyle: v })}
+              options={[
+                { value: 'baseline', label: t('settings.exp.material.baseline') },
+                { value: 'you', label: t('settings.exp.material.you') },
+                { value: 'expressive', label: t('settings.exp.material.expressive') }
+              ]}
+            />
+          </Row>
+          <p className="caption -mt-1">
+            {settings.materialStyle === 'baseline' && t('settings.exp.material.baseline.desc')}
+            {settings.materialStyle === 'you' && t('settings.exp.material.you.desc')}
+            {settings.materialStyle === 'expressive' && t('settings.exp.material.expressive.desc')}
+          </p>
+        </>
+      )}
+
+      {/* GitHub（Primer）的配色子主题：只有启用 GitHub 皮肤时才出现。
+          五套配色共用同一套组件与令牌结构，只有取值不同 —— 与 M3 同一套路。 */}
+      {settings.experimental === 'github' && (
+        <>
+          <Row label={t('settings.row.githubStyle')}>
+            <Segmented
+              value={settings.githubStyle}
+              onChange={(v) => void updateSettings({ githubStyle: v })}
+              options={[
+                { value: 'system', label: t('settings.exp.github.system') },
+                { value: 'light', label: t('settings.exp.github.light') },
+                { value: 'dark', label: t('settings.exp.github.dark') },
+                { value: 'dimmed', label: t('settings.exp.github.dimmed') },
+                { value: 'light-hc', label: t('settings.exp.github.lightHc') },
+                { value: 'dark-hc', label: t('settings.exp.github.darkHc') }
+              ]}
+              scroll
+            />
+          </Row>
+          <p className="caption -mt-1">
+            {settings.githubStyle === 'system' && t('settings.exp.github.system.desc')}
+            {settings.githubStyle === 'light' && t('settings.exp.github.light.desc')}
+            {settings.githubStyle === 'dark' && t('settings.exp.github.dark.desc')}
+            {settings.githubStyle === 'dimmed' && t('settings.exp.github.dimmed.desc')}
+            {settings.githubStyle === 'light-hc' && t('settings.exp.github.lightHc.desc')}
+            {settings.githubStyle === 'dark-hc' && t('settings.exp.github.darkHc.desc')}
+          </p>
+          <GithubSkinPreview />
+          <p className="caption -mt-1">{t('settings.exp.github.previewHint')}</p>
+        </>
+      )}
+
+      {createPortal(
+        <AnimatePresence>
+          {win10Notice && (
             <motion.div
-              className="glass-strong relative z-10 w-full max-w-md rounded-[32px] p-7"
-              initial={{ scale: 0.92, opacity: 0, y: 24 }}
-              animate={{ scale: 1, opacity: 1, y: 0 }}
-              exit={{ scale: 0.94, opacity: 0, y: 16 }}
-              transition={{ type: 'spring', bounce: 0.2, duration: 0.45 }}
+              className="fixed inset-0 z-[115] flex items-center justify-center p-6"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
             >
-              <div className="mb-2 flex items-center gap-2">
-                <Icon name="info" size={20} style={{ color: 'var(--fill-danger)' }} />
-                <span className="title">{t('settings.win10.title')}</span>
-              </div>
-              <p className="caption mt-3">{t('settings.win10.desc')}</p>
-              <div className="mt-6 flex items-center gap-2">
-                <Button className="flex-1" onClick={() => setWin10Notice(false)}>
-                  {t('settings.common.cancel')}
-                </Button>
-                <Button
-                  variant="primary"
-                  className="flex-1"
-                  icon="check"
-                  onClick={() => {
-                    setWin10Notice(false)
-                    void updateSettings({ experimental: 'win10' })
-                  }}
-                >
-                  {t('settings.win10.confirm')}
-                </Button>
-              </div>
+              <div className="absolute inset-0" style={{ background: 'var(--scrim)' }} onClick={() => setWin10Notice(false)} />
+              <motion.div
+                className="glass-strong relative z-10 w-full max-w-md rounded-[32px] p-7"
+                initial={{ scale: 0.92, opacity: 0, y: 24 }}
+                animate={{ scale: 1, opacity: 1, y: 0 }}
+                exit={{ scale: 0.94, opacity: 0, y: 16 }}
+                transition={{ type: 'spring', bounce: 0.2, duration: 0.45 }}
+              >
+                <div className="mb-2 flex items-center gap-2">
+                  <Icon name="info" size={20} style={{ color: 'var(--fill-danger)' }} />
+                  <span className="title">{t('settings.win10.title')}</span>
+                </div>
+                <p className="caption mt-3">{t('settings.win10.desc')}</p>
+                <div className="mt-6 flex items-center gap-2">
+                  <Button className="flex-1" onClick={() => setWin10Notice(false)}>
+                    {t('settings.common.cancel')}
+                  </Button>
+                  <Button
+                    variant="primary"
+                    className="flex-1"
+                    icon="check"
+                    onClick={() => {
+                      setWin10Notice(false)
+                      void updateSettings({ experimental: 'win10' })
+                    }}
+                  >
+                    {t('settings.win10.confirm')}
+                  </Button>
+                </div>
+              </motion.div>
             </motion.div>
-          </motion.div>
-        )}
-      </AnimatePresence>
+          )}
+        </AnimatePresence>,
+        document.body
+      )}
     </>
   )
 }
@@ -419,47 +522,50 @@ function EnableMultiplayerRow(): JSX.Element {
         {inLobby ? t('settings.exp.multiplayer.inLobby') : t('settings.exp.multiplayer.desc')}
       </p>
 
-      <AnimatePresence>
-        {notice && (
-          <motion.div
-            className="fixed inset-0 z-[115] flex items-center justify-center p-6"
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-          >
-            <div className="absolute inset-0" style={{ background: 'var(--scrim)' }} onClick={() => setNotice(false)} />
+      {createPortal(
+        <AnimatePresence>
+          {notice && (
             <motion.div
-              className="glass-strong relative z-10 w-full max-w-md rounded-[32px] p-7"
-              initial={{ scale: 0.92, opacity: 0, y: 24 }}
-              animate={{ scale: 1, opacity: 1, y: 0 }}
-              exit={{ scale: 0.94, opacity: 0, y: 16 }}
-              transition={{ type: 'spring', bounce: 0.2, duration: 0.45 }}
+              className="fixed inset-0 z-[115] flex items-center justify-center p-6"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
             >
-              <div className="mb-2 flex items-center gap-2">
-                <Icon name="info" size={20} style={{ color: 'var(--fill-danger)' }} />
-                <span className="title">{t('settings.mpNotice.title')}</span>
-              </div>
-              <p className="caption mt-3 selectable leading-relaxed">{t('settings.mpNotice.desc')}</p>
-              <div className="mt-6 flex items-center gap-2">
-                <Button className="flex-1" onClick={() => setNotice(false)}>
-                  {t('settings.common.cancel')}
-                </Button>
-                <Button
-                  variant="primary"
-                  className="flex-1"
-                  icon="check"
-                  onClick={() => {
-                    setNotice(false)
-                    void updateSettings({ enableMultiplayer: true })
-                  }}
-                >
-                  {t('settings.mpNotice.confirm')}
-                </Button>
-              </div>
+              <div className="absolute inset-0" style={{ background: 'var(--scrim)' }} onClick={() => setNotice(false)} />
+              <motion.div
+                className="glass-strong relative z-10 w-full max-w-md rounded-[32px] p-7"
+                initial={{ scale: 0.92, opacity: 0, y: 24 }}
+                animate={{ scale: 1, opacity: 1, y: 0 }}
+                exit={{ scale: 0.94, opacity: 0, y: 16 }}
+                transition={{ type: 'spring', bounce: 0.2, duration: 0.45 }}
+              >
+                <div className="mb-2 flex items-center gap-2">
+                  <Icon name="info" size={20} style={{ color: 'var(--fill-danger)' }} />
+                  <span className="title">{t('settings.mpNotice.title')}</span>
+                </div>
+                <p className="caption mt-3 selectable leading-relaxed">{t('settings.mpNotice.desc')}</p>
+                <div className="mt-6 flex items-center gap-2">
+                  <Button className="flex-1" onClick={() => setNotice(false)}>
+                    {t('settings.common.cancel')}
+                  </Button>
+                  <Button
+                    variant="primary"
+                    className="flex-1"
+                    icon="check"
+                    onClick={() => {
+                      setNotice(false)
+                      void updateSettings({ enableMultiplayer: true })
+                    }}
+                  >
+                    {t('settings.mpNotice.confirm')}
+                  </Button>
+                </div>
+              </motion.div>
             </motion.div>
-          </motion.div>
-        )}
-      </AnimatePresence>
+          )}
+        </AnimatePresence>,
+        document.body
+      )}
     </>
   )
 }
@@ -812,48 +918,51 @@ function DebugKeyRow(): JSX.Element {
         </p>
       )}
 
-      <AnimatePresence>
-        {consentPending && (
-          <motion.div
-            className="fixed inset-0 z-[115] flex items-center justify-center p-6"
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-          >
-            <div className="absolute inset-0" style={{ background: 'var(--scrim)' }} onClick={() => setConsentPending(null)} />
+      {createPortal(
+        <AnimatePresence>
+          {consentPending && (
             <motion.div
-              className="glass-strong relative z-10 w-full max-w-md rounded-[32px] p-7"
-              initial={{ scale: 0.92, opacity: 0, y: 24 }}
-              animate={{ scale: 1, opacity: 1, y: 0 }}
-              exit={{ scale: 0.94, opacity: 0, y: 16 }}
-              transition={{ type: 'spring', bounce: 0.2, duration: 0.45 }}
+              className="fixed inset-0 z-[115] flex items-center justify-center p-6"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
             >
-              <div className="mb-2 flex items-center gap-2">
-                <Icon name="info" size={20} />
-                <span className="title">{t('feedback.collect.title')}</span>
-              </div>
-              <p className="caption mt-3">{t('feedback.collect.desc')}</p>
-              <div className="mt-6 flex items-center gap-2">
-                <Button className="flex-1" onClick={() => setConsentPending(null)}>
-                  {t('feedback.collect.decline')}
-                </Button>
-                <Button
-                  variant="primary"
-                  className="flex-1"
-                  icon="check"
-                  onClick={() => {
-                    const key = consentPending
-                    setConsentPending(null)
-                    if (key) void doUpload(key)
-                  }}
-                >
-                  {t('feedback.collect.accept')}
-                </Button>
-              </div>
+              <div className="absolute inset-0" style={{ background: 'var(--scrim)' }} onClick={() => setConsentPending(null)} />
+              <motion.div
+                className="glass-strong relative z-10 w-full max-w-md rounded-[32px] p-7"
+                initial={{ scale: 0.92, opacity: 0, y: 24 }}
+                animate={{ scale: 1, opacity: 1, y: 0 }}
+                exit={{ scale: 0.94, opacity: 0, y: 16 }}
+                transition={{ type: 'spring', bounce: 0.2, duration: 0.45 }}
+              >
+                <div className="mb-2 flex items-center gap-2">
+                  <Icon name="info" size={20} />
+                  <span className="title">{t('feedback.collect.title')}</span>
+                </div>
+                <p className="caption mt-3">{t('feedback.collect.desc')}</p>
+                <div className="mt-6 flex items-center gap-2">
+                  <Button className="flex-1" onClick={() => setConsentPending(null)}>
+                    {t('feedback.collect.decline')}
+                  </Button>
+                  <Button
+                    variant="primary"
+                    className="flex-1"
+                    icon="check"
+                    onClick={() => {
+                      const key = consentPending
+                      setConsentPending(null)
+                      if (key) void doUpload(key)
+                    }}
+                  >
+                    {t('feedback.collect.accept')}
+                  </Button>
+                </div>
+              </motion.div>
             </motion.div>
-          </motion.div>
-        )}
-      </AnimatePresence>
+          )}
+        </AnimatePresence>,
+        document.body
+      )}
     </>
   )
 }
@@ -894,47 +1003,50 @@ function JavaAutoRow(): JSX.Element {
       </Row>
       {settings.javaAutoDetect && <p className="caption -mt-1">{t('settings.java.autoDetectHint')}</p>}
 
-      <AnimatePresence>
-        {notice && (
-          <motion.div
-            className="fixed inset-0 z-[115] flex items-center justify-center p-6"
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-          >
-            <div className="absolute inset-0" style={{ background: 'var(--scrim)' }} onClick={() => setNotice(false)} />
+      {createPortal(
+        <AnimatePresence>
+          {notice && (
             <motion.div
-              className="glass-strong relative z-10 w-full max-w-md rounded-[32px] p-7"
-              initial={{ scale: 0.92, opacity: 0, y: 24 }}
-              animate={{ scale: 1, opacity: 1, y: 0 }}
-              exit={{ scale: 0.94, opacity: 0, y: 16 }}
-              transition={{ type: 'spring', bounce: 0.2, duration: 0.45 }}
+              className="fixed inset-0 z-[115] flex items-center justify-center p-6"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
             >
-              <div className="mb-2 flex items-center gap-2">
-                <Icon name="info" size={20} style={{ color: 'var(--fill-danger)' }} />
-                <span className="title">{t('settings.java.manual.title')}</span>
-              </div>
-              <p className="caption mt-3">{t('settings.java.manual.desc')}</p>
-              <div className="mt-6 flex items-center gap-2">
-                <Button className="flex-1" onClick={() => setNotice(false)}>
-                  {t('settings.common.cancel')}
-                </Button>
-                <Button
-                  variant="primary"
-                  className="flex-1"
-                  icon="check"
-                  onClick={() => {
-                    setNotice(false)
-                    void updateSettings({ javaAutoDetect: false })
-                  }}
-                >
-                  {t('settings.java.manual.confirm')}
-                </Button>
-              </div>
+              <div className="absolute inset-0" style={{ background: 'var(--scrim)' }} onClick={() => setNotice(false)} />
+              <motion.div
+                className="glass-strong relative z-10 w-full max-w-md rounded-[32px] p-7"
+                initial={{ scale: 0.92, opacity: 0, y: 24 }}
+                animate={{ scale: 1, opacity: 1, y: 0 }}
+                exit={{ scale: 0.94, opacity: 0, y: 16 }}
+                transition={{ type: 'spring', bounce: 0.2, duration: 0.45 }}
+              >
+                <div className="mb-2 flex items-center gap-2">
+                  <Icon name="info" size={20} style={{ color: 'var(--fill-danger)' }} />
+                  <span className="title">{t('settings.java.manual.title')}</span>
+                </div>
+                <p className="caption mt-3">{t('settings.java.manual.desc')}</p>
+                <div className="mt-6 flex items-center gap-2">
+                  <Button className="flex-1" onClick={() => setNotice(false)}>
+                    {t('settings.common.cancel')}
+                  </Button>
+                  <Button
+                    variant="primary"
+                    className="flex-1"
+                    icon="check"
+                    onClick={() => {
+                      setNotice(false)
+                      void updateSettings({ javaAutoDetect: false })
+                    }}
+                  >
+                    {t('settings.java.manual.confirm')}
+                  </Button>
+                </div>
+              </motion.div>
             </motion.div>
-          </motion.div>
-        )}
-      </AnimatePresence>
+          )}
+        </AnimatePresence>,
+        document.body
+      )}
     </>
   )
 }

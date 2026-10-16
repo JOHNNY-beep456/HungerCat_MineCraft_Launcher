@@ -137,7 +137,6 @@ export function Sidebar({
 /** 运行模式徽标的文案（侧栏 / 顶栏共用）。 */
 function modeLabel(mode: string, t: (k: string) => string): string {
   if (mode === 'local') return t('sidebar.localMode')
-  if (mode === 'lowUsage') return t('sidebar.lowUsageMode')
   return t('sidebar.minimalMode')
 }
 

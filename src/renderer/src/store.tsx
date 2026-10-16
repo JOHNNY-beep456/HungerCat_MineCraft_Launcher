@@ -57,6 +57,16 @@ interface AppState {
   accounts: MinecraftAccount[]
   selectedAccount: MinecraftAccount | null
   theme: 'light' | 'dark'
+  /**
+   * 界面**实际呈现**的明暗（生效值）。
+   *
+   * 与 theme 的区别：theme 是「外观 → 主题」的全局设置；GitHub（Primer）皮肤的
+   * 配色子主题**独立于**明暗设置，可以在「主题 = 浅色」下选 Dark / Dark dimmed /
+   * Dark High Contrast。所以凡是「按明暗决定画什么」的逻辑都该读这个，而不是 theme ——
+   * 否则会出现「启动器深色、内容浅色」的割裂（自定义主页就踩过这个坑：
+   * 它的配色完全由 theme.get().mode 决定）。
+   */
+  effectiveTheme: 'light' | 'dark'
   /** 主页脚本被运行时拦截时的全屏提示；null 表示没有。 */
   securityAlert: SecurityAlert | null
   raiseSecurityAlert: (alert: SecurityAlert) => void
@@ -75,12 +85,6 @@ interface AppState {
   closeFileManager: () => void
   reloadSettings: () => Promise<void>
   updateSettings: (p: Partial<LauncherSettings>) => Promise<void>
-  /**
-   * 首次启动检测到低配电脑、自动开启「超低占用模式」时的一次性提醒开关。
-   * 用户关闭后不再展示（设置页可随时手动切换该模式）。
-   */
-  lowUsageNotice: boolean
-  dismissLowUsageNotice: () => void
   /** 全局页面跳转请求（含自增 seq）；由最外层 Shell / Win10 桌面消费。 */
   navRequest: { page: string; seq: number } | null
   /** 请求切到指定页面。 */
@@ -117,6 +121,15 @@ interface AppState {
   reloadAccounts: () => Promise<void>
   selectAccount: (id: string) => Promise<void>
   removeAccount: (id: string) => Promise<void>
+  /**
+   * GitHub（Primer）配色子主题的**临时预览档**（如 'dark-hc'）；null 表示不预览。
+   *
+   * 设置页的配色预览卡在鼠标悬停 / 键盘聚焦时写入这里，整个界面立即切到那一档，
+   * 移开即恢复为 settings.githubStyle。预览只改 DOM 属性、不写设置，
+   * 因此不会把用户「只是看一眼」变成真的改了配置。
+   */
+  githubPreview: string | null
+  setGithubPreview: (v: string | null) => void
 }
 
 const AppContext = createContext<AppState | null>(null)
@@ -150,7 +163,7 @@ export function AppProvider({ children }: { children: ReactNode }): JSX.Element 
   const [securityAlert, setSecurityAlert] = useState<SecurityAlert | null>(null)
   const [fileManagerPath, setFileManagerPath] = useState<string | null>(null)
   const [fileManagerSeq, setFileManagerSeq] = useState(0)
-  const [lowUsageNotice, setLowUsageNotice] = useState(false)
+  const [githubPreview, setGithubPreview] = useState<string | null>(null)
   /**
    * 全局页面跳转请求：任意组件（如启动流程）可请求切到某个页面，由最外层 Shell /
    * Win10 桌面消费。用自增 seq 保证「请求同一页面多次」也能触发一次导航。
@@ -173,11 +186,6 @@ export function AppProvider({ children }: { children: ReactNode }): JSX.Element 
   const announcementStarted = useRef(false)
   // 首次启动的硬件检测只跑一次：React 严格模式下 effect 会重复触发，用 ref 兜底。
   const hardwareProbeStarted = useRef(false)
-  /**
-   * 进入「超低占用模式」前用户自己的「减少动态效果」取值。
-   * 低占用会把 reducedMotion 强制为开；退出时要还原成该值，否则动效不会恢复。
-   */
-  const reducedMotionBeforeLowUsage = useRef<boolean | null>(null)
   // 主页安全检测引擎探测只跑一次（同上，避免严格模式重复请求）。
   const securityEngineProbeStarted = useRef(false)
   /**
@@ -210,38 +218,14 @@ export function AppProvider({ children }: { children: ReactNode }): JSX.Element 
 
   useEffect(() => {
     const root = document.documentElement
-    root.dataset['reducedMotion'] = settings?.reducedMotion || settings?.mode === 'lowUsage' ? 'true' : 'false'
-  }, [settings?.reducedMotion, settings?.mode])
+    root.dataset['reducedMotion'] = settings?.reducedMotion ? 'true' : 'false'
+  }, [settings?.reducedMotion])
 
-  // 运行模式 → DOM 标记：
-  //   minimal            直接映射为 data-mode='minimal'
-  //   lowUsage（超低占用）强制极简：data-mode='minimal' + data-reduced-motion='true'
-  //                       + data-low-usage='true'；data-mode 仍是 minimal 以便复用极简样式，
-  //                       lowUsage 的额外规则再叠加在最上面以尽量关闭一切动画/渲染。
-  //
-  // 进出低占用时同步「减少动态效果」：进入前记住用户自己的取值，进入后强制为开；
-  // 退出时还原成记住的取值 —— 否则 reducedMotion 一直被低占用置为 true，动效不会恢复。
+  // 运行模式 → DOM 标记：minimal 直接映射为 data-mode='minimal'，其余（normal / local）不写 data-mode。
   useEffect(() => {
     const root = document.documentElement
     const mode = settings?.mode ?? 'normal'
-    const lowUsage = mode === 'lowUsage'
-    root.dataset['mode'] = lowUsage ? 'minimal' : mode
-    root.dataset['lowUsage'] = lowUsage ? 'true' : 'false'
-
-    if (!settings) return
-    if (lowUsage) {
-      // 仅在首次进入低占用时记录原值，避免把「被强制开启的 true」当成用户原值。
-      if (reducedMotionBeforeLowUsage.current === null) {
-        reducedMotionBeforeLowUsage.current = settings.reducedMotion
-      }
-      if (!settings.reducedMotion) void updateSettings({ reducedMotion: true })
-    } else if (reducedMotionBeforeLowUsage.current !== null) {
-      const prev = reducedMotionBeforeLowUsage.current
-      reducedMotionBeforeLowUsage.current = null
-      if (settings.reducedMotion !== prev) void updateSettings({ reducedMotion: prev })
-    }
-    // updateSettings 稳定（useCallback），无需列入依赖。
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    root.dataset['mode'] = mode === 'minimal' ? 'minimal' : ''
   }, [settings?.mode])
 
   // 窗口可见性：最小化 / 被完全遮挡时标记 data-window-hidden，
@@ -259,15 +243,62 @@ export function AppProvider({ children }: { children: ReactNode }): JSX.Element 
   // 界面皮肤：由 CSS 侧 [data-skin='…'] 接管材质令牌与控件复位。
   // 注意「实验项 → 皮肤」不是同名映射：默认（off）呈现的是「原毛玻璃」观感，
   // 它对应 CSS 里的 [data-skin='glass']；实验项 mica 才对应基础的 3D 云母（无覆盖规则）。
+  // mac = iOS 液态玻璃、material = Material Design 3 风格、github = GitHub（Primer）风格、
+  // win10 = Win10 桌面，均按原值透传到 data-skin。
   useEffect(() => {
     const skin = settings?.experimental === 'off' ? 'glass' : (settings?.experimental ?? 'glass')
     document.documentElement.dataset['skin'] = skin
-  }, [settings?.experimental])
+    // M3 风格类型：只有 Material Design 3 皮肤会读它，其它皮肤下留着也无副作用
+    // （CSS 里所有 [data-material=…] 规则都限定在 [data-skin='material'] 下）。
+    document.documentElement.dataset['material'] = settings?.materialStyle ?? 'you'
+    // GitHub 配色选择器当前选中的原始值（含 system），供设置页高亮用；
+    // 实际生效的那一档写在 data-gh-theme 上。
+    document.documentElement.dataset['github'] = settings?.githubStyle ?? 'system'
+  }, [settings?.experimental, settings?.materialStyle, settings?.githubStyle])
+
+  /**
+   * GitHub（Primer）实际生效的配色档。
+   *
+   * 取值优先级：预览档（悬停预览）> 设置项。`system` 在这里解析成具体的
+   * light / dark（跟随外观里的主题设置）；其余子主题一律按自己那一档，与 Primer
+   * 「子主题独立于明暗设置」的做法一致。
+   *
+   * 解析只做一次，写 DOM 与算「生效明暗」两处共用 —— 两者一旦各算一遍就可能
+   * 走偏，出现「界面是深色、却按浅色算」的割裂。
+   */
+  const ghScheme = useMemo(() => {
+    const style = githubPreview ?? settings?.githubStyle ?? 'system'
+    return style === 'system' ? (theme === 'dark' ? 'dark' : 'light') : style
+  }, [githubPreview, settings?.githubStyle, theme])
+
+  /**
+   * 五套令牌各自挂在 [data-gh-theme='…'] 下，所以预览与应用写的是**同一个属性**，
+   * 不需要任何额外的预览专用 CSS。
+   */
+  useEffect(() => {
+    document.documentElement.dataset['ghTheme'] = ghScheme
+  }, [ghScheme])
+
+  /**
+   * 界面**实际呈现**的明暗。与 theme（外观 → 主题的全局设置）可能不同：
+   * GitHub（Primer）皮肤的配色子主题独立于明暗设置，用户完全可以在「主题 = 浅色」
+   * 下选 Dark / Dark dimmed / Dark High Contrast。此时界面 CSS 令牌全是深色，
+   * 若下游仍按 theme 判断明暗，就会出现「深色启动器 + 浅色内容」的割裂。
+   */
+  const effectiveTheme: 'light' | 'dark' = useMemo(() => {
+    if (settings?.experimental !== 'github') return theme
+    return ghScheme === 'light' || ghScheme === 'light-hc' ? 'light' : 'dark'
+  }, [settings?.experimental, ghScheme, theme])
 
   useEffect(() => {
     const root = document.documentElement
-    root.style.setProperty('--fill-primary', settings?.accentColor ?? '#0a84ff')
-    root.style.setProperty('--fill-primary-hover', settings?.accentColor ?? '#0a84ff')
+    // 主题色写成 --accent-user（种子），由样式表里的 --fill-primary: var(--accent-user, …)
+    // 转成真正上色的那个令牌。
+    // 这里**不能**继续直接写 --fill-primary：内联样式的优先级高于任何样式表，
+    // 一旦内联，皮肤就再也改不动它 —— GitHub（Primer）皮肤的 accent.emphasis
+    // 就永远上不了主按钮。拆成「种子 + 皮肤可覆盖」两级后，M3 的调色板
+    // （它正是从 --fill-primary 取种子）行为不变，GitHub 却能接管。
+    root.style.setProperty('--accent-user', settings?.accentColor ?? '#0a84ff')
     root.dataset['bg'] = settings?.background ?? 'midnight'
   }, [settings?.accentColor, settings?.background])
 
@@ -387,10 +418,9 @@ export function AppProvider({ children }: { children: ReactNode }): JSX.Element 
   }, [reloadSettings, reloadAccounts])
 
   /**
-   * 首次启动的硬件检测：探测 CPU 年代 / 是否虚拟机 / 内存总量，低配电脑自动开启
-   * 「超低占用模式」并弹出一次性提醒。检测结果落到 hardwareChecked（只跑一次）与
-   * hardwareLowEnd（供界面限制离开超低占用模式）。
-   * 探测（os.cpus()）与随后的设置写盘都偏重，延后到首屏空闲后再做，压低启动瞬时占用。
+   * 首次启动的硬件检测：探测 CPU 年代 / 是否虚拟机 / 内存总量。结果只落到 hardwareChecked（只跑一次），
+   * 不再据此自动切换运行模式。探测（os.cpus()）与随后的设置写盘都偏重，延后到首屏空闲后再做，
+   * 压低启动瞬时占用。
    */
   useEffect(() => {
     if (!settings || settings.hardwareChecked || hardwareProbeStarted.current) return
@@ -398,13 +428,8 @@ export function AppProvider({ children }: { children: ReactNode }): JSX.Element 
     return runWhenIdle(() => {
       void (async () => {
         try {
-          const hw = await window.api.system.hardware()
-          if (hw.lowEnd) {
-            await updateSettings({ hardwareChecked: true, hardwareLowEnd: true, mode: 'lowUsage' })
-            setLowUsageNotice(true)
-          } else {
-            await updateSettings({ hardwareChecked: true, hardwareLowEnd: false })
-          }
+          await window.api.system.hardware()
+          await updateSettings({ hardwareChecked: true })
         } catch {
           // 探测失败不阻塞启动：仅标记已检测，避免每次启动重试。
           await updateSettings({ hardwareChecked: true })
@@ -412,8 +437,6 @@ export function AppProvider({ children }: { children: ReactNode }): JSX.Element 
       })()
     })
   }, [settings, updateSettings])
-
-  const dismissLowUsageNotice = useCallback(() => setLowUsageNotice(false), [])
 
   /** 请求切到指定页面（由最外层 Shell / Win10 桌面消费；不依赖具体路由实现）。 */
   const requestNavigate = useCallback((page: string) => {
@@ -530,6 +553,7 @@ export function AppProvider({ children }: { children: ReactNode }): JSX.Element 
       accounts,
       selectedAccount,
       theme,
+      effectiveTheme,
       securityAlert,
       raiseSecurityAlert,
       clearSecurityAlert,
@@ -539,8 +563,6 @@ export function AppProvider({ children }: { children: ReactNode }): JSX.Element 
       closeFileManager,
       reloadSettings,
       updateSettings,
-      lowUsageNotice,
-      dismissLowUsageNotice,
       navRequest,
       requestNavigate,
       homepageUpdates,
@@ -560,9 +582,11 @@ export function AppProvider({ children }: { children: ReactNode }): JSX.Element 
       dismissAnnouncements,
       reloadAccounts,
       selectAccount,
-      removeAccount
+      removeAccount,
+      githubPreview,
+      setGithubPreview
     }),
-    [settings, locale, t, accounts, selectedAccount, theme, securityAlert, raiseSecurityAlert, clearSecurityAlert, fileManagerPath, fileManagerSeq, openFileManager, closeFileManager, reloadSettings, updateSettings, lowUsageNotice, dismissLowUsageNotice, navRequest, requestNavigate, homepageUpdates, refreshHomepageUpdates, launcherUpdateNotice, dismissLauncherUpdateNotice, homepageSecurityNative, agreementStatus, announcements, dismissAnnouncements, reloadAccounts, selectAccount, removeAccount]
+    [settings, locale, t, accounts, selectedAccount, theme, effectiveTheme, securityAlert, raiseSecurityAlert, clearSecurityAlert, fileManagerPath, fileManagerSeq, openFileManager, closeFileManager, reloadSettings, updateSettings, navRequest, requestNavigate, homepageUpdates, refreshHomepageUpdates, launcherUpdateNotice, dismissLauncherUpdateNotice, homepageSecurityNative, agreementStatus, announcements, dismissAnnouncements, reloadAccounts, selectAccount, removeAccount, githubPreview]
   )
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>
@@ -603,28 +627,14 @@ export function versionDirLabel(d: VersionDir): string {
 }
 
 /**
- * 自适应轮询：常规模式下行为与普通 setInterval 完全一致（固定 baseMs 执行）；
- * 超低占用模式下放宽到 3 倍间隔，并在窗口不可见时跳过本轮，重新可见立即补一次。
- * 功能与观感不变（可见时照常刷新，只是周期更长），仅削减后台持续开销。
+ * 自适应轮询：固定 baseMs 间隔执行；窗口不可见时仍照常刷新（调用方如需暂停可自行判断 visibilityState）。
+ * 功能与观感不变，仅统一轮询入口。
  */
-export function useAdaptivePolling(fn: () => void, baseMs: number, lowUsage: boolean): void {
+export function useAdaptivePolling(fn: () => void, baseMs: number): void {
   const saved = useRef(fn)
   saved.current = fn
   useEffect(() => {
-    if (!lowUsage) {
-      const timer = window.setInterval(() => saved.current(), baseMs)
-      return () => window.clearInterval(timer)
-    }
-    const timer = window.setInterval(() => {
-      if (document.visibilityState !== 'hidden') saved.current()
-    }, baseMs * 3)
-    const onVisible = (): void => {
-      if (document.visibilityState !== 'hidden') saved.current()
-    }
-    document.addEventListener('visibilitychange', onVisible)
-    return () => {
-      window.clearInterval(timer)
-      document.removeEventListener('visibilitychange', onVisible)
-    }
-  }, [baseMs, lowUsage])
+    const timer = window.setInterval(() => saved.current(), baseMs)
+    return () => window.clearInterval(timer)
+  }, [baseMs])
 }

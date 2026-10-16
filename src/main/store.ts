@@ -193,12 +193,8 @@ function estimateCpuYear(model: string): number {
 }
 
 /**
- * 探测本机硬件配置，并判定是否为「低配电脑」。
- * 判定规则（满足其一即为低配，用于自动开启「超低占用模式」）：
- *   1. CPU 为 2000~2020 年的产物（按型号估算年份 ≤ 2020）；
- *   2. 运行在虚拟机 / 云主机中（性能不可靠）；
- *   3. 物理内存 < 16GB。
- * 型号无法识别时不因 CPU 判低配，避免误伤较新的机器。
+ * 探测本机硬件配置（CPU 核心数 / 型号 / 年代、是否虚拟机、物理内存总量）。
+ * 仅供「system:hardware」 IPC 报给渲染层做参考，不再据此自动切换运行模式。
  */
 export function detectHardware(): SystemHardwareInfo {
   const info = cpus()?.[0]
@@ -208,8 +204,7 @@ export function detectHardware(): SystemHardwareInfo {
   const lower = cpuModel.toLowerCase()
   const isVirtualMachine = VM_MARKERS.some((k) => lower.includes(k))
   const cpuYear = estimateCpuYear(cpuModel)
-  const lowEnd = isVirtualMachine || (cpuYear > 0 && cpuYear <= 2020) || totalMemMb < 16384
-  return { cpuCores, cpuModel, cpuYear, isVirtualMachine, totalMemMb, lowEnd }
+  return { cpuCores, cpuModel, cpuYear, isVirtualMachine, totalMemMb }
 }
 
 export function getDefaultSettings(): LauncherSettings {
@@ -259,6 +254,23 @@ export const settings = {
     // 旧版本有独立的「原毛玻璃」实验项（'glass'），现已取消并成为默认观感，
     // 读到旧值时归一为 'off'，避免落到一个已不存在的皮肤上。
     if ((s.experimental as string) === 'glass') s.experimental = 'off'
+    // 「Material Design 3 风格」曾用内部值 'google'（早期命名），读到旧值时归一为 'material'。
+    if ((s.experimental as string) === 'google') s.experimental = 'material'
+    // M3 风格类型：非三者之一（旧值 / 手改坏）时回退到默认的 Material You。
+    if (s.materialStyle !== 'baseline' && s.materialStyle !== 'you' && s.materialStyle !== 'expressive') {
+      s.materialStyle = 'you'
+    }
+    // GitHub（Primer）配色子主题：非法值（旧值 / 手改坏）时回退到「跟随主题」。
+    if (
+      s.githubStyle !== 'system' &&
+      s.githubStyle !== 'light' &&
+      s.githubStyle !== 'dark' &&
+      s.githubStyle !== 'dimmed' &&
+      s.githubStyle !== 'light-hc' &&
+      s.githubStyle !== 'dark-hc'
+    ) {
+      s.githubStyle = 'system'
+    }
     // 版本目录兜底：清洗无效项，并确保选中项有效（失效则回退默认目录）。
     const dirs = Array.isArray(s.versionDirs)
       ? s.versionDirs.filter(

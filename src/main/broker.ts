@@ -144,7 +144,9 @@ function onIdleTimeout(ref: number, method: string, idleMs: number): void {
 
 function spawn(): void {
   if (stopped) return
-  const modulePath = join(__dirname, 'network.js')
+  // 网络进程是 Rollup 的**入口**（out/main/network.js），而 broker 所在的代码被
+  // 入口的动态 import 切进了 out/main/chunks/，所以要回退一层。
+  const modulePath = join(__dirname, '..', 'network.js')
   let childTmp: Electron.UtilityProcess
   try {
     childTmp = utilityProcess.fork(modulePath, [], { stdio: 'pipe' })

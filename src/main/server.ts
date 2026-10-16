@@ -12,7 +12,7 @@ import { streamDownload } from './stream-download'
  * 远程服务端地址。改成你自己的 PHP 服务端部署地址（不带末尾斜杠）。
  * 例如 'https://your-domain.com/hungercat'。
  */
-export const SERVER_BASE = 'https://adhc.johnnyblog.top'
+export const SERVER_BASE = 'https://hcmcl.johnnyblog.top'
 
 async function apiGet<T>(path: string): Promise<T> {
   // 真实网络执行由网络进程承担（统一 10s 超时在其内部）。

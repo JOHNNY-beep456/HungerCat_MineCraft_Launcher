@@ -187,7 +187,7 @@ export interface SystemMemoryInfo {
   free: number
 }
 
-/** 系统硬件信息：用于首次启动的「低配电脑」判定（超低占用模式自动开启）。 */
+/** 系统硬件信息：用于首次启动的「低配电脑」判定。 */
 export interface SystemHardwareInfo {
   /** 逻辑 CPU 核心数。 */
   cpuCores: number
@@ -199,8 +199,6 @@ export interface SystemHardwareInfo {
   isVirtualMachine: boolean
   /** 物理内存总量（单位 MB）。 */
   totalMemMb: number
-  /** 是否判定为低配电脑：老 CPU（≤2020）/ 虚拟机 / 内存 < 16GB。 */
-  lowEnd: boolean
 }
 
 export interface LaunchOptions {
@@ -446,8 +444,6 @@ export interface LauncherSettings {
   reducedMotion: boolean
   /** 是否已完成首次启动的硬件检测（保证低配提醒只出现一次）。 */
   hardwareChecked: boolean
-  /** 最近一次硬件检测是否判定为低配（老 CPU / 虚拟机 / 内存 < 16GB）：为真则限制离开超低占用模式。 */
-  hardwareLowEnd: boolean
   /** Each version gets its own isolated game directory (saves/mods/config). */
   versionIsolation: boolean
   /** Custom accent color (hex). */
@@ -468,7 +464,7 @@ export interface LauncherSettings {
   /**
    * 实验性（默认关闭）：导航栏置于顶部，改用一条「圆弧长条」横向导航，不再占用左侧竖栏。
    * 与上面的界面皮肤（mica / mac / win10）和运行模式相互独立 —— 不参与互斥组，
-   * 三套皮肤与极简 / 超低占用下都能开。
+   * 三套皮肤与极简下都能开。
    */
   topNav: boolean
   /**
@@ -485,10 +481,8 @@ export interface LauncherSettings {
    *   normal   普通（联网功能全开）
    *   local    本地（关闭联网功能）
    *   minimal  极简（UI 二维化）
-   *   lowUsage 超低占用（面向 2010 年代老电脑）：强制极简 + 减少动态效果，
-   *            并尽可能关闭一切动画/过渡/模糊/阴影渲染，功能保持不变。
    */
-  mode: 'normal' | 'local' | 'minimal' | 'lowUsage'
+  mode: 'normal' | 'local' | 'minimal'
   /** Version ids the user has disabled. */
   disabledVersions: string[]
   /** 强制隔离的实例 id（整合包导入的实例自动加入）。 */
@@ -531,10 +525,32 @@ export interface LauncherSettings {
    *   off    默认界面（原毛玻璃：半透明磨砂 + 扁平半透明控件）
    *   mica   3D 云母：近实心底色 + 面板受光渐变 + 倒角与三层投影，更有厚度
    *   mac    液态玻璃皮肤：不换字体，玻璃更通透 + 高光/卷边描边，液态流动感
+   *   material Material Design 3 风格：实色色调表面 + 大圆角 + 层级投影
+   *   github  GitHub（Primer）风格：实色画布 + 1px 描边 + 6px 圆角控件 + 焦点环
    *   win10  Win10 桌面：自动全屏，功能以桌面图标呈现，双击打开
    * 用单一字段表达「相斥」，避免多个布尔同时为真。
    */
-  experimental: 'off' | 'mica' | 'mac' | 'win10'
+  experimental: 'off' | 'mica' | 'mac' | 'material' | 'github' | 'win10'
+  /**
+   * Material Design 3 风格类型（仅在 experimental = 'material' 时生效）：
+   *   baseline   M3 静态基线配色（官方默认色板，表面不跟随主题色）
+   *   you        Material You：以主题色为种子生成色调板（dynamic color）
+   *   expressive M3 Expressive：更浓的容器色 / 更大的形状 / 强调排版
+   */
+  materialStyle: 'baseline' | 'you' | 'expressive'
+  /**
+   * GitHub（Primer）配色子主题（仅在 experimental = 'github' 时生效）：
+   *   system    跟随外观里的主题设置（浅色取 Light、深色取 Dark），默认
+   *   light     Primer Light：日间主题
+   *   dark      Primer Dark：夜间主题
+   *   dimmed    Dark dimmed：低对比夜间主题（GitHub 的招牌子主题）
+   *   light-hc  Light High Contrast：高对比，目标对比度 ≥ 7:1
+   *   dark-hc   Dark High Contrast：高对比，目标对比度 ≥ 7:1
+   *
+   * 与 Primer 一致：子主题**独立于**明暗设置——可以在主题为浅色时选暗色子主题，
+   * 反之亦然（GitHub 官方就允许这种组合）。`system` 是唯一跟随主题的一项。
+   */
+  githubStyle: 'system' | 'light' | 'dark' | 'dimmed' | 'light-hc' | 'dark-hc'
   /**
    * 开发模式授权到期时间（epoch ms，0 = 未授权）。
    * 需在后台白名单内的邮箱通过验证码验证后才能获得，有效期 1 天；

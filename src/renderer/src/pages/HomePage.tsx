@@ -94,8 +94,8 @@ export function HomePage(): JSX.Element {
   useEffect(() => {
     refreshMemory()
   }, [])
-  // 已用内存轮询：常规 30s；超低占用模式下放宽周期并在窗口不可见时暂停。
-  useAdaptivePolling(refreshMemory, 30000, settings.mode === 'lowUsage')
+  // 已用内存轮询：常规 30s。
+  useAdaptivePolling(refreshMemory, 30000)
 
   // 切换版本目录：主进程持久化选中项并失效缓存，installed 副作用随之重新拉取。
   const selectDir = async (id: string): Promise<void> => {

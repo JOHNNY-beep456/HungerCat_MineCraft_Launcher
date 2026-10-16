@@ -1,6 +1,6 @@
 {
   "name": "hunger-cat-minecraft-launcher",
-  "version": "0.6.8-dev5",
+  "version": "0.6.10",
   "description": "HungerCat MineCraft Launcher",
   "main": "./out/main/index.js",
   "author": "Hunger Cat",
@@ -17,11 +17,11 @@
     "mac": "electron-vite build && electron-builder --mac",
     "dist": "electron-vite build && electron-builder",
     "dist:win": "electron-vite build && electron-builder --win",
-    "dist:mac": "electron-vite build && electron-builder --mac"
+    "dist:mac": "electron-vite build && electron-builder --mac",
+    "dist:installer": "electron-vite build && node scripts/build-installer.mjs",
+    "installer:dev": "electron installer"
   },
-  "dependencies": {
-    "marked": "^15.0.7"
-  },
+  "dependencies": {},
   "devDependencies": {
     "@tailwindcss/vite": "^4.0.0",
     "@types/node": "^22.10.1",
@@ -31,6 +31,7 @@
     "electron": "^33.2.0",
     "electron-builder": "^25.1.8",
     "electron-vite": "^2.3.0",
+    "marked": "^15.0.7",
     "motion": "^11.15.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",

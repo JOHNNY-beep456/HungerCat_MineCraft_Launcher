@@ -11,8 +11,17 @@ export function registerSettingsHandlers(ctx: IpcContext): void {
   ipcMain.handle('settings:get', () => settings.get())
   ipcMain.handle('settings:set', (_e, partial: Partial<LauncherSettings>) => {
     const next = settings.set(partial)
-    // 主题 / 背景预设变化后同步窗口底色
-    if (partial.theme !== undefined || partial.background !== undefined) ctx.applyWindowBackground()
+    // 主题 / 背景预设 / M3 与 GitHub 皮肤及其配色 / 主题色变化后同步窗口底色
+    if (
+      partial.theme !== undefined ||
+      partial.background !== undefined ||
+      partial.experimental !== undefined ||
+      partial.materialStyle !== undefined ||
+      partial.githubStyle !== undefined ||
+      partial.accentColor !== undefined
+    ) {
+      ctx.applyWindowBackground()
+    }
     // Debug 模式只控制「是否记录启动日志」，不再自动弹出日志窗口（需要时到设置里手动打开）。
     // 注意：这里不再因填写调试密钥而自动采集 / 上传日志 —— 收集必须经用户在设置页
     // 明确同意后才由 debug:submit 触发，避免「提交反馈即开始收集」。
@@ -39,6 +48,6 @@ export function registerSettingsHandlers(ctx: IpcContext): void {
     const free = Math.round(freemem() / 1024 / 1024)
     return { total, used: total - free, free }
   })
-  // 硬件探测：返回 CPU 核心数 / 内存总量，并判定是否低配（超低占用模式自动开启用）。
+  // 硬件探测：返回 CPU 核心数 / 型号 / 年代、是否虚拟机、物理内存总量。
   ipcMain.handle('system:hardware', () => detectHardware())
 }

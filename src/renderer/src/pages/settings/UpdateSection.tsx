@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { AnimatePresence, motion } from 'motion/react'
+import { createPortal } from 'react-dom'
 import type { DownloadProgress, UpdateCheckResult, UpdateInfo } from '@shared/types'
 import { useApp } from '../../store'
 import { Button, Icon, Markdown, ProgressBar } from '../../components/ui'
@@ -190,48 +191,51 @@ export function UpdateSection(): JSX.Element {
       )}
 
       {/* 更新日志确认弹窗：先展示更新内容，确认后再下载 / 运行 / 打开链接 */}
-      <AnimatePresence>
-        {pendingUpdate && (
-          <motion.div
-            className="fixed inset-0 z-[115] flex items-center justify-center p-6"
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-          >
-            <div className="absolute inset-0" style={{ background: 'var(--scrim)' }} />
+      {createPortal(
+        <AnimatePresence>
+          {pendingUpdate && (
             <motion.div
-              className="glass-strong relative z-10 w-full max-w-md rounded-[32px] p-7"
-              initial={{ scale: 0.92, opacity: 0, y: 24 }}
-              animate={{ scale: 1, opacity: 1, y: 0 }}
-              exit={{ scale: 0.94, opacity: 0, y: 16 }}
-              transition={{ type: 'spring', bounce: 0.2, duration: 0.45 }}
+              className="fixed inset-0 z-[115] flex items-center justify-center p-6"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
             >
-              <div className="mb-2 flex items-center gap-2">
-                <Icon name="download" size={20} style={{ color: 'var(--fill-primary)' }} />
-                <span className="title">{t('settings.updLog.title', { v: pendingUpdate.version })}</span>
-              </div>
-              <div className="mb-5 mt-3">
-                <div className="caption mb-2">{t('settings.updLog.notes')}</div>
-                {/* 更新日志按 Markdown 渲染（标题 / 列表 / 代码块 / 链接等） */}
-                <Markdown
-                  text={pendingUpdate.notes}
-                  breaks
-                  fallback={t('settings.updLog.empty')}
-                  className="glass-soft max-h-[38vh] overflow-y-auto rounded-2xl p-4 text-[13px] leading-relaxed opacity-80"
-                />
-              </div>
-              <div className="flex items-center gap-2">
-                <Button className="flex-1" onClick={() => setPendingUpdate(null)}>
-                  {t('settings.common.cancel')}
-                </Button>
-                <Button variant="primary" className="flex-1" icon="check" onClick={() => void confirmPending()}>
-                  {ACTION_LABEL[updateAction(pendingUpdate)]}
-                </Button>
-              </div>
+              <div className="absolute inset-0" style={{ background: 'var(--scrim)' }} />
+              <motion.div
+                className="glass-strong relative z-10 w-full max-w-md rounded-[32px] p-7"
+                initial={{ scale: 0.92, opacity: 0, y: 24 }}
+                animate={{ scale: 1, opacity: 1, y: 0 }}
+                exit={{ scale: 0.94, opacity: 0, y: 16 }}
+                transition={{ type: 'spring', bounce: 0.2, duration: 0.45 }}
+              >
+                <div className="mb-2 flex items-center gap-2">
+                  <Icon name="download" size={20} style={{ color: 'var(--fill-primary)' }} />
+                  <span className="title">{t('settings.updLog.title', { v: pendingUpdate.version })}</span>
+                </div>
+                <div className="mb-5 mt-3">
+                  <div className="caption mb-2">{t('settings.updLog.notes')}</div>
+                  {/* 更新日志按 Markdown 渲染（标题 / 列表 / 代码块 / 链接等） */}
+                  <Markdown
+                    text={pendingUpdate.notes}
+                    breaks
+                    fallback={t('settings.updLog.empty')}
+                    className="glass-soft max-h-[38vh] overflow-y-auto rounded-2xl p-4 text-[13px] leading-relaxed opacity-80"
+                  />
+                </div>
+                <div className="flex items-center gap-2">
+                  <Button className="flex-1" onClick={() => setPendingUpdate(null)}>
+                    {t('settings.common.cancel')}
+                  </Button>
+                  <Button variant="primary" className="flex-1" icon="check" onClick={() => void confirmPending()}>
+                    {ACTION_LABEL[updateAction(pendingUpdate)]}
+                  </Button>
+                </div>
+              </motion.div>
             </motion.div>
-          </motion.div>
-        )}
-      </AnimatePresence>
+          )}
+        </AnimatePresence>,
+        document.body
+      )}
     </>
   )
 }

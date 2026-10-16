@@ -2,7 +2,20 @@ import { useEffect, useState, type CSSProperties, type ReactNode } from 'react'
 import { Icon } from './ui'
 import { useApp } from '../store'
 import { translateStatus, useTranslateState, type TranslateState } from '../translate-status'
-import logo from '../assets/logo.png'
+
+/**
+ * 启动器 logo 的 URL。
+ *
+ * logo 放在 `src/renderer/public/` 而不是 `src/renderer/src/assets/`，是为了让**安装向导
+ * 也能引用同一份文件**（`src/renderer/public/installer/index.html` 里用的是
+ * `../logo.png`）。走 Vite 的资源导入会生成带哈希的文件名，安装向导那套非 Vite 编写的
+ * HTML 没法稳定引用；而安装模式只加载 `out/renderer/installer/index.html` 那一页，
+ * 启动器自己的 `assets/logo-<hash>.png` 不会被用到 —— 两份同图会各占一份体积。
+ *
+ * `public/` 内容原样落到 `out/renderer/logo.png`；渲染层构建 base 为 `./`，
+ * 故 BASE_URL + 'logo.png' 即 `<启动器目录>/logo.png`，与原先的导入结果一致。
+ */
+const logo = `${import.meta.env.BASE_URL}logo.png`
 
 /** 呼吸灯颜色与是否闪烁（灰=静态、橙/绿=闪烁、红=静态）。 */
 const TRANSLATE_LIGHT: Record<TranslateState, { color: string; pulse: boolean; key: string }> = {
