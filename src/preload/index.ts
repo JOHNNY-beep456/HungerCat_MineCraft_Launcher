@@ -221,7 +221,11 @@ const api: LauncherApi = {
     submit: (payload: FeedbackSubmitPayload) => ipcRenderer.invoke('feedback:submit', payload),
     list: (email: string, code: string) => ipcRenderer.invoke('feedback:list', email, code),
     withdraw: (email: string, code: string, id: string) =>
-      ipcRenderer.invoke('feedback:withdraw', email, code, id)
+      ipcRenderer.invoke('feedback:withdraw', email, code, id),
+    login: (email: string, code: string, ttl: number) =>
+      ipcRenderer.invoke('feedback:login', email, code, ttl),
+    session: () => ipcRenderer.invoke('feedback:session'),
+    logout: () => ipcRenderer.invoke('feedback:logout')
   },
   limits: {
     get: () => ipcRenderer.invoke('limits:get')

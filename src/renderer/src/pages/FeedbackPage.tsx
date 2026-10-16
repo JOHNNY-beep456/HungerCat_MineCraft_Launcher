@@ -1,11 +1,32 @@
 import { useEffect, useRef, useState } from 'react'
 import { useApp } from '../store'
-import { Button, Icon } from '../components/ui'
-import type { FeedbackFilePayload, FeedbackListItem, ServerLimits } from '@shared/types'
+import { Button, Icon, Segmented } from '../components/ui'
+import type {
+  FeedbackFilePayload,
+  FeedbackListItem,
+  FeedbackLoginTtl,
+  FeedbackSessionStatus,
+  ServerLimits
+} from '@shared/types'
 
 /** 服务端不可达 / 尚未拉取到限制时的兜底值（与 config.php 默认值一致）。 */
 const FALLBACK_MAX_FILE_BYTES = 3 * 1024 * 1024
 const FALLBACK_MAX_FILES = 10
+
+/**
+ * 可选的免登录时长。
+ *
+ * `key` 用于界面（Segmented 只接受字符串），`ttl` 才是发给服务端的秒数；
+ * `ttl: ''` = 不选，此时**不调用** feedback_login，只用一次性验证码查询，
+ * 验证状态仅存在于本次界面会话，退出页面即退出登录。
+ */
+const LOGIN_TTLS: Array<{ key: string; ttl: FeedbackLoginTtl | ''; labelKey: string }> = [
+  { key: 'none', ttl: '', labelKey: 'feedback.ttl.none' },
+  { key: 'day', ttl: 86400, labelKey: 'feedback.ttl.day' },
+  { key: 'week', ttl: 604800, labelKey: 'feedback.ttl.week' },
+  { key: 'month', ttl: 2592000, labelKey: 'feedback.ttl.month' },
+  { key: 'forever', ttl: 0, labelKey: 'feedback.ttl.forever' }
+]
 
 /** 页面视图：先验证邮箱，再进入反馈列表。 */
 type View = 'gate' | 'list' | 'compose'
@@ -72,6 +93,12 @@ export function FeedbackPage(): JSX.Element {
   const [sending, setSending] = useState(false)
   const [verifying, setVerifying] = useState(false)
   const [list, setList] = useState<FeedbackListItem[]>([])
+  /** 免登录时长选择；'none' = 不选（仅本次会话）。 */
+  const [loginTtlKey, setLoginTtlKey] = useState('none')
+  /** 当前选择对应的服务端时长（'none' → ''，即不换发令牌）。 */
+  const loginTtl = LOGIN_TTLS.find((o) => o.key === loginTtlKey)?.ttl ?? ''
+  /** 本机已有的免登录会话（不含令牌）；null = 没有。 */
+  const [session, setSession] = useState<FeedbackSessionStatus | null>(null)
 
   // 提交表单状态
   const [title, setTitle] = useState('')
@@ -136,7 +163,15 @@ export function FeedbackPage(): JSX.Element {
     }
   }
 
-  /** 验证邮箱并拉取该邮箱名下的全部反馈。 */
+  /**
+   * 验证邮箱并拉取该邮箱名下的全部反馈。
+   *
+   * 两条路径，取决于用户是否选了免登录时长：
+   *   · **选了时长** → 先用验证码换发令牌（服务端消费掉验证码），令牌加密存在主进程，
+   *     之后凭令牌查询；有效期由用户选的 1 天 / 7 天 / 30 天 / 永久决定。
+   *   · **没选** → 直接用验证码查询，验证状态只存在于本次界面会话；
+   *     退出反馈页就相当于退出登录，下次进来要重新验证。
+   */
   const verifyAndLoad = async (): Promise<void> => {
     setError('')
     setNotice('')
@@ -150,6 +185,17 @@ export function FeedbackPage(): JSX.Element {
     }
     setVerifying(true)
     try {
+      if (loginTtl !== '') {
+        // 先换发免登录令牌（验证码在此被消费）
+        const login = await window.api.feedback.login(email.trim(), code.trim(), loginTtl)
+        if (!login.ok) {
+          setError(login.error || t('feedback.verify.fail'))
+          return
+        }
+        setSession({ email: email.trim().toLowerCase(), expiresAt: login.expiresAt })
+        const label = t(LOGIN_TTLS.find((o) => o.ttl === loginTtl)?.labelKey ?? 'feedback.ttl.forever')
+        setNotice(t('feedback.ttl.saved', { n: label }))
+      }
       const res = await window.api.feedback.list(email.trim(), code.trim())
       if (!res.ok) {
         setError(res.error || t('feedback.verify.fail'))
@@ -165,6 +211,46 @@ export function FeedbackPage(): JSX.Element {
       setVerifying(false)
     }
   }
+
+  /** 退出免登录：删除本机会话，回到验证码门。 */
+  const logout = async (): Promise<void> => {
+    await window.api.feedback.logout()
+    setSession(null)
+    setLoginTtlKey('none')
+    setList([])
+    setError('')
+    setNotice('')
+    setView('gate')
+  }
+
+  /**
+   * 进入页面时若有有效免登录会话，直接取列表并跳过验证码门。
+   *
+   * 会话在主进程加密保存（令牌不落到渲染层），这里只拿状态；令牌失效时
+   * 主进程会自动清掉会话，这里收到 ok=false 就退回验证码门。
+   */
+  useEffect(() => {
+    let alive = true
+    void window.api.feedback
+      .session()
+      .then(async (s) => {
+        if (!alive || !s) return
+        setSession(s)
+        setEmail(s.email)
+        const res = await window.api.feedback.list('', '')
+        if (!alive) return
+        if (res.ok) {
+          setList(res.feedbacks)
+          setView('list')
+        } else {
+          setSession(null)
+        }
+      })
+      .catch(() => undefined)
+    return () => {
+      alive = false
+    }
+  }, [])
 
   /** 撤销某条反馈（仅未回复可撤销）。 */
   const withdraw = async (item: FeedbackListItem): Promise<void> => {
@@ -341,6 +427,18 @@ export function FeedbackPage(): JSX.Element {
               <p className="caption mt-1">{t('feedback.gate.hint')}</p>
             </div>
 
+            {/* 免登录时长：留空（默认「不选」）= 仅本次会话有效，退出界面即退出登录 */}
+            <div>
+              <label className="caption mb-1 block">{t('feedback.ttl.label')}</label>
+              <Segmented
+                value={loginTtlKey}
+                onChange={(v) => setLoginTtlKey(v)}
+                options={LOGIN_TTLS.map((o) => ({ value: o.key, label: t(o.labelKey) }))}
+                scroll
+              />
+              <p className="caption mt-1">{t('feedback.ttl.desc')}</p>
+            </div>
+
             {error && (
               <div className="glass-soft rounded-xl p-3 text-[13px]" style={{ color: 'var(--fill-danger)' }}>
                 {error}
@@ -359,12 +457,24 @@ export function FeedbackPage(): JSX.Element {
               <div className="min-w-0">
                 <div className="text-[13px] font-semibold">{email.trim()}</div>
                 <div className="caption">{t('feedback.list.count', { n: list.length })}</div>
+                {/* 免登录生效中：说明还剩多久，并给出「退出免登录」入口 */}
+                {session && (
+                  <div className="caption mt-0.5 flex items-center gap-2">
+                    <span style={{ color: 'var(--fill-success)' }}>
+                      {session.expiresAt === 0
+                        ? t('feedback.ttl.activeForever')
+                        : t('feedback.ttl.activeUntil', {
+                            d: Math.max(1, Math.ceil((session.expiresAt - Date.now()) / 86_400_000))
+                          })}
+                    </span>
+                  </div>
+                )}
               </div>
               <div className="flex items-center gap-2">
                 <Button size="sm" variant="primary" icon="plus" onClick={() => setView('compose')}>
                   {t('feedback.list.new')}
                 </Button>
-                <Button size="sm" variant="ghost" icon="xmark" onClick={() => setView('gate')}>
+                <Button size="sm" variant="ghost" icon="xmark" onClick={() => (session ? void logout() : setView('gate'))}>
                   {t('feedback.list.exit')}
                 </Button>
               </div>

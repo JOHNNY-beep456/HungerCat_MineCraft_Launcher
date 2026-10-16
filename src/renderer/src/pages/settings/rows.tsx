@@ -480,10 +480,9 @@ function ExperimentalRow(): JSX.Element {
   )
 }
 
-/** 联机板块开关：开启前提示「可能有 bug」；正在联机时禁用（关开关不会停掉组网进程）。 */
+/** 联机板块开关：正在联机时禁用（关开关不会停掉组网进程）。 */
 function EnableMultiplayerRow(): JSX.Element {
   const { settings, updateSettings, t } = useApp()
-  const [notice, setNotice] = useState(false)
   const [inLobby, setInLobby] = useState(false)
 
   useEffect(() => {
@@ -512,60 +511,12 @@ function EnableMultiplayerRow(): JSX.Element {
         <Switch
           checked={settings.enableMultiplayer}
           disabled={inLobby}
-          onChange={(v) => {
-            if (v) setNotice(true)
-            else void updateSettings({ enableMultiplayer: false })
-          }}
+          onChange={(v) => void updateSettings({ enableMultiplayer: v })}
         />
       </Row>
       <p className="caption -mt-1">
         {inLobby ? t('settings.exp.multiplayer.inLobby') : t('settings.exp.multiplayer.desc')}
       </p>
-
-      {createPortal(
-        <AnimatePresence>
-          {notice && (
-            <motion.div
-              className="fixed inset-0 z-[115] flex items-center justify-center p-6"
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-            >
-              <div className="absolute inset-0" style={{ background: 'var(--scrim)' }} onClick={() => setNotice(false)} />
-              <motion.div
-                className="glass-strong relative z-10 w-full max-w-md rounded-[32px] p-7"
-                initial={{ scale: 0.92, opacity: 0, y: 24 }}
-                animate={{ scale: 1, opacity: 1, y: 0 }}
-                exit={{ scale: 0.94, opacity: 0, y: 16 }}
-                transition={{ type: 'spring', bounce: 0.2, duration: 0.45 }}
-              >
-                <div className="mb-2 flex items-center gap-2">
-                  <Icon name="info" size={20} style={{ color: 'var(--fill-danger)' }} />
-                  <span className="title">{t('settings.mpNotice.title')}</span>
-                </div>
-                <p className="caption mt-3 selectable leading-relaxed">{t('settings.mpNotice.desc')}</p>
-                <div className="mt-6 flex items-center gap-2">
-                  <Button className="flex-1" onClick={() => setNotice(false)}>
-                    {t('settings.common.cancel')}
-                  </Button>
-                  <Button
-                    variant="primary"
-                    className="flex-1"
-                    icon="check"
-                    onClick={() => {
-                      setNotice(false)
-                      void updateSettings({ enableMultiplayer: true })
-                    }}
-                  >
-                    {t('settings.mpNotice.confirm')}
-                  </Button>
-                </div>
-              </motion.div>
-            </motion.div>
-          )}
-        </AnimatePresence>,
-        document.body
-      )}
     </>
   )
 }

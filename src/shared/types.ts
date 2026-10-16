@@ -1345,6 +1345,36 @@ export interface FeedbackCodeResult {
   error?: string
 }
 
+/**
+ * 可选的免登录时长（秒）。与服务端白名单一一对应，0 = 永久。
+ *
+ * 「不选择时长」不在此列：那种情况不换发令牌，验证状态只存在于本次界面会话。
+ */
+export type FeedbackLoginTtl = 86400 | 604800 | 2592000 | 0
+
+/**
+ * 免登录登录结果（邮箱验证码换发令牌）。
+ *
+ * expiresAt：epoch ms；0 = 永久不过期。失败时 ok=false 并带 error。
+ */
+export interface FeedbackLoginResult {
+  ok: boolean
+  /** 令牌到期时间（epoch ms，0 = 永久）。仅成功时有意义。 */
+  expiresAt: number
+  error?: string
+}
+
+/**
+ * 本机当前的免登录状态（**不含令牌本身**）。
+ *
+ * 令牌由主进程经系统安全存储持有，渲染层只拿得到「登录了哪个邮箱 / 什么时候过期」，
+ * 与 uapis KEY 的处理一致。expiresAt = 0 表示永久。
+ */
+export interface FeedbackSessionStatus {
+  email: string
+  expiresAt: number
+}
+
 /** 反馈附件元信息（列表展示用）。 */
 export interface FeedbackFileMeta {
   name: string
@@ -1684,10 +1714,19 @@ export interface LauncherApi {
     sendCode: (email: string) => Promise<FeedbackCodeResult>
     /** 提交反馈（标题 / 描述 / 邮箱验证码 / 附件，附件每个 ≤ 3MB）。 */
     submit: (payload: FeedbackSubmitPayload) => Promise<FeedbackSubmitResult>
-    /** 查询某邮箱名下的全部反馈（需邮箱验证码，每次查看都要重新验证）。 */
+    /** 查询某邮箱名下的全部反馈；已有免登录会话时凭令牌查询，否则用邮箱 + 验证码。 */
     list: (email: string, code: string) => Promise<FeedbackListResult>
     /** 撤销自己的反馈（仅未回复可撤销）。 */
     withdraw: (email: string, code: string, id: string) => Promise<FeedbackWithdrawResult>
+    /**
+     * 用邮箱验证码换发免登录令牌（1 天 / 7 天 / 30 天 / 永久）。
+     * 成功后令牌由主进程加密保存，渲染层拿不到令牌本身。
+     */
+    login: (email: string, code: string, ttl: FeedbackLoginTtl) => Promise<FeedbackLoginResult>
+    /** 查询本机免登录状态；无有效会话时返回 null。 */
+    session: () => Promise<FeedbackSessionStatus | null>
+    /** 退出免登录（删除本机会话，下次需重新用验证码登录）。 */
+    logout: () => Promise<void>
   }
   /** 服务端上传限制（反馈附件 / 主页脚本），启动器启动时拉取用于客户端预校验。 */
   limits: {

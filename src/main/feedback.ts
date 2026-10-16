@@ -10,12 +10,14 @@ import type {
   FeedbackCodeResult,
   FeedbackListItem,
   FeedbackListResult,
+  FeedbackLoginResult,
   FeedbackSubmitPayload,
   FeedbackSubmitResult,
   FeedbackWithdrawResult,
   ServerLimits
 } from '@shared/types'
 import { netRequest } from './broker'
+import { clearFeedbackSession, getFeedbackSession, setFeedbackSession } from './secret'
 
 /** 单个附件的体积上限（与服务端 HC_FEEDBACK_MAX_BYTES 保持一致）。 */
 export const MAX_FEEDBACK_FILE_BYTES = 3 * 1024 * 1024
@@ -138,31 +140,118 @@ export async function submitFeedback(payload: FeedbackSubmitPayload): Promise<Fe
 }
 
 /**
- * 查询某邮箱名下的全部反馈（需邮箱验证码）。
+ * 可选的免登录时长（秒），与服务端白名单 hc_feedback_token_ttls() 一一对应。
  *
- * 每次查看都要重新验证：验证码一次性消费，服务端不做持久登录态。
+ * 注意「不选时长」并不在这里表达：那种情况**根本不调用** feedback_login，
+ * 直接用一次性验证码查询，验证状态只留在本次界面会话里，退出即失效。
  */
-export async function listFeedback(email: string, code: string): Promise<FeedbackListResult> {
-  const res = await netRequest<{ ok?: boolean; feedbacks?: FeedbackListItem[]; error?: string }>(
-    'server:post',
-    { path: 'feedback_list', body: { email, code } }
-  )
-  return {
-    ok: res?.ok === true,
-    feedbacks: Array.isArray(res?.feedbacks) ? res.feedbacks : [],
-    error: res?.error
+export const FEEDBACK_LOGIN_TTL = {
+  /** 1 天 */
+  day: 86400,
+  /** 7 天 */
+  week: 604800,
+  /** 30 天 */
+  month: 2592000,
+  /** 永久（expiresAt = 0，服务端不过期） */
+  forever: 0
+} as const
+
+/** 服务端只认这四个时长值（秒）。 */
+const VALID_TTLS: number[] = [86400, 604800, 2592000, 0]
+
+/**
+ * 用邮箱验证码换发免登录令牌，并把令牌加密保存在本机。
+ *
+ * 验证码是一次性消费的：验证成功后不再能重复使用，因此必须在这一步换出令牌，
+ * 否则用户每次查看反馈都要重新收邮件。ttl 决定令牌有效期（0 = 永久）。
+ *
+ * 返回 { ok, expiresAt, error }；渲染层据此提示「已免登录 N 天 / 永久」。
+ */
+export async function loginFeedback(
+  email: string,
+  code: string,
+  ttl: number
+): Promise<FeedbackLoginResult> {
+  const to = email.trim().toLowerCase()
+  const c = code.trim()
+  if (!VALID_TTLS.includes(ttl)) {
+    return { ok: false, expiresAt: 0, error: '免登录时长不合法' }
+  }
+  try {
+    // 服务端会连同令牌一起返回；令牌**不写入** FeedbackLoginResult，
+    // 只在主进程内转存到加密存储，渲染层永远拿不到它。
+    const res = await netRequest<{ ok?: boolean; token?: string; expiresAt?: number; error?: string }>(
+      'server:post',
+      { path: 'feedback_login', body: { email: to, code: c, ttl } }
+    )
+    if (res?.ok !== true || !res?.token) {
+      return { ok: false, expiresAt: 0, error: res?.error }
+    }
+    const expiresAt = Number(res.expiresAt) || 0
+    const err = setFeedbackSession({ token: String(res.token), email: to, expiresAt })
+    if (err) return { ok: false, expiresAt: 0, error: err }
+    return { ok: true, expiresAt }
+  } catch (err) {
+    return { ok: false, expiresAt: 0, error: err instanceof Error ? err.message : String(err) }
   }
 }
 
-/** 撤销自己的反馈（仅未回复可撤销）。 */
+/** 当前免登录会话状态（供渲染层决定是否跳过验证码界面）。 */
+export function feedbackSessionStatus(): { email: string; expiresAt: number } | null {
+  const s = getFeedbackSession()
+  return s ? { email: s.email, expiresAt: s.expiresAt } : null
+}
+
+/** 退出免登录（删除本机会话）。 */
+export function logoutFeedback(): void {
+  clearFeedbackSession()
+}
+
+/**
+ * 查询某邮箱名下的全部反馈。
+ *
+ * 优先用本机的免登录令牌（无需再次输验证码）；没有令牌时回落到邮箱 + 验证码。
+ * 两者都不会在服务端保留会话，未免登录的用户每次查看仍需重新验证。
+ */
+export async function listFeedback(email: string, code: string): Promise<FeedbackListResult> {
+  const session = getFeedbackSession()
+  // 有免登录会话时优先用它；email 以会话里的为准（避免被渲染层传错邮箱读到别人的）
+  const body = session
+    ? { token: session.token }
+    : { email: email.trim().toLowerCase(), code: code.trim() }
+  try {
+    const res = await netRequest<{
+      ok?: boolean
+      feedbacks?: FeedbackListItem[]
+      error?: string
+    }>('server:post', { path: 'feedback_list', body })
+    if (res?.ok !== true) {
+      // 令牌失效 / 被撤销：清掉本机会话，渲染层下次会回到验证码界面
+      if (session) clearFeedbackSession()
+      return { ok: false, feedbacks: [], error: res?.error }
+    }
+    return { ok: true, feedbacks: Array.isArray(res.feedbacks) ? res.feedbacks : [] }
+  } catch (err) {
+    return { ok: false, feedbacks: [], error: err instanceof Error ? err.message : String(err) }
+  }
+}
+
+/** 撤销自己的反馈（仅未回复可撤销）；同样优先走免登录令牌。 */
 export async function withdrawFeedback(
   email: string,
   code: string,
   id: string
 ): Promise<FeedbackWithdrawResult> {
-  const res = await netRequest<{ ok?: boolean; error?: string }>('server:post', {
-    path: 'feedback_withdraw',
-    body: { email, code, id }
-  })
-  return { ok: res?.ok === true, error: res?.error }
+  const session = getFeedbackSession()
+  const body = session ? { token: session.token, id } : { email: email.trim().toLowerCase(), code: code.trim(), id }
+  try {
+    const res = await netRequest<{ ok?: boolean; error?: string }>('server:post', {
+      path: 'feedback_withdraw',
+      body
+    })
+    if (res?.ok !== true && session) clearFeedbackSession()
+    return { ok: res?.ok === true, error: res?.error }
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) }
+  }
 }

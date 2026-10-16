@@ -17,7 +17,8 @@ import { join } from 'node:path'
  * 无需用户配置，也不存在本机保存这一说。
  */
 const FILES = {
-  uapis: 'uapis-key.bin'
+  uapis: 'uapis-key.bin',
+  feedback: 'feedback-session.bin'
 } as const
 
 type SecretName = keyof typeof FILES
@@ -103,4 +104,57 @@ export function setUapisKey(key: string): string | null {
 /** 删除已保存的 uapis KEY。 */
 export function clearUapisKey(): void {
   dropSecret('uapis')
+}
+
+/* -------------------- 反馈免登录会话 -------------------- */
+
+/**
+ * 反馈「免登录」会话：邮箱验证码换发的长期令牌。
+ *
+ * 与 uapis KEY 同等对待——同样只留在主进程、经 safeStorage 加密落盘，
+ * 既不随设置下发到渲染层，也不写进 settings.json：渲染层只知道
+ * 「是否已登录 / 登录的是哪个邮箱 / 什么时候过期」，拿不到令牌本身。
+ *
+ * expiresAt = 0 表示用户选了「永久免登录」，永不到期。
+ */
+export interface FeedbackSession {
+  token: string
+  email: string
+  /** epoch ms；0 = 永久。 */
+  expiresAt: number
+}
+
+/** 读取当前免登录会话；无、已过期或损坏时返回 null（并顺手清掉过期项）。 */
+export function getFeedbackSession(): FeedbackSession | null {
+  const raw = readSecret('feedback')
+  if (!raw) return null
+  try {
+    const s = JSON.parse(raw) as Partial<FeedbackSession>
+    const token = typeof s.token === 'string' ? s.token.trim() : ''
+    const email = typeof s.email === 'string' ? s.email.trim() : ''
+    const expiresAt = Number(s.expiresAt) || 0
+    if (!token || !email) return null
+    if (expiresAt !== 0 && expiresAt <= Date.now()) {
+      // 已过期：清掉，避免每次进来都反复解析
+      dropSecret('feedback')
+      return null
+    }
+    return { token, email, expiresAt }
+  } catch {
+    return null
+  }
+}
+
+/** 保存免登录会话：成功返回 null，失败返回可展示原因。 */
+export function setFeedbackSession(s: FeedbackSession): string | null {
+  return writeSecret(
+    'feedback',
+    JSON.stringify({ token: s.token, email: s.email, expiresAt: s.expiresAt }),
+    '反馈免登录会话'
+  )
+}
+
+/** 退出免登录（删除本机保存的会话）。 */
+export function clearFeedbackSession(): void {
+  dropSecret('feedback')
 }

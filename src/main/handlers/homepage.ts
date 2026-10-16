@@ -26,7 +26,16 @@ import {
   installNumbered
 } from '../homepage'
 import { homepageSecurityUsesNative } from '../native-downloader'
-import { sendFeedbackCode, submitFeedback, fetchServerLimits, listFeedback, withdrawFeedback } from '../feedback'
+import {
+  sendFeedbackCode,
+  submitFeedback,
+  fetchServerLimits,
+  listFeedback,
+  withdrawFeedback,
+  loginFeedback,
+  feedbackSessionStatus,
+  logoutFeedback
+} from '../feedback'
 import type { IpcContext } from './context'
 
 export function registerHomepageHandlers(_ctx: IpcContext): void {
@@ -59,6 +68,12 @@ export function registerHomepageHandlers(_ctx: IpcContext): void {
   ipcMain.handle('feedback:withdraw', (_e, email: string, code: string, id: string) =>
     withdrawFeedback(email, code, id)
   )
+  // 免登录：用邮箱验证码换发令牌（1天/7天/30天/永久），令牌加密留在主进程。
+  ipcMain.handle('feedback:login', (_e, email: string, code: string, ttl: number) =>
+    loginFeedback(email, code, ttl)
+  )
+  ipcMain.handle('feedback:session', () => feedbackSessionStatus())
+  ipcMain.handle('feedback:logout', () => logoutFeedback())
   ipcMain.handle('limits:get', () => fetchServerLimits())
   ipcMain.handle(
     'homepage:installNumbered',
