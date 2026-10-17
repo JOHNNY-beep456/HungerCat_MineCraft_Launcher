@@ -1,6 +1,6 @@
 {
   "name": "hunger-cat-minecraft-launcher",
-  "version": "0.6.11",
+  "version": "0.6.12",
   "description": "HungerCat MineCraft Launcher",
   "main": "./out/main/index.js",
   "author": "Hunger Cat",

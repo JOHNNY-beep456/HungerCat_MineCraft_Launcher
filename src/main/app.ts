@@ -987,6 +987,22 @@ function registerIpc(): void {
 
 app.setName('HungerCatLauncher')
 
+// ---------- 内存优化（必须在 app ready 之前生效） ----------
+// 实测说明（Windows / Electron 33）：
+//   · disableHardwareAcceleration + disable-gpu：GPU 进程**不会消失**（Chromium 在
+//     Windows 上即使禁用硬件加速也会保留一个 GPU 进程做软件合成，实测仍 ~110MB），
+//     但它把渲染转成软件模式，对低端 GPU / 集成显卡能省显存并降低 GPU 相关崩溃，
+//     长期看也有助于压低 GPU 工作集。
+//   · SpareRendererForSitePerProcess：Chromium 默认会常驻一个「备用渲染进程」
+//     （约 80~100MB）以备快速打开新窗口。本应用主窗口常驻、不频繁开窗口，禁用它
+//     可在确实出现备用进程的场合省掉这一路。
+//   · max-old-space-size：限制各进程 V8 老生代堆上限，避免 GC 后堆不回缩导致
+//     内存虚高（对主进程 / 渲染进程都生效）。这是最稳的一档优化。
+app.disableHardwareAcceleration()
+app.commandLine.appendSwitch('js-flags', '--max-old-space-size=96')
+app.commandLine.appendSwitch('disable-features', 'SpareRendererForSitePerProcess,CalculateNativeWinOcclusion')
+app.commandLine.appendSwitch('disable-gpu')
+
 // 远端语音通过 <audio> 播放 WebRTC 轨道。Chromium 默认的自动播放策略会拦截
 // 「无用户手势」的音频播放，表现为：连接已建立、说话指示也正常，但**听不到对方说话**。
 // 语音是大厅里的显式交互功能（由用户主动开麦触发），这里放开自动播放限制。

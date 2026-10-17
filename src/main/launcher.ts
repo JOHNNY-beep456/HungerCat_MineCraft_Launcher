@@ -188,7 +188,7 @@ export function spawnGame(
   const child = spawn(cmd, args, {
     cwd: ctx.runDir,
     env: { ...process.env },
-    windowsHide: true
+    windowsHide: false
   })
 
   // 日志行只带 log、不带 state：状态只由「明确的生命周期事件」驱动。

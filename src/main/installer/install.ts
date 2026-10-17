@@ -85,6 +85,38 @@ export function runPowerShell(command: string): Promise<number> {
   })
 }
 
+/**
+ * 关闭安装目录里正在运行的实例。
+ *
+ * 覆盖安装时，正在运行的启动器会锁定 `app.asar` / exe 等文件，`copyFile` 会因
+ * `EPERM`（文件被占用）失败，表现为「点了安装但进度卡住 / 报错」。因此在复制
+ * 载荷之前先把目标目录里的实例关掉。
+ *
+ * **按完整路径精确定位**（`Get-Process | Where-Object { $_.Path -eq ... }`），
+ * 而不是 `taskkill /IM` 按名字杀——因为安装器自身也是同名 exe（便携包在临时目录
+ * 运行），按名字杀会把安装器一起杀掉。
+ *
+ * 关闭策略：先 `CloseMainWindow()` 给一次优雅退出的机会，等 1.5s；仍在运行则
+ * `Stop-Process -Force`。关闭后稍等片刻，让文件锁完全释放再继续复制。
+ */
+async function closeRunningInstance(installDir: string): Promise<void> {
+  const exePath = join(installDir, APP_EXE)
+  const ps = (s: string): string => `'${String(s).replace(/'/g, "''")}'`
+  // 单条 PowerShell 语句：找到按路径匹配的进程 → 优雅关闭 → 超时强杀
+  const script =
+    '$target = ' + ps(exePath) + '; ' +
+    '$p = Get-Process | Where-Object { $_.Path -eq $target } | Select-Object -First 1; ' +
+    'if ($null -ne $p) { ' +
+    '  $p.CloseMainWindow() | Out-Null; ' +
+    '  Start-Sleep -Milliseconds 1500; ' +
+    '  $p.Refresh(); ' +
+    '  if (-not $p.HasExited) { Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue } ' +
+    '}'
+  await runPowerShell(script)
+  // 给文件锁一点释放时间，避免紧接着的 copyFile 仍撞上残留占用
+  await new Promise((resolve) => setTimeout(resolve, 600))
+}
+
 /** 执行一次安装。 */
 export async function runInstall(
   src: string,
@@ -131,6 +163,10 @@ export async function runInstall(
     }
     // 1. 复制载荷
     onProgress('copy', 0, '正在准备文件…')
+    // 覆盖安装时，正在运行的实例会锁定 app.asar / exe，copyFile 会因 EPERM 失败。
+    // 先按完整路径关掉目标目录里的实例，再复制。
+    onProgress('copy', 0, '正在关闭正在运行的启动器…')
+    await closeRunningInstance(installDir)
     if (payloadFileCount === 0) {
       const m = await measure(src)
       payloadFileCount = m.count

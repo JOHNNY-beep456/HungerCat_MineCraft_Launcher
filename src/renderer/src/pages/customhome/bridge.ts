@@ -160,7 +160,10 @@ export function useHostBridge(options: HostBridgeOptions): HostBridge {
     async (method: string, params: Record<string, unknown>): Promise<unknown> => {
       // 每条指令运行前都过一遍安全检查：脚本可能把危险代码藏进参数交给宿主执行。
       // 「完全关闭」档位下跳过扫描，便于开发者自由调试。
-      if (securityMode !== 'off') {
+      // log.write 由宿主推送（Minecraft 进程输出），参数来自宿主而非脚本，
+      // 不应被当作脚本代码扫描；否则开启 debug 模式后，Minecraft 输出中的
+      // 字符串（如堆栈跟踪里的 eval、javascript 等）会被误判，导致主页被封锁。
+      if (securityMode !== 'off' && method !== 'log.write') {
         let probeText = method
         try {
           probeText = `${method} ${JSON.stringify(params ?? {})}`
