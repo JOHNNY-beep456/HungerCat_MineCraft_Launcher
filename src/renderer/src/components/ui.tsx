@@ -990,7 +990,9 @@ export function Avatar({
             width: size,
             height: size,
             overflow: 'hidden',
-            borderRadius: '0.75rem',
+            // 走令牌而非写死 0.75rem：默认 --radius-control 就是 12px，视觉不变，
+            // 但「全直角」皮肤（Minecraft）能把它归零。
+            borderRadius: 'var(--radius-control)',
             flexShrink: 0
           }}
         >

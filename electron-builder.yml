@@ -40,7 +40,7 @@ compression: maximum
 win:
   icon: build/icon.ico
   # 两个目标并存：
-  #   portable 主产物 —— Setup.exe **就是启动器自身**（electron-builder 的 portable
+  #   portable 主产物 —— portable.exe **就是启动器自身**（electron-builder 的 portable
   #     目标把应用封成单文件 exe）。启动器仅以便携/已安装两种身份运行。
   #   nsis 应急兜底 —— electron-builder 自带的安装器，不依赖安装模式那条代码路径，
   #     万一便携包在实机上出问题，仍可出一条 100% 可靠的安装包。
@@ -48,7 +48,7 @@ win:
     - portable
     - nsis
 portable:
-  artifactName: "HCMCL-${version} Setup.exe"
+  artifactName: "HCMCL${version}-portable.exe"
 nsis:
   oneClick: false
   allowToChangeInstallationDirectory: true

@@ -774,10 +774,23 @@ export interface Announcement {
 export interface UpdateInfo {
   /** 最新版本号，如 "0.2.0"。 */
   version: string
-  /** 下载地址（服务端上传的文件或外部链接）。 */
+  /**
+   * 实际下载地址。
+   *
+   * 客户端拉取后会**按当前身份重写**（见 server.ts 的 resolveUpdateForIdentity）：
+   * 便携版优先取 portableUrl，安装版优先取 installerUrl；本类型缺失时回退到另一种，
+   * 保证旧服务端（只有 url）与「只发了一种包」的新服务端都不会让用户收不到更新。
+   * 因此下载与界面展示只需读这一个字段。
+   */
   url: string
   /** 文件名（缺省时从 url 推导）。 */
   filename?: string
+  /** 安装版（NSIS 安装包）下载地址；旧服务端没有此字段。 */
+  installerUrl?: string
+  installerFilename?: string
+  /** 便携版（单文件 exe）下载地址；旧服务端没有此字段。 */
+  portableUrl?: string
+  portableFilename?: string
   /** 更新说明，可选。 */
   notes?: string
   /** 发布时间（epoch ms），可选。 */

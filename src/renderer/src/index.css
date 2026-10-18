@@ -3311,6 +3311,23 @@ textarea.input {
   border-radius: var(--mc-radius);
 }
 
+/* 上一条只覆盖了几类**容器**及其后代，但圆角在本项目里散落在容器之外：
+   标题栏 logo（rounded-[6px]）、状态徽章（rounded-full）、通知点（translate-dot）、
+   页面滚动容器（rounded-[24px]）……它们既不在 .glass 里，也不带组件类，
+   于是直角皮肤下依旧能看见圆角。逐个往选择器里补类是打地鼠——
+   每加一个带 rounded-* 的新组件就会重新漏一次。
+   所以这里对整棵子树统一归零，用「皮肤限定」代替「组件枚举」：
+   只有 Minecraft 皮肤会命中，其他皮肤一行都不受影响。
+
+   用 !important 是因为其中几处把圆角写在 style 属性上（内联样式本就该赢），
+   常规特异性压不住。作用域被 [data-skin] 限死，不会外溢。
+
+   例外：头像等「本来就该是圆的」元素也不保留——MC 皮肤的统一约定就是全直角，
+   与窗口控件、进度条等一并归零。 */
+[data-skin='minecraft'] #root * {
+  border-radius: var(--mc-radius) !important;
+}
+
 /* 立体倒角：面板与按钮「左上提亮 / 右下沉暗」，
    border-color 的四值顺序是 上 右 下 左，正好对应 MC GUI 的光从左上来。 */
 [data-skin='minecraft'] :is(.glass, .glass-strong, .glass-soft, .btn, .chip, .mica, .mica-well > button) {

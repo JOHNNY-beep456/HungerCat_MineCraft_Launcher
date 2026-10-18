@@ -1,6 +1,6 @@
 {
   "name": "hunger-cat-minecraft-launcher",
-  "version": "0.6.14-hotfix1",
+  "version": "0.6.15",
   "description": "HungerCat MineCraft Launcher",
   "main": "./out/main/index.js",
   "author": "Hunger Cat",
@@ -11,6 +11,7 @@
     "start": "electron-vite preview",
     "preview": "electron-vite preview",
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
+    "test:update": "node scripts/test-update-resolve.mjs",
     "native:build": "node scripts/build-native-downloader.mjs",
     "native:build:debug": "node scripts/build-native-downloader.mjs --debug",
     "win": "electron-vite build && electron-builder --win",

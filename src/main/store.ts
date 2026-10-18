@@ -7,6 +7,7 @@ import type { LauncherSettings, MinecraftAccount, SystemHardwareInfo, VersionDir
 import { defaultSettings } from '@shared/settings'
 import { hasUapisKey, setUapisKey } from './secret'
 import { setSourceStrategies } from './mirror'
+import { isPortable, portableGameDir } from './portable'
 
 /** Offline-mode UUID, derived deterministically from the player name (MD5). */
 function offlineUuid(name: string): string {
@@ -209,10 +210,12 @@ export function detectHardware(): SystemHardwareInfo {
 
 export function getDefaultSettings(): LauncherSettings {
   // 默认值来自共享注册表（@shared/settings），与渲染层兜底对象同源。
-  // 这里只覆盖「依赖运行时」的一项：默认版本目录取系统「文档」目录下的固定子目录。
+  // 这里只覆盖「依赖运行时」的一项：默认版本目录。
+  //   便携版 → <exe 目录>/.minecraft（存档、版本、mods 跟着走）
+  //   安装版 → 系统「文档」目录下的固定子目录
   return {
     ...defaultSettings(),
-    gameDir: join(app.getPath('documents'), 'HungerCatMC')
+    gameDir: isPortable ? portableGameDir() : join(app.getPath('documents'), 'HungerCatMC')
   }
 }
 

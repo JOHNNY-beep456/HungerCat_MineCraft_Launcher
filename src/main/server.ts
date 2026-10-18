@@ -7,6 +7,8 @@ import { spawn } from 'child_process'
 import type { AboutGroup, AgreementContent, Announcement, DownloadProgress, UpdateInfo } from '@shared/types'
 import { netRequest } from './broker'
 import { streamDownload } from './stream-download'
+import { isPortable } from './portable'
+import { resolveUpdateForIdentity } from './update-resolve'
 
 /**
  * 远程服务端地址。改成你自己的 PHP 服务端部署地址（不带末尾斜杠）。
@@ -51,9 +53,9 @@ export async function fetchAnnouncements(): Promise<Announcement[]> {
   return Array.isArray(data?.announcements) ? data.announcements : []
 }
 
-/** 获取服务端发布的最新版本信息。 */
-export function fetchUpdateInfo(): Promise<UpdateInfo> {
-  return apiGet<UpdateInfo>('update')
+/** 获取服务端发布的最新版本信息（已按当前身份解析出实际下载地址）。 */
+export async function fetchUpdateInfo(): Promise<UpdateInfo> {
+  return resolveUpdateForIdentity(await apiGet<UpdateInfo>('update'), isPortable)
 }
 
 /**

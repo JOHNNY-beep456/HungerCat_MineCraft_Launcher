@@ -110,7 +110,8 @@ export function registerNetworkHandlers(ctx: IpcContext): void {
     return {
       currentVersion,
       latest,
-      hasUpdate: latest ? compareVersions(latest.version, currentVersion) > 0 : false,
+      // 服务端若一条下载地址都没配，就不能算「有更新」——否则界面会给出一个点不动的下载。
+      hasUpdate: latest ? !!latest.url && compareVersions(latest.version, currentVersion) > 0 : false,
       // 是否为预发布版由服务端后台勾选决定：启动自动检查据此静默，避免打扰普通用户。
       latestIsPrerelease: latest ? !!latest.prerelease : false,
       // 是否为「重要版本」：无论是否开启自动更新都要推送（见渲染层启动检查）。
