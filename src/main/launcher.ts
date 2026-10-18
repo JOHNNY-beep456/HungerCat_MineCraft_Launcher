@@ -6,8 +6,7 @@ import type { LaunchEvent, LaunchOptions, MinecraftAccount, VersionJson } from '
 import { libraryAllowed, libraryPaths, pickClassifier } from './downloader'
 
 const isWindows = process.platform === 'win32'
-const isMac = process.platform === 'darwin'
-const osName = isWindows ? 'windows' : isMac ? 'osx' : 'linux'
+const osName = isWindows ? 'windows' : 'linux'
 const PATH_SEP = isWindows ? ';' : ':'
 
 export interface LaunchContext {

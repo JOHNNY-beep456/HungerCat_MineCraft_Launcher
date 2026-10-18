@@ -224,7 +224,6 @@ export function HomepagePage(): JSX.Element {
       <div className="flex items-end justify-between gap-4">
         <div>
           <h1 className="display">{t('hp.title')}</h1>
-          <p className="caption mt-1">{t('hp.subtitle')}</p>
         </div>
         <div className="flex items-center gap-2">
           <Button icon="folder" onClick={() => void window.api.homepage.openDir().then(openFileManager)}>

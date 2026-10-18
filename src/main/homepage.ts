@@ -468,9 +468,74 @@ export async function removeHomepage(id: string): Promise<void> {
 }
 
 /**
- * 查询某个已安装脚本是否只是「本地版本较旧」：与主页市场的最新 SHA256 比对，
- * 不同即视为有线上新版本。判据与 checkHomepageUpdates 一致，仅限定单个编号。
- * 市场不可达 / 编号不在市场 / 已是最新 → 返回 null（无法据此判定为「过期」）。
+ * 哈希与线上不一致、且线上没有更新版本时的诊断：差异来自本地编辑。
+ * 返回线上版本号供提示使用；市场不可达 / 编号不在市场 / 线上确实有新版 → 返回 null
+ * （没有依据就不能断言是本地编辑，那仍按篡改处理）。
+ */
+async function describeLocalEdit(
+  source: HomepageSource
+): Promise<{ marketVersion: string } | null> {
+  if (!source.meta.id) return null
+  try {
+    const market = await fetchMarket()
+    const m = market.find((x) => x.id === source.meta.id)
+    if (!m?.sha256) return null
+    if (m.sha256.toLowerCase() === source.sha256.toLowerCase()) return null
+    if (isMarketNewer(source.meta.version, m.version)) return null
+    return { marketVersion: m.version }
+  } catch {
+    return null
+  }
+}
+
+/**
+ * 逐段比较两个版本号，返回 -1 / 0 / 1。
+ * 按 . - + 切段，数字段按数值比（所以 1.0.10 > 1.0.9，而不是像 Number() 那样双双变 NaN
+ * 后只能退回字符串不等）；含非数字段（beta / rc 之类）时按字典序兜底。
+ */
+function compareVersions(a: string, b: string): number {
+  const as = a.trim().split(/[.\-+]/)
+  const bs = b.trim().split(/[.\-+]/)
+  for (let i = 0; i < Math.max(as.length, bs.length); i++) {
+    const x = as[i] ?? ''
+    const y = bs[i] ?? ''
+    if (x === y) continue
+    const nx = x === '' ? 0 : Number(x)
+    const ny = y === '' ? 0 : Number(y)
+    if (Number.isFinite(nx) && Number.isFinite(ny)) return nx < ny ? -1 : 1
+    return x < y ? -1 : 1
+  }
+  return 0
+}
+
+/**
+ * 线上是否**确实更新**。
+ *
+ * 必须逐段比较：`Number('1.0.10')` 和 `Number('1.0.9')` 都是 NaN，早先的实现因此
+ * 退化成「字符串不等就算线上更新」，于是本地 1.0.10、线上 1.0.9 反被判成「本地过期」，
+ * 启动器会把作者自己的新版用线上旧版覆盖掉——本地改动当场丢失。
+ *
+ * 任一侧缺失版本号 → 保守判为「无法证明更新」，交由调用方按 mismatch 处理。
+ */
+function isMarketNewer(localVersion: string, marketVersion: string): boolean {
+  const lv = localVersion.trim()
+  const mv = marketVersion.trim()
+  if (lv === '' || mv === '') return false
+  return compareVersions(mv, lv) > 0
+}
+
+/**
+ * 查询某个已安装脚本是否只是「本地版本较旧」：与主页市场的最新 SHA256 比对。
+ *
+ * **哈希不同 ≠ 线上有更新。** 本地被改动过（哪怕只是换了个换行符）同样会让哈希变掉，
+ * 而那不是「过期」。此前一律按有更新处理，于是界面会显示
+ * 「本地 v1.0.9 → 线上 v1.0.9」这种自相矛盾的提示——版本号一模一样也说在更新，
+ * 用户看到的正是「明明一致却判定不一致」；而且一键更新会直接抹掉本地改动。
+ *
+ * 现在要求**版本号确实不同且线上更高**才算更新；否则返回 null，由调用方按
+ * mismatch（本地已修改）处理，并给出对应的提示文案。
+ *
+ * 市场不可达 / 编号不在市场 / 已是最新 → 返回 null。
  */
 async function findHomepageUpdate(source: HomepageSource): Promise<HomepageUpdate | null> {
   if (settings.get().mode === 'local') return null
@@ -480,6 +545,7 @@ async function findHomepageUpdate(source: HomepageSource): Promise<HomepageUpdat
     const m = market.find((x) => x.id === source.meta.id)
     if (!m || !m.sha256) return null
     if (m.sha256.toLowerCase() === source.sha256.toLowerCase()) return null
+    if (!isMarketNewer(source.meta.version, m.version)) return null
     return {
       localId: source.id,
       id: source.meta.id,
@@ -553,7 +619,7 @@ export async function verifyHomepage(id: string): Promise<HomepageVerifyResult> 
           outdated: true,
           localVersion: upd.localVersion,
           latestVersion: upd.latestVersion,
-          message: `检测到新版本：本地 v${upd.localVersion || '未知'} → 线上 v${upd.latestVersion || '未知'}，脚本哈希因此不一致。请在「主页 → 可更新」中更新后再运行。`
+          message: `检测到新版本：本地 v${upd.localVersion || '未知'} → 线上 v${upd.latestVersion || '未知'}，脚本哈希因此不一致。请更新后再运行（闸门里可一键更新）。`
         }
       }
     }
@@ -561,15 +627,25 @@ export async function verifyHomepage(id: string): Promise<HomepageVerifyResult> 
     st.verify = verified ? 'verified' : 'mismatch'
     state[id] = st
     await saveState(state)
+
+    // 哈希不一致且线上没有更新 → 差异只能来自本地编辑。带上版本关系，
+    // 好让界面说清楚到底是「版本号没改」还是「本地比线上还新」。
+    const localEdit = !verified && !notFound ? await describeLocalEdit(source) : null
+
     return {
       entry: stripContent(await readHomepage(id)),
       reachable: true,
       notFound,
+      locallyEdited: localEdit !== null,
+      localVersion: source.meta.version,
+      marketVersion: localEdit?.marketVersion,
       message: verified
         ? `联网校验通过：编号 ${source.meta.id} 与脚本哈希一致`
         : notFound
           ? `编号不存在：服务端查无编号 ${source.meta.id}（可能尚未上架 / 已下架 / 已设为私密），无法核对脚本来源。请核对编号，或到「主页市场」重新下载。`
-          : `联网校验未通过：编号 ${source.meta.id} 与脚本哈希不一致，脚本可能已被篡改，已拒绝运行`
+          : localEdit
+            ? `编号 ${source.meta.id} 的本地脚本与线上版本不一致，但线上并没有更新的版本（本地 v${source.meta.version || '未填'} / 线上 v${localEdit.marketVersion || '未填'}）：说明这份脚本在本地被改动过（作者自改，或编辑器改了换行符）。这不是篡改——确认是你自己的改动后可直接继续运行。`
+            : `联网校验未通过：编号 ${source.meta.id} 与脚本哈希不一致，脚本可能已被篡改，已拒绝运行`
     }
   } catch (err) {
     // 服务端不可达：按无编号脚本流程处理（本地检测 + 首次确认），不阻断使用。
@@ -642,8 +718,10 @@ export async function fetchMarket(): Promise<MarketScript[]> {
  * 检查已安装的「联网校验」主页是否有更新。
  *
  * 只检查带服务端编号（meta.id 形如 HC-XXXXXX）的脚本：它们才有可比对的线上版本。
- * 线上清单取自主页市场（仅 published + public），比对服务端最新 SHA256 与本地哈希：
- * 哈希不同即视为有更新（同时带上版本号，便于界面展示「v旧 → v新」）。
+ * 线上清单取自主页市场（仅 published + public），先比 SHA256 排除「内容一致」，
+ * 再要求**版本号确实更高**才计入——与 findHomepageUpdate 用同一把尺子（isMarketNewer）。
+ * 否则本地被改动过的脚本会一直被算成「可更新」：侧栏挂着角标、列表里点一下就用线上版
+ * 覆盖掉本地改动，而更新后哈希依然对不上，于是变成「怎么更新都说不一致」的死循环。
  * 已被封锁的脚本不参与检查（只能删除或重新导入）。
  */
 export async function checkHomepageUpdates(): Promise<HomepageUpdate[]> {
@@ -661,6 +739,8 @@ export async function checkHomepageUpdates(): Promise<HomepageUpdate[]> {
     if (!m) continue
     // 哈希一致即本地已是最新；版本号变化但内容未变（理论上不会）也不算更新。
     if (m.sha256 && m.sha256.toLowerCase() === e.sha256.toLowerCase()) continue
+    // 哈希不同但版本号没变 → 差异来自本地改动，不是「线上有更新」。
+    if (!isMarketNewer(e.meta.version, m.version)) continue
     updates.push({
       localId: e.id,
       id: e.meta.id,
@@ -683,6 +763,20 @@ export async function updateHomepage(update: HomepageUpdate): Promise<HomepageEn
   if (!HOMEPAGE_ID_RE.test(update.id)) throw new Error(`编号格式不正确：${update.id}`)
   const dest = resolveEntry(update.localId)
   await ensureDir()
+
+  // 拒绝降级覆盖：本地版本已经不低于市场记录时，「更新」只会把作者自己的改动用线上
+  // 旧版抹掉。凡是判为可更新的条目都应满足线上版本更高（见 isMarketNewer），
+  // 这里再核一次，防止过期的更新记录或调用方传错对象造成不可逆的丢失。
+  const localVersion = await fsp
+    .readFile(dest, 'utf-8')
+    .then((text) => parseHomepageMeta(text, update.localId).version)
+    .catch(() => '')
+  if (localVersion && !isMarketNewer(localVersion, update.latestVersion)) {
+    throw new Error(
+      `本地版本 v${localVersion || '未填'} 不低于线上 v${update.latestVersion || '未填'}，已拒绝用线上版本覆盖本地脚本`
+    )
+  }
+
   const tmp = `${dest}.download`
   try {
     await streamDownload(update.url, tmp, { sizeHint: update.size })
@@ -696,6 +790,17 @@ export async function updateHomepage(update: HomepageUpdate): Promise<HomepageEn
     if (buf.byteLength === 0) throw new Error('下载到的脚本内容为空')
     if (buf.byteLength > MAX_MARKET_SIZE) throw new Error('脚本体积超出上限（512KB）')
     if (!looksLikeHtml(buf)) throw new Error('下载到的文件不是有效的 HTML 主页脚本')
+    // 核对市场记录里的 SHA256：编号 + 哈希这套机制的意义就在这里。
+    // 缺了这一步，被截断 / 传输损坏 / CDN 返回了别的东西都会被当成正常脚本装进去，
+    // 装完再校验必然失败，用户看到的是「明明点了更新还是说不一致」，却查不到原因。
+    if (update.latestSha256) {
+      const got = sha256(buf)
+      if (got.toLowerCase() !== update.latestSha256.toLowerCase()) {
+        throw new Error(
+          `下载内容与服务端记录不一致（期望 ${update.latestSha256.slice(0, 8)}，实得 ${got.slice(0, 8)}），已放弃覆盖以免损坏现有脚本`
+        )
+      }
+    }
     // 覆盖前先落盘临时文件，确认无误再替换，避免半截文件破坏原脚本。
     await fsp.rename(tmp, dest)
   } catch (err) {

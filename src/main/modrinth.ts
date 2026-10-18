@@ -232,7 +232,7 @@ export async function downloadTo(
  * 因此这里硬编码地址；文件名由 URL 末段推导，便于后续版本号替换。
  */
 export const OFFLINE_TRANSLATE_URL =
-  'https://test13121314.cn-nb2.rains3.com/MCAutoTranslationTool-1.3.11-fabric-all.jar'
+  'https://pan.johnnyblog.top/d/%E6%88%91%E7%9A%84%E4%B8%96%E7%95%8C%E8%B5%84%E6%BA%90/MCAutoTranslationTool-1.4-beta3-fabric-all.jar?sign=or8QTnwiokGb-7HBIDuGoZOGzMniH9XUFaUCpckgM5I=:0'
 
 /** 从下载地址推导文件名（取路径末段，去掉查询串）。 */
 function filenameFromUrl(url: string): string {

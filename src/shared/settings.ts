@@ -90,12 +90,7 @@ export const SETTINGS_DEFS: SettingsDefs = {
   mode: { default: 'normal', ui: { section: 'mode', control: 'custom' } },
   showServerStatus: {
     default: true,
-    ui: {
-      section: 'mode',
-      control: 'switch',
-      labelKey: 'settings.row.showServerStatus',
-      hintKey: 'settings.showServerStatus.desc'
-    }
+    ui: { section: 'mode', control: 'switch', labelKey: 'settings.row.showServerStatus' }
   },
 
   /* ============ 外观（板块 id：appearance） ============ */
@@ -162,8 +157,7 @@ export const SETTINGS_DEFS: SettingsDefs = {
     ui: {
       section: 'experimental',
       control: 'switch',
-      labelKey: 'settings.row.topNav',
-      hintKey: 'settings.exp.topNav.desc'
+      labelKey: 'settings.row.topNav'
     }
   },
   enableMultiplayer: { default: false, ui: { section: 'experimental', control: 'custom' } },
@@ -247,7 +241,6 @@ export const SETTINGS_DEFS: SettingsDefs = {
       control: 'select',
       labelKey: 'settings.row.communitySource',
       disabled: true,
-      hintKey: 'settings.hint.communitySource',
       options: [
         { value: 'mirror-first', labelKey: 'settings.source.mirrorFirstList' },
         { value: 'auto', labelKey: 'settings.communitySource.auto' },
@@ -262,7 +255,6 @@ export const SETTINGS_DEFS: SettingsDefs = {
       control: 'select',
       labelKey: 'settings.row.modTitleStyle',
       disabled: true,
-      hintKey: 'settings.hint.modTitleStyle',
       options: [
         { value: 'translated-first', labelKey: 'settings.modTitle.translatedFirst' },
         { value: 'filename-first', labelKey: 'settings.modTitle.filenameFirst' }
@@ -287,21 +279,11 @@ export const SETTINGS_DEFS: SettingsDefs = {
   /* ============ 更新（板块 id：update） ============ */
   autoCheckLauncherUpdate: {
     default: true,
-    ui: {
-      section: 'update',
-      control: 'switch',
-      labelKey: 'settings.row.autoCheckLauncher',
-      hintKey: 'settings.update.autoLauncher.desc'
-    }
+    ui: { section: 'update', control: 'switch', labelKey: 'settings.row.autoCheckLauncher' }
   },
   autoCheckHomepageUpdate: {
     default: true,
-    ui: {
-      section: 'update',
-      control: 'switch',
-      labelKey: 'settings.row.autoCheckHomepage',
-      hintKey: 'settings.update.autoHomepage.desc'
-    }
+    ui: { section: 'update', control: 'switch', labelKey: 'settings.row.autoCheckHomepage' }
   },
 
   /* ============ 以下为无独立设置行的字段（默认值仍在此登记） ============ */

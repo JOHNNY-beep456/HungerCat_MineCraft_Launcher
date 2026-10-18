@@ -105,8 +105,7 @@ let cached: NativeModule | null | undefined
 
 /** 当前平台的产物目录名，与 scripts/build-native-downloader.mjs 保持一致。 */
 function platformDir(): string {
-  const os =
-    process.platform === 'win32' ? 'win32' : process.platform === 'darwin' ? 'darwin' : 'linux'
+  const os = process.platform === 'win32' ? 'win32' : 'linux'
   return `${os}-${process.arch}`
 }
 

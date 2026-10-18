@@ -471,11 +471,14 @@ export function InstancesPage({ onManage }: { onManage: (versionId: string) => v
             </div>
           </div>
         ) : (
-          <div className="space-y-3 pb-4">
+          <div className="inst-list space-y-3 pb-4">
             {visible.map((v, i) => (
               <motion.div
                 key={v.id}
-                initial={{ opacity: 0, y: 8 }}
+                /* 只有首屏前几张播放入场动画：实例多时（几十张卡）全部动画会强制
+                   所有卡片（含磨砂背景层）参与绘制，实测把切换帧率压到个位数。
+                   屏幕外的卡片本来看不见，直接以终态渲染即可。 */
+                initial={i < 8 ? { opacity: 0, y: 8 } : false}
                 animate={{ opacity: 1, y: 0 }}
                 transition={{ type: 'spring', bounce: 0, duration: 0.3, delay: Math.min(i * 0.03, 0.2) }}
               >

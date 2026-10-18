@@ -38,8 +38,7 @@ interface DownloadTask {
 }
 
 const isWindows = process.platform === 'win32'
-const isMac = process.platform === 'darwin'
-const osName = isWindows ? 'windows' : isMac ? 'osx' : 'linux'
+const osName = isWindows ? 'windows' : 'linux'
 
 /**
  * 按当前「文件下载源」策略构造有序候选地址。
@@ -305,7 +304,6 @@ export function libraryPaths(name: string): { prefix: string; base: string } {
 function nativeClassifierCandidates(): string[] {
   const arch = process.arch
   if (isWindows) return ['natives-windows', 'natives-windows-arm64', 'natives-windows-x86_64']
-  if (isMac) return arch === 'arm64' ? ['natives-macos-arm64', 'natives-macos'] : ['natives-macos', 'natives-macos-arm64']
   return arch === 'arm64' ? ['natives-linux-arm64', 'natives-linux'] : ['natives-linux']
 }
 
@@ -316,7 +314,7 @@ export function pickClassifier(lib: Library): string | null {
       if (classifiers[c]) return c
     }
   }
-  const key = isWindows ? 'windows' : isMac ? 'osx' : 'linux'
+  const key = isWindows ? 'windows' : 'linux'
   const c = lib.natives?.[key]
   return typeof c === 'string' ? c : null
 }

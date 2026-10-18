@@ -9,11 +9,6 @@ import { AutoSection } from './AutoSection'
  */
 export function DownloadSection(): JSX.Element {
   return (
-    <AutoSection
-      section="download"
-      titleKey="settings.section.download"
-      icon="download"
-      footnotes={['settings.hint.download', 'settings.hint.source']}
-    />
+    <AutoSection section="download" titleKey="settings.section.download" icon="download" />
   )
 }

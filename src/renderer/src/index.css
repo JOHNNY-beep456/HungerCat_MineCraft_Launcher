@@ -7,6 +7,35 @@
 :root {
   color-scheme: light;
 
+  /* --- 窗口控制按钮的默认档（原毛玻璃 / 3D 云母 / 液态玻璃共用）---
+     红色取 **Windows 经典关闭红 #c42b1c** 而非原来的苹果红 #ff453a：
+     本项目已不做 macOS，而 Win10/11 标题栏本来就是这个色，白字 5.7:1。 */
+  --winbtn-radius: 8px;
+  --winbtn-border-width: 0px;
+  --winbtn-hover-bg: var(--fill-secondary);
+  --winbtn-hover-fg: var(--text-primary);
+  --winbtn-danger-bg: #c42b1c;
+  --winbtn-danger-fg: #ffffff;
+
+  /* --- 形状 / 材质的**归一化**令牌（跨皮肤同义名）---
+     各皮肤原本各自用私有变量名表达圆角与材质（--gh-radius-control、--wu3-radius-card、
+     --mc-radius、--m3-shape-lg、--control-raised-blur…），名字互不相通，iframe 既读不到
+     也不该去猜。这里统一成一组跨皮肤同义名：每套皮肤各填一份，桥接层再映射成
+     --hc-* 送进沙箱，自定义主页据此自动跟随（见 customhome/constants.ts 的 TOKENS）。
+
+     --radius-control   控件圆角（按钮 / 输入框 / 芯片 / 下拉）
+     --radius-card      卡片与浮层圆角
+     --radius-full      全圆角（药丸 / 开关滑块）
+     --surface-material 材质关键字：glass 磨砂 / mica 云母 / acrylic 亚克力 / solid 实色
+     --surface-blur     卡片背景的实际模糊值，实色皮肤给 none
+     --surface-border-width 描边宽度（我的世界那档是 2px 立体倒角） */
+  --radius-control: 12px;
+  --radius-card: 24px;
+  --radius-full: 999px;
+  --surface-material: glass;
+  --surface-blur: blur(36px) saturate(180%);
+  --surface-border-width: 1px;
+
   --text-primary: rgba(0, 0, 0, 0.9);
   --text-secondary: rgba(0, 0, 0, 0.58);
   --text-tertiary: rgba(0, 0, 0, 0.38);
@@ -123,7 +152,7 @@ body {
   user-select: none;
 }
 
-/* --- Animated mesh gradient background (iOS-style wallpaper) --- */
+/* --- Mesh gradient background (iOS-style wallpaper) --- */
 /* 基色即「午夜」预设（默认背景）；其余预设见下方的 data-bg 覆盖。 */
 .app-background {
   position: fixed;
@@ -182,113 +211,11 @@ body {
   inset: 0;
   background: var(--wallpaper-scrim);
 }
-/* 照片上的装饰光斑收得比纯色底更淡，避免糊掉画面 */
-:root[data-theme][data-skin][data-wallpaper='on'] .app-background .blob {
-  opacity: 0.16;
-}
 
-/* 各预设的装饰光斑配色（与背景基调协调） */
-[data-bg='sunset'] .blob-1 {
-  background: radial-gradient(circle, #ff9f45 0%, #ff375f 60%, transparent 72%);
-}
-[data-bg='sunset'] .blob-2 {
-  background: radial-gradient(circle, #ffd23f 0%, #ff7a00 60%, transparent 74%);
-}
-[data-bg='sunset'] .blob-3 {
-  background: radial-gradient(circle, #ff5c8a 0%, #a855f7 62%, transparent 76%);
-}
-[data-bg='forest'] .blob-1 {
-  background: radial-gradient(circle, #34d399 0%, #0ea5e9 60%, transparent 72%);
-}
-[data-bg='forest'] .blob-2 {
-  background: radial-gradient(circle, #22c55e 0%, #14b8a6 60%, transparent 74%);
-}
-[data-bg='forest'] .blob-3 {
-  background: radial-gradient(circle, #84cc16 0%, #10b981 62%, transparent 76%);
-}
-[data-bg='rose'] .blob-1 {
-  background: radial-gradient(circle, #fb7185 0%, #f43f5e 60%, transparent 72%);
-}
-[data-bg='rose'] .blob-2 {
-  background: radial-gradient(circle, #ec4899 0%, #d946ef 60%, transparent 74%);
-}
-[data-bg='rose'] .blob-3 {
-  background: radial-gradient(circle, #f472b6 0%, #a855f7 62%, transparent 76%);
-}
-[data-bg='mono'] .blob-1 {
-  background: radial-gradient(circle, #64748b 0%, #475569 60%, transparent 72%);
-}
-[data-bg='mono'] .blob-2 {
-  background: radial-gradient(circle, #94a3b8 0%, #64748b 60%, transparent 74%);
-}
-[data-bg='mono'] .blob-3 {
-  background: radial-gradient(circle, #cbd5e1 0%, #94a3b8 62%, transparent 76%);
-}
+/* 背景只保留渐变底色；装饰光斑（.blob）已移除。
+   背景“模糊”由各处玻璃面板的 backdrop-filter 承担，不再靠彩色光斑造氛围。 */
 
-.app-background .blob {
-  position: absolute;
-  border-radius: 50%;
-  filter: blur(90px);
-  opacity: 0.55;
-  will-change: transform;
-}
-
-[data-theme='dark'] .app-background .blob {
-  opacity: 0.4;
-}
-
-.blob-1 {
-  width: 52vw;
-  height: 52vw;
-  left: -14vw;
-  top: -16vw;
-  background: radial-gradient(circle, #4f7cff 0%, #7a5cff 60%, transparent 72%);
-  animation: drift1 26s ease-in-out infinite alternate;
-}
-.blob-2 {
-  width: 44vw;
-  height: 44vw;
-  right: -12vw;
-  top: -8vw;
-  background: radial-gradient(circle, #ff5c8a 0%, #c84dff 60%, transparent 74%);
-  animation: drift2 32s ease-in-out infinite alternate;
-}
-.blob-3 {
-  width: 40vw;
-  height: 40vw;
-  left: 24vw;
-  bottom: -20vw;
-  background: radial-gradient(circle, #2fd0c0 0%, #2f7bff 62%, transparent 76%);
-  animation: drift3 38s ease-in-out infinite alternate;
-}
-
-@keyframes drift1 {
-  from {
-    transform: translate3d(0, 0, 0) scale(1);
-  }
-  to {
-    transform: translate3d(10vw, 8vh, 0) scale(1.18);
-  }
-}
-@keyframes drift2 {
-  from {
-    transform: translate3d(0, 0, 0) scale(1.12);
-  }
-  to {
-    transform: translate3d(-8vw, 12vh, 0) scale(0.96);
-  }
-}
-@keyframes drift3 {
-  from {
-    transform: translate3d(0, 0, 0) scale(0.98);
-  }
-  to {
-    transform: translate3d(-6vw, -10vh, 0) scale(1.16);
-  }
-}
-
-/* --- 像素猫吃鱼加载动画 --- */
-.catfish-bob {
+/* --- 像素猫吃鱼加载动画 --- */.catfish-bob {
   animation: catfish-bob 1.4s ease-in-out infinite;
   transform-box: fill-box;
   transform-origin: center;
@@ -369,6 +296,9 @@ body {
   backdrop-filter: blur(36px) saturate(180%);
   border: 1px solid var(--glass-border);
   box-shadow: var(--glass-shadow);
+  /* 圆角改由 --radius-card 驱动，而不是各组件在 JSX 里写 rounded-[24px] / rounded-[26px]。
+     这样令牌才是**真实值**（自定义主页读到的与宿主卡片所见一致），也让基础档也能跟随。 */
+  border-radius: var(--radius-card);
 }
 
 .glass-strong {
@@ -378,6 +308,7 @@ body {
   backdrop-filter: blur(48px) saturate(200%);
   border: 1px solid var(--glass-border);
   box-shadow: var(--glass-shadow);
+  border-radius: var(--radius-card);
 }
 
 .glass-soft {
@@ -386,6 +317,7 @@ body {
   background: var(--glass-bg-soft);
   backdrop-filter: blur(24px) saturate(160%);
   border: 1px solid var(--glass-border);
+  border-radius: var(--radius-control);
 }
 
 /* 3D 的「厚度」来自面板自身被光扫过的明暗，而不是更透。
@@ -642,6 +574,43 @@ textarea.input {
   -webkit-app-region: no-drag;
 }
 
+/* --- 窗口控制按钮（最小化 / 最大化 / 关闭）---
+   尺寸写死（28×40，够点又不抢戏），**形状与配色全吃令牌**，于是自动随皮肤变：
+   玻璃皮 8px 圆角、WinUI2 / 我的世界直角、GitHub 6px、M3 16px……
+   之前这里是 Tailwind 的 rounded-lg + 内联 #ff453a（苹果红）写死的，
+   于是所有皮肤一律圆角 + 同一档红，与皮肤本身的设计语言对不上。 */
+.winbtn {
+  height: 28px;
+  width: 40px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  /* 显式声明背景与内边距，不依赖 Tailwind preflight 是否重置 button 的 UA 样式：
+     一旦 preflight 变了，按钮会突然冒出灰底和系统内边距。 */
+  background: transparent;
+  padding: 0;
+  border-radius: var(--winbtn-radius);
+  /* 我的世界那档要 2px 立体倒角，宽度为 0 时这行不产生任何视觉影响 */
+  border: var(--winbtn-border-width, 0) solid transparent;
+  border-color: var(--winbtn-bevel-light, transparent) var(--winbtn-bevel-dark, transparent)
+    var(--winbtn-bevel-dark, transparent) var(--winbtn-bevel-light, transparent);
+  color: var(--text-secondary);
+  cursor: default;
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+.winbtn:hover {
+  background: var(--winbtn-hover-bg);
+  color: var(--winbtn-hover-fg);
+}
+.winbtn--danger:hover {
+  background: var(--winbtn-danger-bg);
+  color: var(--winbtn-danger-fg);
+  border-color: var(--winbtn-danger-bevel-light, var(--winbtn-bevel-light, transparent))
+    var(--winbtn-danger-bevel-dark, var(--winbtn-bevel-dark, transparent))
+    var(--winbtn-danger-bevel-dark, var(--winbtn-bevel-dark, transparent))
+    var(--winbtn-danger-bevel-light, var(--winbtn-bevel-light, transparent));
+}
+
 /* --- 联机板块（MCTier 移植）局部控件 --- */
 .mp-input {
   width: 100%;
@@ -710,9 +679,6 @@ textarea.input {
 
 /* --- Reduced motion --- */
 @media (prefers-reduced-motion: reduce) {
-  .app-background .blob {
-    animation: none !important;
-  }
   .catfish-bob,
   .catfish-wag {
     animation: none !important;
@@ -747,9 +713,6 @@ textarea.input {
   }
 }
 
-[data-reduced-motion='true'] .app-background .blob {
-  animation: none !important;
-}
 [data-reduced-motion='true'] .catfish-bob,
 [data-reduced-motion='true'] .catfish-wag {
   animation: none !important;
@@ -769,14 +732,61 @@ textarea.input {
   user-select: text;
 }
 
+/* --- 实例列表：屏幕外的卡片跳过布局与绘制 ---
+   实例多时（几十个版本、每张卡还带存档/服务器行）一次挂载会产生近万个节点，
+   Chromium 需要为全部节点做布局/绘制，实测首帧长任务 ~250ms、切换动画掉到 38fps。
+   content-visibility: auto 让视口外的卡片直接跳过这些阶段；contain-intrinsic-size
+   的 auto 关键字会记住实际高度，滚动时不会跳动。 */
+.inst-list > * {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 200px;
+}
+
+/* 卡片内的小行（存档 / 服务器）不再各做一层 backdrop 模糊：
+   它们的背景就是父卡片的半透明表面，再模糊一次肉眼几乎看不出来，
+   但实例多时会产生数百层模糊，切换页面/滚动时逐帧重算。 */
+.glass .glass-soft,
+.glass-strong .glass-soft {
+  backdrop-filter: none;
+}
+
+/* ------------------------------------------------------------------ */
+/*  普通模式（默认皮肤 glass）：扁平化                                   */
+/*  磨砂玻璃的开销已单独做成实验项「模糊玻璃」（见文件末尾）。默认档直接    */
+/*  走扁平：关闭 backdrop-filter、受光渐变与投影，表面改为实色；          */
+/*  极简模式（[data-mode='minimal']）规则在其后，优先级更高。             */
+/* ------------------------------------------------------------------ */
+:root[data-skin='glass']:not([data-frosted='on']) {
+  /* 自定义主页消费的令牌：与肉眼所见保持一致（实色、无模糊） */
+  --surface-material: solid;
+  --surface-blur: none;
+  /* 控件层同样二维化：去掉凸起/内嵌的受光渐变与投影 */
+  --control-raised-blur: none;
+  --control-well-blur: none;
+  --surface-shade: none;
+  --surface-shade-inset: none;
+  --glass-shadow-control: none;
+  --glass-shadow-well: none;
+}
+
+:root[data-skin='glass']:not([data-frosted='on']) .glass,
+:root[data-skin='glass']:not([data-frosted='on']) .glass-strong,
+:root[data-skin='glass']:not([data-frosted='on']) .glass-soft {
+  background: var(--surface-flat);
+  background-image: none;
+  backdrop-filter: none;
+  box-shadow: none;
+}
+
+:root[data-skin='glass']:not([data-frosted='on']) .glass::before {
+  display: none;
+}
+
 /* ------------------------------------------------------------------ */
 /*  极简模式：所有 UI 二维化（去除玻璃模糊、阴影、动态背景与光晕）        */
 /* ------------------------------------------------------------------ */
 [data-mode='minimal'] .app-background {
   background: var(--bg-flat) !important;
-}
-[data-mode='minimal'] .app-background .blob {
-  display: none !important;
 }
 [data-mode='minimal'] .glass,
 [data-mode='minimal'] .glass-strong,
@@ -1006,7 +1016,24 @@ textarea.input {
 /*  纯 CSS 3D 玩家模型（默认主页）：缓慢自转，展示皮肤与帽子外层。        */
 /* ------------------------------------------------------------------ */
 .player3d-spin {
-  animation: player3d-spin 18s linear infinite;
+  /* 性能：用 steps() 把逐帧连续旋转离散化。模型是 preserve-3d 的一堆立方体面，
+    连续旋转会让整个 3D 场景每帧重新光栅化（实测把启动页拖到 ~38–54fps）。
+    默认 1080 步 / 18 秒 = 每帧转 1/3°（60Hz），与连续旋转观感一致但无需逐帧重绘，
+    实测稳定 60fps、零长帧。 */
+  animation: player3d-spin 18s steps(1080, end) infinite;
+}
+
+/* 磨砂类皮肤（模糊玻璃 / 3D 云母）：模型每次重绘都会连带玻璃做一次 backdrop
+   重模糊，60Hz 会把界面压到 ~40fps；降到 30Hz（每步 0.66°）即可稳定 60fps，
+   肉眼几乎看不出与 60Hz 的差别。 */
+:root[data-frosted='on'] .player3d-spin,
+:root[data-skin='mica'] .player3d-spin {
+  animation-timing-function: steps(540, end);
+}
+
+/* 液态玻璃：模糊层更厚（48–64px + 高饱和），降到 20Hz（每步 1°）稳定 60fps。 */
+:root[data-skin='mac'] .player3d-spin {
+  animation-timing-function: steps(360, end);
 }
 @keyframes player3d-spin {
   from {
@@ -1490,6 +1517,13 @@ textarea.input {
   font-family: 'Segoe UI Variable Text', 'Segoe UI', 'Microsoft YaHei', system-ui, sans-serif;
 }
 
+/* Win10 桌面模式：直接对齐 Windows 10 原生标题栏 —— 直角、关闭红 #e81123。 */
+[data-skin='win10'] .winbtn {
+  --winbtn-radius: 0px;
+  --winbtn-danger-bg: #e81123;
+  --winbtn-danger-fg: #ffffff;
+}
+
 [data-skin='win10'] {
   --text-primary: rgba(0, 0, 0, 0.9);
   --text-secondary: rgba(0, 0, 0, 0.62);
@@ -1527,6 +1561,17 @@ textarea.input {
   --win10-tile-border: rgba(255, 255, 255, 0.32);
   --win10-label: #ffffff;
   --win10-select: rgba(255, 255, 255, 0.3);
+
+  /* 形状 / 材质（归一化，供自定义主页自适应）。
+     Win10 桌面模式是**卡片列表式**布局（设置类面板仍会渲染成带圆角的 .glass），
+     所以这一档跟基础档一致，不额外归零 —— 实测 .glass 在该档算出 26px。
+     真要直角，得先让这一档也覆写 .glass 的圆角，光改令牌只会与实际渲染对不上。 */
+  --radius-control: 12px;
+  --radius-card: 26px;
+  --radius-full: 999px;
+  --surface-material: solid;
+  --surface-blur: none;
+  --surface-border-width: 1px;
 }
 
 [data-skin='win10'][data-theme='dark'] {
@@ -1681,6 +1726,16 @@ textarea.input {
   --scrim: rgba(0, 0, 0, 0.4);
   --surface-flat: var(--m3-surface);
   --bg-flat: var(--m3-surface-container);
+
+  /* 形状 / 材质（归一化，供自定义主页自适应）。
+     M3 的按钮是**药丸**（.btn 走 --m3-shape-full），所以控件档取 full 而不是 md ——
+     令牌必须等于实际渲染值，否则主页跟着做的圆角会和宿主对不上。 */
+  --radius-control: var(--m3-shape-full);
+  --radius-card: var(--m3-shape-lg);
+  --radius-full: var(--m3-shape-full);
+  --surface-material: solid;
+  --surface-blur: none;
+  --surface-border-width: 0px;
 }
 [data-skin='material'][data-material='baseline'][data-theme='dark'] {
   --glass-shadow: var(--m3-elev-1);
@@ -1894,6 +1949,15 @@ textarea.input {
 [data-skin='material'] .mica-well > button,
 [data-skin='material'] .mica-well .mica {
   border-radius: var(--m3-shape-full);
+}
+
+/* ---- 窗口控制按钮：M3 的 shape scale ----
+   M3 的图标按钮用 shape.corner.medium（12dp），比默认的 8px 更「方中带圆」；
+   关闭态用 M3 error 容器色 #b3261e（白字 6.5:1），与该皮肤的红色语义一致。 */
+[data-skin='material'] .winbtn {
+  --winbtn-radius: var(--m3-shape-md);
+  --winbtn-danger-bg: #b3261e;
+  --winbtn-danger-fg: #ffffff;
 }
 
 /* ---- 填充输入框（Filled text field）----
@@ -2152,10 +2216,6 @@ textarea.input {
 :root[data-skin='material'][data-theme][data-wallpaper='on'] .app-background::before {
   display: none;
 }
-/* 装饰光斑一并去掉：M3 是扁平配色，不靠彩色雾团造氛围 */
-:root[data-skin='material'] .app-background .blob {
-  display: none;
-}
 
 /* ==================================================================== */
 /*  实验性皮肤 4：GitHub（Primer 设计系统）                             */
@@ -2386,6 +2446,14 @@ textarea.input {
   --surface-flat: var(--gh-canvas-default);
   --bg-flat: var(--gh-canvas-subtle);
   --wallpaper-scrim: none;
+
+  /* 形状 / 材质（归一化，供自定义主页自适应） */
+  --radius-control: var(--gh-radius-control);
+  --radius-card: var(--gh-radius-medium);
+  --radius-full: var(--gh-radius-full);
+  --surface-material: solid;
+  --surface-blur: none;
+  --surface-border-width: var(--gh-border-width);
 }
 
 /* 子主题可以与「外观 → 主题」的明暗不一致（Primer 就是这个行为），
@@ -2396,6 +2464,17 @@ textarea.input {
 }
 [data-skin='github']:is([data-gh-theme='dark'], [data-gh-theme='dimmed'], [data-gh-theme='dark-hc']) {
   color-scheme: dark;
+}
+
+/* ---- 窗口控制按钮：Primer 的 6px control radius ----
+   关闭态沿用 Primer 的 danger.fg #cf222e（白字 5.4:1），
+   悬停底色用 accent.subtle，与 Primer 交互态的取色一致。 */
+[data-skin='github'] .winbtn {
+  --winbtn-radius: var(--gh-radius-control);
+  --winbtn-hover-bg: var(--gh-accent-subtle);
+  --winbtn-hover-fg: var(--gh-fg-default);
+  --winbtn-danger-bg: var(--gh-danger-fg);
+  --winbtn-danger-fg: #ffffff;
 }
 
 /* Primer 的正文栈：在启动器默认栈之后补 Noto Sans / Helvetica / Arial */
@@ -2605,6 +2684,985 @@ textarea.input {
 :root[data-skin='github'][data-theme][data-wallpaper='on'] .app-background::before {
   display: none;
 }
-:root[data-skin='github'] .app-background .blob {
+
+/* ====================================================================
+   WinUI 2 / WinUI 3 —— 微软 Fluent 设计系统
+   --------------------------------------------------------------------
+   两套**独立**的设计系统，不是同一套换配色，差异落在四处硬指标上：
+
+     维度        WinUI 3（Win11）        WinUI 2（UWP / Win10）
+     ---------   ---------------------   ---------------------
+     材质        Mica 云母               Acrylic 亚克力
+     控件圆角    4px（按钮）/ 8px（卡）   0px（按钮）/ 2px（卡）
+     字体        Segoe UI Variable      Segoe UI
+     密度        宽松，命中区 ≥ 32px      紧凑，密集排布
+
+   两者都**接管** --fill-primary：Fluent 的品牌蓝就是它们的强调色
+   （Win11 #0067C0 / Win10 #0078D4），不跟随用户的自定义主题色，
+   与 material / github 两套实色皮肤的处理一致（对照 app.ts 的
+   windowBackgroundColor()：两套皮肤的底色都是实色，背景预设与壁纸不生效）。
+   ==================================================================== */
+
+/* ====================================================================
+   皮肤一：WinUI 3（Windows 11）
+   ==================================================================== */
+
+[data-skin='winui3'] {
+  /* Mica 基底：与 app.ts 的 WINUI3_CANVAS 逐字一致（改一处必须同步另一处） */
+  --wu3-canvas: #f3f3f3;
+  --wu3-canvas-subtle: #eeeeee;
+  /* 卡片 = Mica Alt（比底色再抬一层，Win11 里就是这么分层的） */
+  --wu3-layer: rgba(255, 255, 255, 0.7);
+  --wu3-layer-strong: rgba(255, 255, 255, 0.85);
+  --wu3-layer-soft: rgba(255, 255, 255, 0.5);
+  --wu3-border: rgba(0, 0, 0, 0.0578);
+  --wu3-border-strong: rgba(0, 0, 0, 0.0956);
+  --wu3-text: #1a1a1a;
+  --wu3-text-secondary: rgba(0, 0, 0, 0.6063);
+  --wu3-text-tertiary: rgba(0, 0, 0, 0.4458);
+  --wu3-accent: #0067c0;
+  --wu3-accent-hover: #0078d4;
+  --wu3-accent-soft: rgba(0, 103, 192, 0.09);
+  --wu3-on-accent: #ffffff;
+  --wu3-danger: #b10e1c;
+  --wu3-success: #0f7b0f;
+  --wu3-scrim: rgba(0, 0, 0, 0.3);
+  /* 形状阶：Win11 的 CardCornerRadius 是 8px，ControlCornerRadius 是 4px */
+  --wu3-radius-control: 4px;
+  --wu3-radius-card: 8px;
+  /* Win11 的阴影很克制：只有一层几乎不可见的投影，靠分层而非投影表达高度 */
+  --wu3-shadow-card: 0 2px 8px rgba(0, 0, 0, 0.08);
+  --wu3-shadow-flyout: 0 8px 32px rgba(0, 0, 0, 0.14);
+  --wu3-border-width: 1px;
+}
+
+[data-skin='winui3'][data-theme='dark'] {
+  --wu3-canvas: #202020;
+  --wu3-canvas-subtle: #1c1c1c;
+  --wu3-layer: rgba(255, 255, 255, 0.0512);
+  --wu3-layer-strong: rgba(255, 255, 255, 0.0837);
+  --wu3-layer-soft: rgba(255, 255, 255, 0.0326);
+  --wu3-border: rgba(255, 255, 255, 0.0698);
+  --wu3-border-strong: rgba(255, 255, 255, 0.1);
+  --wu3-text: #ffffff;
+  --wu3-text-secondary: rgba(255, 255, 255, 0.786);
+  --wu3-text-tertiary: rgba(255, 255, 255, 0.5442);
+  --wu3-accent: #60cdff;
+  --wu3-accent-hover: #7ad6ff;
+  --wu3-accent-soft: rgba(96, 205, 255, 0.12);
+  --wu3-on-accent: #000000;
+  --wu3-danger: #ff99a4;
+  --wu3-success: #6ccb5f;
+  --wu3-scrim: rgba(0, 0, 0, 0.5);
+  --wu3-shadow-card: 0 2px 8px rgba(0, 0, 0, 0.32);
+  --wu3-shadow-flyout: 0 8px 32px rgba(0, 0, 0, 0.48);
+}
+
+/* 令牌桥接：把 Fluent 语义映射到组件层消费的通用令牌 */
+[data-skin='winui3'] {
+  --text-primary: var(--wu3-text);
+  --text-secondary: var(--wu3-text-secondary);
+  --text-tertiary: var(--wu3-text-tertiary);
+
+  --glass-bg: var(--wu3-layer);
+  --glass-bg-strong: var(--wu3-layer-strong);
+  --glass-bg-soft: var(--wu3-layer-soft);
+  --glass-border: var(--wu3-border);
+  --glass-highlight: transparent;
+  --glass-shadow: var(--wu3-shadow-card);
+  --surface-shade: none;
+  --surface-shade-inset: none;
+  --control-raised-blur: none;
+  --control-well-blur: none;
+  --control-hover-brightness: 0.98;
+
+  --glass-shadow-control: none;
+  --glass-shadow-well: inset 0 0 0 1px var(--wu3-border-strong);
+
+  --fill-primary: var(--wu3-accent);
+  --fill-primary-hover: var(--wu3-accent-hover);
+  --fill-secondary: var(--wu3-accent-soft);
+  --fill-secondary-hover: rgba(0, 103, 192, 0.16);
+  --fill-danger: var(--wu3-danger);
+  --fill-success: var(--wu3-success);
+
+  --chip-bg: var(--wu3-accent-soft);
+  --divider: var(--wu3-border);
+  --scrim: var(--wu3-scrim);
+  --surface-flat: var(--wu3-layer);
+  --bg-flat: var(--wu3-canvas-subtle);
+  --wallpaper-scrim: none;
+
+  /* 形状 / 材质（归一化，供自定义主页自适应） */
+  --radius-control: var(--wu3-radius-control);
+  --radius-card: var(--wu3-radius-card);
+  --radius-full: 999px;
+  --surface-material: mica;
+  --surface-blur: none;
+  --surface-border-width: var(--wu3-border-width);
+}
+
+/* Win11 的正文栈：Segoe UI Variable 优先，缺失时回落 Segoe UI */
+[data-skin='winui3'] body {
+  font-family: 'Segoe UI Variable Text', 'Segoe UI Variable', 'Segoe UI', 'Microsoft YaHei UI',
+    'Microsoft YaHei', system-ui, sans-serif;
+}
+
+/* ---- 组件复位 ---- */
+
+/* Mica 层：关掉磨砂与玻璃皮肤那两个高光伪元素（Fluent 靠分层，不靠内高光） */
+[data-skin='winui3'] :is(.glass, .glass-strong, .glass-soft) {
+  backdrop-filter: none;
+}
+[data-skin='winui3'] :is(.glass, .glass-strong, .glass-soft)::before,
+[data-skin='winui3'] :is(.glass, .glass-strong, .glass-soft)::after {
   display: none;
+}
+[data-skin='winui3'] .cursor-glow {
+  display: none;
+}
+
+/* 形状阶：卡片 8px、控件 4px（.chip 单独一条，见下面注释） */
+[data-skin='winui3'] .glass,
+[data-skin='winui3'] .glass-strong {
+  border-radius: var(--wu3-radius-card);
+}
+[data-skin='winui3'] .glass-soft {
+  border-radius: var(--wu3-radius-control);
+}
+[data-skin='winui3'] :is(.btn, .mica, .mica-well, .mica-well > button, .input) {
+  border-radius: var(--wu3-radius-control);
+}
+[data-skin='winui3'] :is(.glass, .glass-strong, .glass-soft) {
+  border: var(--wu3-border-width) solid var(--wu3-border);
+}
+
+/* 浮层（弹窗 / 下拉 / 右键菜单）用 flyout 阴影抬起 */
+[data-skin='winui3'] .glass-strong {
+  box-shadow: var(--wu3-shadow-flyout);
+}
+
+/* WinUI 3 的 chip 是「弱化的圆角矩形」，不是全圆药丸 */
+[data-skin='winui3'] .chip {
+  border-radius: var(--wu3-radius-control);
+}
+
+/* ---- 按钮：实底强调色 + 极轻投影，悬停只换底色不缩放 ---- */
+[data-skin='winui3'] .btn {
+  border: none;
+  box-shadow: none;
+  font-weight: 400;
+}
+[data-skin='winui3'] .btn-primary {
+  background: var(--wu3-accent);
+  color: var(--wu3-on-accent);
+}
+[data-skin='winui3'] .btn-primary:hover {
+  background: var(--wu3-accent-hover);
+}
+[data-skin='winui3'] .btn-secondary {
+  background: var(--wu3-layer);
+  color: var(--wu3-text);
+  border: var(--wu3-border-width) solid var(--wu3-border-strong);
+}
+[data-skin='winui3'] .btn-secondary:hover {
+  background: var(--wu3-layer-soft);
+}
+[data-skin='winui3'] .btn:focus-visible,
+[data-skin='winui3'] .input:focus {
+  outline: 2px solid var(--wu3-text);
+  outline-offset: 1px;
+}
+
+/* ---- 输入框：Fluent 的 TextBox 是「凹陷 + 一条底边」 ---- */
+[data-skin='winui3'] .input {
+  background: var(--wu3-layer);
+  border: var(--wu3-border-width) solid var(--wu3-border-strong);
+  border-bottom-color: var(--wu3-text-secondary);
+}
+
+/* ---- 窗口控制按钮：Fluent 的 ControlCornerRadius ----
+   WinUI 3 用 4px（窗口按钮属于 Standard 档控件），关闭红取 Win11 的 #c42b1c。 */
+[data-skin='winui3'] .winbtn {
+  --winbtn-radius: var(--wu3-radius-control);
+  --winbtn-hover-bg: var(--wu3-layer-soft);
+  --winbtn-hover-fg: var(--wu3-text);
+  --winbtn-danger-bg: #c42b1c;
+  --winbtn-danger-fg: #ffffff;
+}
+
+/* ---- 滚动条：Win11 的细滚动条，滑块用中性档、悬停才变强调色 ---- */
+[data-skin='winui3'] ::-webkit-scrollbar-thumb {
+  background: var(--wu3-border-strong);
+  background-clip: padding-box;
+}
+[data-skin='winui3'] ::-webkit-scrollbar-thumb:hover {
+  background: var(--wu3-text-secondary);
+  background-clip: padding-box;
+}
+
+/* ---- 排版：Segoe UI Variable Display 用于大标题，字重比默认栈轻 ---- */
+[data-skin='winui3'] .display {
+  font-family: 'Segoe UI Variable Display', 'Segoe UI Variable', 'Segoe UI', system-ui, sans-serif;
+  font-weight: 600;
+  letter-spacing: 0;
+}
+[data-skin='winui3'] .title {
+  font-weight: 600;
+  letter-spacing: 0;
+}
+[data-skin='winui3'] .headline {
+  font-weight: 600;
+  letter-spacing: 0;
+}
+
+/* ---- 背景：Mica 基底是实色，背景预设与壁纸都不生效 ----
+   选择器带 :root 与 data-wallpaper 才能压过上面那条为抬优先级而写的壁纸规则。 */
+:root[data-skin='winui3'] .app-background,
+:root[data-skin='winui3'][data-theme][data-wallpaper='on'] .app-background {
+  background: var(--wu3-canvas);
+  background-image: none;
+}
+:root[data-skin='winui3'][data-theme][data-wallpaper='on'] .app-background::before {
+  display: none;
+}
+
+/* ====================================================================
+   皮肤二：WinUI 2（UWP / Windows 10）
+   --------------------------------------------------------------------
+   与 WinUI 3 的分水岭：Acrylic 而非 Mica、直角而非 4px、紧凑而非宽松。
+   Acrylic 在 Windows 10 里是「透出背景的半透明 + 强模糊」，但本启动器
+   把壁纸换成了实色画布，模糊实际无内容可采，所以这里同样退成 tint 处理 ——
+   差异保留在**层间对比更明显**（Acrylic 的层比 Mica 更透）与直角上。
+   ==================================================================== */
+
+[data-skin='winui2'] {
+  /* Acrylic 基底：与 app.ts 的 WINUI2_CANVAS 逐字一致 */
+  --wu2-canvas: #f0f0f0;
+  --wu2-canvas-subtle: #e6e6e6;
+  /* Acrylic 层比 Mica 更透：Win10 的 Acrylic tint 约 80% 不透明度 */
+  --wu2-layer: rgba(255, 255, 255, 0.8);
+  --wu2-layer-strong: rgba(255, 255, 255, 0.92);
+  --wu2-layer-soft: rgba(255, 255, 255, 0.6);
+  --wu2-border: rgba(0, 0, 0, 0.1);
+  --wu2-border-strong: rgba(0, 0, 0, 0.16);
+  --wu2-text: #000000;
+  --wu2-text-secondary: rgba(0, 0, 0, 0.54);
+  --wu2-text-tertiary: rgba(0, 0, 0, 0.38);
+  --wu2-accent: #0078d4;
+  --wu2-accent-hover: #2a80c0;
+  --wu2-accent-soft: rgba(0, 120, 212, 0.08);
+  --wu2-on-accent: #ffffff;
+  --wu2-danger: #a4262c;
+  --wu2-success: #107c10;
+  --wu2-scrim: rgba(0, 0, 0, 0.4);
+  /* 形状阶：UWP 的 Button 是直角，Card / Flyout 是 0~2px */
+  --wu2-radius-control: 0px;
+  --wu2-radius-card: 2px;
+  --wu2-shadow-card: 0 1px 3px rgba(0, 0, 0, 0.12);
+  --wu2-shadow-flyout: 0 4px 20px rgba(0, 0, 0, 0.24);
+  --wu2-border-width: 1px;
+}
+
+[data-skin='winui2'][data-theme='dark'] {
+  --wu2-canvas: #1f1f1f;
+  --wu2-canvas-subtle: #191919;
+  --wu2-layer: rgba(255, 255, 255, 0.06);
+  --wu2-layer-strong: rgba(255, 255, 255, 0.1);
+  --wu2-layer-soft: rgba(255, 255, 255, 0.04);
+  --wu2-border: rgba(255, 255, 255, 0.1);
+  --wu2-border-strong: rgba(255, 255, 255, 0.16);
+  --wu2-text: #ffffff;
+  --wu2-text-secondary: rgba(255, 255, 255, 0.72);
+  --wu2-text-tertiary: rgba(255, 255, 255, 0.48);
+  --wu2-accent: #4cc2ff;
+  --wu2-accent-hover: #7ad6ff;
+  --wu2-accent-soft: rgba(76, 194, 255, 0.12);
+  --wu2-on-accent: #000000;
+  --wu2-danger: #f1707b;
+  --wu2-success: #52e150;
+  --wu2-scrim: rgba(0, 0, 0, 0.6);
+  --wu2-shadow-card: 0 1px 3px rgba(0, 0, 0, 0.4);
+  --wu2-shadow-flyout: 0 4px 20px rgba(0, 0, 0, 0.56);
+}
+
+/* 令牌桥接 */
+[data-skin='winui2'] {
+  --text-primary: var(--wu2-text);
+  --text-secondary: var(--wu2-text-secondary);
+  --text-tertiary: var(--wu2-text-tertiary);
+
+  --glass-bg: var(--wu2-layer);
+  --glass-bg-strong: var(--wu2-layer-strong);
+  --glass-bg-soft: var(--wu2-layer-soft);
+  --glass-border: var(--wu2-border);
+  --glass-highlight: transparent;
+  --glass-shadow: var(--wu2-shadow-card);
+  --surface-shade: none;
+  --surface-shade-inset: none;
+  --control-raised-blur: none;
+  --control-well-blur: none;
+  --control-hover-brightness: 0.97;
+
+  --glass-shadow-control: none;
+  --glass-shadow-well: inset 0 0 0 1px var(--wu2-border-strong);
+
+  --fill-primary: var(--wu2-accent);
+  --fill-primary-hover: var(--wu2-accent-hover);
+  --fill-secondary: var(--wu2-accent-soft);
+  --fill-secondary-hover: rgba(0, 120, 212, 0.14);
+  --fill-danger: var(--wu2-danger);
+  --fill-success: var(--wu2-success);
+
+  --chip-bg: var(--wu2-accent-soft);
+  --divider: var(--wu2-border);
+  --scrim: var(--wu2-scrim);
+  --surface-flat: var(--wu2-layer);
+  --bg-flat: var(--wu2-canvas-subtle);
+  --wallpaper-scrim: none;
+
+  /* 形状 / 材质（归一化，供自定义主页自适应） */
+  --radius-control: var(--wu2-radius-control);
+  --radius-card: var(--wu2-radius-card);
+  --radius-full: 999px;
+  --surface-material: acrylic;
+  --surface-blur: none;
+  --surface-border-width: var(--wu2-border-width);
+}
+
+/* UWP 的正文栈：只有 Segoe UI，没有 Variable 字面 */
+[data-skin='winui2'] body {
+  font-family: 'Segoe UI', 'Microsoft YaHei UI', 'Microsoft YaHei', system-ui, sans-serif;
+}
+
+/* ---- 组件复位 ---- */
+[data-skin='winui2'] :is(.glass, .glass-strong, .glass-soft) {
+  backdrop-filter: none;
+}
+[data-skin='winui2'] :is(.glass, .glass-strong, .glass-soft)::before,
+[data-skin='winui2'] :is(.glass, .glass-strong, .glass-soft)::after {
+  display: none;
+}
+[data-skin='winui2'] .cursor-glow {
+  display: none;
+}
+
+[data-skin='winui2'] .glass,
+[data-skin='winui2'] .glass-strong {
+  border-radius: var(--wu2-radius-card);
+}
+[data-skin='winui2'] .glass-soft {
+  border-radius: var(--wu2-radius-control);
+}
+[data-skin='winui2'] :is(.btn, .mica, .mica-well, .mica-well > button, .input, .chip) {
+  border-radius: var(--wu2-radius-control);
+}
+[data-skin='winui2'] :is(.glass, .glass-strong, .glass-soft) {
+  border: var(--wu2-border-width) solid var(--wu2-border);
+}
+
+[data-skin='winui2'] .glass-strong {
+  box-shadow: var(--wu2-shadow-flyout);
+}
+
+/* ---- 按钮：UWP 的经典实底矩形，无圆角无投影 ---- */
+[data-skin='winui2'] .btn {
+  border: none;
+  box-shadow: none;
+  font-weight: 400;
+}
+[data-skin='winui2'] .btn-primary {
+  background: var(--wu2-accent);
+  color: var(--wu2-on-accent);
+}
+[data-skin='winui2'] .btn-primary:hover {
+  background: var(--wu2-accent-hover);
+}
+[data-skin='winui2'] .btn-secondary {
+  background: transparent;
+  color: var(--wu2-text);
+  border: var(--wu2-border-width) solid var(--wu2-border-strong);
+}
+[data-skin='winui2'] .btn-secondary:hover {
+  background: var(--wu2-layer-soft);
+}
+[data-skin='winui2'] .btn:focus-visible,
+[data-skin='winui2'] .input:focus {
+  outline: 1px dotted var(--wu2-text);
+  outline-offset: -4px;
+}
+
+/* ---- 输入框：UWP 的 TextBox 也是凹陷式，底边更深 ---- */
+[data-skin='winui2'] .input {
+  background: var(--wu2-layer-soft);
+  border: var(--wu2-border-width) solid var(--wu2-border-strong);
+  border-bottom: 2px solid var(--wu2-text-secondary);
+}
+
+/* ---- 窗口控制按钮：UWP 是直角，关闭红取 Win10 的 #e81123 ---- */
+[data-skin='winui2'] .winbtn {
+  --winbtn-radius: var(--wu2-radius-control);
+  --winbtn-hover-bg: var(--wu2-layer-soft);
+  --winbtn-hover-fg: var(--wu2-text);
+  --winbtn-danger-bg: #e81123;
+  --winbtn-danger-fg: #ffffff;
+}
+
+/* ---- 滚动条：Win10 的宽滚动条 ---- */
+[data-skin='winui2'] ::-webkit-scrollbar-thumb {
+  background: var(--wu2-border-strong);
+  background-clip: padding-box;
+}
+[data-skin='winui2'] ::-webkit-scrollbar-thumb:hover {
+  background: var(--wu2-text-secondary);
+  background-clip: padding-box;
+}
+
+/* ---- 排版：UWP 的标题字重偏粗（Semibold），没有 Variable Display ---- */
+[data-skin='winui2'] .display {
+  font-weight: 300;
+  letter-spacing: 0;
+}
+[data-skin='winui2'] .title {
+  font-weight: 600;
+  letter-spacing: 0;
+}
+[data-skin='winui2'] .headline {
+  font-weight: 600;
+  letter-spacing: 0;
+}
+
+/* ---- 背景：Acrylic 基底是实色，背景预设与壁纸都不生效 ---- */
+:root[data-skin='winui2'] .app-background,
+:root[data-skin='winui2'][data-theme][data-wallpaper='on'] .app-background {
+  background: var(--wu2-canvas);
+  background-image: none;
+}
+:root[data-skin='winui2'][data-theme][data-wallpaper='on'] .app-background::before {
+  display: none;
+}
+
+/* ====================================================================
+   我的世界（基岩版）风格
+   --------------------------------------------------------------------
+   视觉来源是基岩版的**库存 / 创造模式 GUI**，也就是玩家最熟悉的那块灰：
+
+     · 全部直角，一个圆角都没有（MC 的 GUI 从来不圆）
+     · 立体倒角（bevel）：面板与按钮都是「左上提亮 / 右下沉暗」的 2px 双向描边，
+       槽位（slot）反过来是「左上压暗 / 右下提亮」的凹陷，模拟物品栏格子
+     · 库存面板灰 #C6C6C6（浅色档）／ 石头深灰 #1E1E1E（深色档）
+     · 强调色取草方块绿，正文字体优先 Minecraftia / Monocraft 这类像素字体
+
+   底色与 app.ts 的 MINECRAFT_CANVAS 逐字一致。
+   ==================================================================== */
+
+[data-skin='minecraft'] {
+  /* 浅色档 = 经典库存面板灰。与原版一致的是「浅底 + 深字」：
+     面板和画布几乎同明度，**层级靠倒角和硬投影表达，而不是靠明度差**——
+     这样文字色只需保证对 #c6c6c6 可读，就能同时覆盖画布、卡片、输入框。 */
+  --mc-canvas: #c6c6c6;
+  /* 内凹槽 / 输入框底：抬到 #b0b0b0 而不是更暗的灰，否则 #3f3f3f 的正文压上去只有 4.4:1 */
+  --mc-canvas-subtle: #b0b0b0;
+  --mc-panel: #d0d0d0;
+  --mc-panel-strong: #a0a0a0;
+  --mc-panel-soft: #b8b8b8;
+  /* 立体倒角的两档色：亮边 / 暗边 */
+  --mc-bevel-light: #ffffff;
+  --mc-bevel-dark: #3a3a3a;
+  /* 三级文字色都压到 ≥5:1（对 #c6c6c6），否则小字在灰底上会糊成一片。
+     secondary/tertiary 同时会被自定义主页经 --hc-text-* 继承，必须自身达标。 */
+  --mc-text: #3f3f3f; /* 6.2:1 */
+  --mc-text-secondary: #454545; /* 5.6:1 */
+  --mc-text-tertiary: #4a4a4a; /* 5.2:1 */
+  /* 语义色刻意取深：既要在浅画布上作正文色，又要在浅 chip 底上作 chip 字色。 */
+  --mc-accent: #345214; /* 草方块绿（深）：对 #d6d6d6 为 6.1:1 */
+  --mc-accent-hover: #3d611a;
+  --mc-btn-accent: #4a7a24; /* 按钮底色：白字 5.1:1，比字色亮一档才像「可点」 */
+  --mc-btn-accent-hover: #3d611a; /* 悬停**变深**而不是变浅：白字要维持 ≥4.5:1，
+                                    往浅走只会越悬停越看不清（#588f2c 只剩 3.9:1）。 */
+  --mc-on-accent: #ffffff;
+  --mc-danger: #8b1a1a; /* 5.4:1 */
+  --mc-success: #2f5c14; /* 4.6:1 */
+  --mc-chip-bg: #d6d6d6;
+  /* 浅底深字：黑影会糊成第二份字形，故不加投影 */
+  --mc-text-shadow: none;
+  --mc-scrim: rgba(0, 0, 0, 0.55);
+  --mc-grid-a: rgba(0, 0, 0, 0.045);
+  --mc-grid-b: rgba(0, 0, 0, 0.045);
+  --mc-border-width: 2px;
+  --mc-radius: 0px;
+  --mc-shadow-card: 3px 3px 0 rgba(0, 0, 0, 0.28);
+  --mc-shadow-flyout: 4px 4px 0 rgba(0, 0, 0, 0.4);
+}
+
+[data-skin='minecraft'][data-theme='dark'] {
+  /* 深色档 = 现代基岩的石头深灰 */
+  --mc-canvas: #1e1e1e;
+  --mc-canvas-subtle: #141414;
+  --mc-panel: #2b2b2b;
+  --mc-panel-strong: #3d3d3d;
+  --mc-panel-soft: #242424;
+  --mc-bevel-light: #5a5a5a;
+  --mc-bevel-dark: #0d0d0d;
+  --mc-text: #ffffff; /* 17.4:1 */
+  --mc-text-secondary: #b0b0b0; /* 8.1:1 */
+  --mc-text-tertiary: #8a8a8a; /* 5.2:1 */
+  /* 深色档反过来了：语义色必须**亮**，才能在深 chip 底上读得出来（5.4:1）。 */
+  --mc-accent: #7cbd6b;
+  --mc-accent-hover: #8fd07d;
+  --mc-btn-accent: #4a7a24;
+  --mc-btn-accent-hover: #588f2c;
+  --mc-on-accent: #ffffff;
+  --mc-danger: #ff9a9a; /* 5.4:1 */
+  --mc-success: #8ed67c;
+  --mc-chip-bg: #3d3d3d;
+  /* 深底浅字：这才是 MC 原版的用武之地，投影落在字的暗侧，读作立体而非重影 */
+  --mc-text-shadow: 2px 2px 0 rgba(0, 0, 0, 0.75);
+  --mc-scrim: rgba(0, 0, 0, 0.7);
+  --mc-grid-a: rgba(255, 255, 255, 0.022);
+  --mc-grid-b: rgba(255, 255, 255, 0.022);
+  --mc-shadow-card: 3px 3px 0 rgba(0, 0, 0, 0.55);
+  --mc-shadow-flyout: 4px 4px 0 rgba(0, 0, 0, 0.65);
+}
+
+/* 令牌桥接 */
+[data-skin='minecraft'] {
+  --text-primary: var(--mc-text);
+  --text-secondary: var(--mc-text-secondary);
+  --text-tertiary: var(--mc-text-tertiary);
+
+  --glass-bg: var(--mc-panel);
+  --glass-bg-strong: var(--mc-panel-strong);
+  --glass-bg-soft: var(--mc-panel-soft);
+  --glass-border: var(--mc-bevel-dark);
+  --glass-highlight: var(--mc-bevel-light);
+  --glass-shadow: var(--mc-shadow-card);
+  --surface-shade: none;
+  --surface-shade-inset: none;
+  --control-raised-blur: none;
+  --control-well-blur: none;
+  --control-hover-brightness: 1.12;
+
+  /* 控件的凸起投影也用同一套双向描边（见下方组件复位里的 border-color） */
+  --glass-shadow-control: none;
+  --glass-shadow-well: none;
+
+  --fill-primary: var(--mc-accent);
+  --fill-primary-hover: var(--mc-accent-hover);
+  --fill-secondary: var(--mc-panel-soft);
+  --fill-secondary-hover: var(--mc-panel-strong);
+  --fill-danger: var(--mc-danger);
+  --fill-success: var(--mc-success);
+
+  /* chip 的底色单独一档：chip 文字是内联写的语义色（--fill-primary / --fill-danger /
+     riskBadge 自带色），与画布底色不能同明度，否则「使用中 / 安全 / 已封禁」这类
+     小标签会糊成一片（浅色档给浅底、深色档给深底，都是朝语义色的反方向取）。 */
+  --chip-bg: var(--mc-chip-bg);
+  --divider: var(--mc-bevel-dark);
+  --scrim: var(--mc-scrim);
+  --surface-flat: var(--mc-panel);
+  --bg-flat: var(--mc-canvas-subtle);
+  --wallpaper-scrim: none;
+
+  /* 形状 / 材质（归一化，供自定义主页自适应）：
+     全直角 + 2px 描边是这个皮肤最容易被脚本忽略的两点，所以显式给出，
+     脚本据此把圆角清零、并改用「双向描边」而非投影来表达层级。 */
+  --radius-control: var(--mc-radius);
+  --radius-card: var(--mc-radius);
+  --radius-full: var(--mc-radius);
+  --surface-material: solid;
+  --surface-blur: none;
+  --surface-border-width: var(--mc-border-width);
+}
+
+/* 字体栈：这里**故意不用** Minecraftia / Monocraft / Pixel Operator 这类像素字体。
+   原因很实际：它们只覆盖拉丁字形，不含中文（也不含日韩）。放进栈里，浏览器逐字形回退——
+   同一行里「3D」走像素字体、「云母」走雅黑，于是同一句话裂成两款字体，
+   正是本皮肤最初「字体有两个」的成因。
+   像素字体也没有一个能覆盖中文的：要真像素化只能自带一套含 CJK 的点阵字，
+   体积与授权都不可行。
+   所以本皮肤的「MC 味」全部由**形状（直角 + 立体倒角）、材质、配色、密度**承担，
+   字体与其余皮肤一样走系统 UI 字体栈 —— 这样至少是**一款**字体，不会裂。 */
+[data-skin='minecraft'] body,
+[data-skin='minecraft'] input,
+[data-skin='minecraft'] button,
+[data-skin='minecraft'] select,
+[data-skin='minecraft'] textarea {
+  font-family: 'Microsoft YaHei UI', 'Microsoft YaHei', 'Segoe UI', system-ui, sans-serif;
+  letter-spacing: 0;
+}
+
+/* ---- 组件复位 ---- */
+
+/* 实色 + 硬投影：关掉磨砂与玻璃皮肤那两个高光伪元素 */
+[data-skin='minecraft'] :is(.glass, .glass-strong, .glass-soft) {
+  backdrop-filter: none;
+}
+[data-skin='minecraft'] :is(.glass, .glass-strong, .glass-soft)::before,
+[data-skin='minecraft'] :is(.glass, .glass-strong, .glass-soft)::after {
+  display: none;
+}
+[data-skin='minecraft'] .cursor-glow {
+  display: none;
+}
+
+/* 全直角 —— MC 的 GUI 没有任何圆角 */
+[data-skin='minecraft'] :is(.glass, .glass-strong, .glass-soft, .btn, .chip, .mica, .mica-well, .mica-well > button, .input, .glass * , .glass-strong *, .glass-soft *, .btn *, .chip *, .mica *, .mica-well *, .input *) {
+  border-radius: var(--mc-radius);
+}
+
+/* 立体倒角：面板与按钮「左上提亮 / 右下沉暗」，
+   border-color 的四值顺序是 上 右 下 左，正好对应 MC GUI 的光从左上来。 */
+[data-skin='minecraft'] :is(.glass, .glass-strong, .glass-soft, .btn, .chip, .mica, .mica-well > button) {
+  border: var(--mc-border-width) solid transparent;
+  border-color: var(--mc-bevel-light) var(--mc-bevel-dark) var(--mc-bevel-dark) var(--mc-bevel-light);
+  box-shadow: var(--mc-shadow-card);
+}
+
+/* 凹进去的槽位（输入框 / 凹槽）：倒角反过来，左上压暗、右下提亮 */
+[data-skin='minecraft'] .input,
+[data-skin='minecraft'] .mica-well {
+  border: var(--mc-border-width) solid transparent;
+  border-color: var(--mc-bevel-dark) var(--mc-bevel-light) var(--mc-bevel-light) var(--mc-bevel-dark);
+  box-shadow: none;
+  background: var(--mc-canvas-subtle);
+}
+
+/* 浮层（弹窗 / 下拉 / 右键菜单）用更硬的硬投影「抬起来」 */
+[data-skin='minecraft'] .glass-strong {
+  box-shadow: var(--mc-shadow-flyout);
+}
+
+/* ---- 按钮 ---- */
+[data-skin='minecraft'] .btn {
+  font-weight: 400;
+  transition: none;
+}
+[data-skin='minecraft'] .btn:hover {
+  filter: brightness(1.12);
+}
+[data-skin='minecraft'] .btn:active {
+  /* 按下 = 倒角翻面，MC 的按钮就是这个反馈 */
+  border-color: var(--mc-bevel-dark) var(--mc-bevel-light) var(--mc-bevel-light) var(--mc-bevel-dark);
+  box-shadow: none;
+}
+[data-skin='minecraft'] .btn-primary {
+  /* 用 --mc-btn-accent 而不是 --mc-accent：后者是为「浅底上的小字」压深的，
+     拿来当按钮底会显得像禁用态（MC 的按钮要亮得像一块草方块）。 */
+  background: var(--mc-btn-accent);
+  color: var(--mc-on-accent);
+  /* 显式关掉上面那条 brightness 滤镜：它会把按钮整体提亮，白字对比度跟着掉。 */
+  filter: none;
+}
+[data-skin='minecraft'] .btn-primary:hover {
+  background: var(--mc-btn-accent-hover);
+  filter: none;
+}
+[data-skin='minecraft'] .btn-secondary {
+  background: var(--mc-panel-soft);
+  color: var(--mc-text);
+}
+/* 焦点用 MC 常见的白色虚线框（就是物品名字那套描边） */
+[data-skin='minecraft'] .btn:focus-visible,
+[data-skin='minecraft'] .input:focus {
+  outline: 2px dotted #ffffff;
+  outline-offset: -3px;
+}
+
+/* ---- 窗口控制按钮 ----
+   三档做法各不相同，但都与该皮肤的其它控件同源：
+     · 常态：直角 + 2px 立体倒角（和面板同一套 bevel 色）
+     · 悬停：铺满草方块绿，白字 5.1:1 —— MC 按钮就是这样「整块点亮」的
+     · 关闭悬停：铺满红羊毛 #b02e26（白字 6.4:1），倒角亮/暗档跟着红一起加深，
+       否则红底上那圈白高光会显脏。 */
+[data-skin='minecraft'] .winbtn {
+  --winbtn-radius: var(--mc-radius);
+  --winbtn-border-width: var(--mc-border-width);
+  --winbtn-bevel-light: var(--mc-bevel-light);
+  --winbtn-bevel-dark: var(--mc-bevel-dark);
+  --winbtn-hover-bg: var(--mc-btn-accent);
+  --winbtn-hover-fg: var(--mc-on-accent);
+  --winbtn-danger-bg: #b02e26;
+  --winbtn-danger-fg: #ffffff;
+  --winbtn-danger-bevel-light: #d4453d;
+  --winbtn-danger-bevel-dark: #6d1a14;
+}
+
+/* 悬停时把倒角翻面，和 .btn:active 同一套按压反馈 */
+[data-skin='minecraft'] .winbtn:hover {
+  border-color: var(--mc-bevel-dark) var(--mc-bevel-light) var(--mc-bevel-light) var(--mc-bevel-dark);
+}
+
+/* ---- 滚动条：方块滑块，带倒角 ---- */
+[data-skin='minecraft'] ::-webkit-scrollbar-thumb {
+  background: var(--mc-panel-strong);
+  border: 2px solid transparent;
+  border-color: var(--mc-bevel-light) var(--mc-bevel-dark) var(--mc-bevel-dark) var(--mc-bevel-light);
+}
+[data-skin='minecraft'] ::-webkit-scrollbar-thumb:hover {
+  background: var(--mc-accent);
+}
+[data-skin='minecraft'] ::-webkit-scrollbar-track {
+  background: var(--mc-canvas-subtle);
+}
+
+/* ---- 排版：MC 的字重只有「正常」一档，不做细体 ----
+   text-shadow 走 --mc-text-shadow，**按明暗两档分别给值**，不能一档通用：
+   MC 那套 2px 2px 0 硬投影是配深色 HUD 用的（浅字 + 黑影，影在字的暗侧）。
+   浅色档底色是 #c6c6c6 / #d0d0d0 的浅灰，若照样压一层 55% 黑投影，
+   影子会和深灰字的笔画糊在一起 —— 每个字看起来像叠了第二份字形，
+   正是「字体有两个」的观感。所以浅色档直接不加投影。 */
+[data-skin='minecraft'] .display {
+  font-weight: 400;
+  letter-spacing: 0;
+  text-shadow: var(--mc-text-shadow);
+}
+[data-skin='minecraft'] .title,
+[data-skin='minecraft'] .headline {
+  font-weight: 400;
+  letter-spacing: 0;
+  text-shadow: var(--mc-text-shadow);
+}
+
+/* ---- 背景：库存面板灰 + 极淡的方块棋盘 ----
+   棋盘不是贴图，而是两层 45° 线性渐变错位平铺出来的 —— 用来暗示「方块」，
+   幅度压到 4.5% 以内，远看只是平色，凑近才看得出格子。 */
+:root[data-skin='minecraft'] .app-background,
+:root[data-skin='minecraft'][data-theme][data-wallpaper='on'] .app-background {
+  background-color: var(--mc-canvas);
+  background-image: linear-gradient(
+      45deg,
+      var(--mc-grid-a) 25%,
+      transparent 25%,
+      transparent 75%,
+      var(--mc-grid-a) 75%
+    ),
+    linear-gradient(45deg, var(--mc-grid-b) 25%, transparent 25%, transparent 75%, var(--mc-grid-b) 75%);
+  background-size: 8px 8px;
+  background-position: 0 0, 4px 4px;
+}
+:root[data-skin='minecraft'][data-theme][data-wallpaper='on'] .app-background::before {
+  display: none;
+}
+
+
+/* ==================================================================== */
+/*  实验性「模糊玻璃」                                                  */
+/*  ------------------------------------------------------------------ */
+/*  还原优化前的重特效背景：三个 90px 模糊的彩色光斑缓慢漂移，配合玻璃     */
+/*  面板的 backdrop-filter。默认关闭，只在「设置 → 实验性功能 → 模糊玻璃」。*/
+/*                                                                    */
+/*  性能：filter: blur(90px) 作用在会做 transform 动画的元素上时，每一帧   */
+/*  都要重算整层模糊（实测只有 ~14fps，且加 will-change 也无效）。因此由    */
+/*  renderer/blob-texture.ts 在启用时把模糊**一次性烘焙成贴图**，元素上     */
+/*  不再有 filter——之后动画只是合成器位移。漂移按 2Hz 步进离散化（每步      */
+/*  ~2px，肉眼无差），把玻璃面板重模糊的频率从 60 次/秒降到 2 次/秒。        */
+/*  未烘焙成功（老环境 / canvas 不可用）时自动回落到上面的 filter 写法。    */
+/* ==================================================================== */
+:root[data-frosted='on'] {
+  --surface-material: glass;
+  /* 磨砂质感：模糊保留，但把饱和度从 180% 降到 140%——否则高饱和背景透过玻璃后
+     反而更艳，看起来就像「一块彩色透明板」而不是毛玻璃。 */
+  --surface-blur: blur(36px) saturate(140%);
+
+  /* 磨砂遮罩：整窗压一层奶白/墨色薄雾 + 轻微模糊。
+     光斑本身已是 90px 柔光，单靠面板的 backdrop-filter 再模糊 36px 几乎看不出差别，
+     面板就会显得像「只上了色的透明板」。在背景上补这一层，毛玻璃的质感才成立。 */
+  --frost-veil: rgba(255, 255, 255, 0.36);
+  --frost-veil-blur: blur(18px) saturate(115%);
+
+  /* 光斑配色：CSS 渐变与「烘焙贴图」共用这一份，避免两处写死。
+     c0/c1 = 两段颜色，s0/s1 = 对应停靠点（百分比）。 */
+  --blob-1-c0: #4f7cff;
+  --blob-1-c1: #7a5cff;
+  --blob-1-s0: 60%;
+  --blob-1-s1: 72%;
+  --blob-2-c0: #ff5c8a;
+  --blob-2-c1: #c84dff;
+  --blob-2-s0: 60%;
+  --blob-2-s1: 74%;
+  --blob-3-c0: #2fd0c0;
+  --blob-3-c1: #2f7bff;
+  --blob-3-s0: 62%;
+  --blob-3-s1: 76%;
+}
+
+/* 背景预设的光斑配色 */
+:root[data-frosted='on'][data-bg='sunset'] {
+  --blob-1-c0: #ff9f45;
+  --blob-1-c1: #ff375f;
+  --blob-2-c0: #ffd23f;
+  --blob-2-c1: #ff7a00;
+  --blob-3-c0: #ff5c8a;
+  --blob-3-c1: #a855f7;
+}
+:root[data-frosted='on'][data-bg='forest'] {
+  --blob-1-c0: #34d399;
+  --blob-1-c1: #0ea5e9;
+  --blob-2-c0: #22c55e;
+  --blob-2-c1: #14b8a6;
+  --blob-3-c0: #84cc16;
+  --blob-3-c1: #10b981;
+}
+:root[data-frosted='on'][data-bg='rose'] {
+  --blob-1-c0: #fb7185;
+  --blob-1-c1: #f43f5e;
+  --blob-2-c0: #ec4899;
+  --blob-2-c1: #d946ef;
+  --blob-3-c0: #f472b6;
+  --blob-3-c1: #a855f7;
+}
+:root[data-frosted='on'][data-bg='mono'] {
+  --blob-1-c0: #64748b;
+  --blob-1-c1: #475569;
+  --blob-2-c0: #94a3b8;
+  --blob-2-c1: #64748b;
+  --blob-3-c0: #cbd5e1;
+  --blob-3-c1: #94a3b8;
+}
+
+/* 整窗磨砂遮罩：叠在光斑之上、面板之下（::before 已被壁纸 scrim 占用）。
+   奶白/墨色薄雾把高饱和背景压下去，再叠一层轻模糊，观感才是「毛玻璃」
+   而不是「一块只带色调的透明板」。 */
+:root[data-frosted='on'] .app-background::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: var(--frost-veil);
+  /* 只写标准属性：手写 -webkit-backdrop-filter 会被构建工具去重后只留前缀版，
+     而前缀版对 var() 不解析，磨砂就静默失效了。 */
+  backdrop-filter: var(--frost-veil-blur);
+}
+:root[data-frosted='on'][data-theme='dark'] {
+  --frost-veil: rgba(12, 14, 22, 0.44);
+}
+
+/* 面板的磨砂强度跟随上面的降饱和设定（默认 .glass 是 180%，仅磨砂档改这里） */
+:root[data-frosted='on'] .glass {
+  backdrop-filter: blur(36px) saturate(140%);
+}
+:root[data-frosted='on'] .glass-strong {
+  backdrop-filter: blur(48px) saturate(150%);
+}
+:root[data-frosted='on'] .glass-soft {
+  backdrop-filter: blur(24px) saturate(130%);
+}
+
+:root[data-frosted='on'] .app-background .blob {
+  position: absolute;
+  border-radius: 50%;
+  filter: blur(90px);
+  opacity: 0.55;
+  will-change: transform;
+}
+
+:root[data-frosted='on'][data-theme='dark'] .app-background .blob {
+  opacity: 0.4;
+}
+
+/* 漂移：默认（未烘焙）用 ease-in-out 连续动画 */
+:root[data-frosted='on'] .blob-1 {
+  width: 52vw;
+  height: 52vw;
+  left: -14vw;
+  top: -16vw;
+  background: radial-gradient(
+    circle,
+    var(--blob-1-c0) 0%,
+    var(--blob-1-c1) var(--blob-1-s0),
+    transparent var(--blob-1-s1)
+  );
+  animation: drift1 26s ease-in-out infinite alternate;
+}
+:root[data-frosted='on'] .blob-2 {
+  width: 44vw;
+  height: 44vw;
+  right: -12vw;
+  top: -8vw;
+  background: radial-gradient(
+    circle,
+    var(--blob-2-c0) 0%,
+    var(--blob-2-c1) var(--blob-2-s0),
+    transparent var(--blob-2-s1)
+  );
+  animation: drift2 32s ease-in-out infinite alternate;
+}
+:root[data-frosted='on'] .blob-3 {
+  width: 40vw;
+  height: 40vw;
+  left: 24vw;
+  bottom: -20vw;
+  background: radial-gradient(
+    circle,
+    var(--blob-3-c0) 0%,
+    var(--blob-3-c1) var(--blob-3-s0),
+    transparent var(--blob-3-s1)
+  );
+  animation: drift3 38s ease-in-out infinite alternate;
+}
+
+/* --- 烘焙档：模糊已在贴图里，元素上不再有 filter --- */:root[data-frosted='on'][data-blob-baked='on'] .app-background .blob {
+  filter: none;
+  background-position: center;
+  background-size: 100% 100%;
+  background-repeat: no-repeat;
+}
+/* 步进 1Hz：26s/32s/38s → 26/32/38 步。
+   光斑是缓慢漂移的柔光团，1Hz 下每步位移仅约 4~5px，肉眼无感；
+   而玻璃面板的 backdrop 重模糊次数从 60 次/秒降到 1 次/秒（实测 59.9fps）。 */
+:root[data-frosted='on'][data-blob-baked='on'] .blob-1 {
+  background-image: var(--blob-1-img);
+  animation: drift1 26s steps(26, end) infinite alternate;
+}
+:root[data-frosted='on'][data-blob-baked='on'] .blob-2 {
+  background-image: var(--blob-2-img);
+  animation: drift2 32s steps(32, end) infinite alternate;
+}
+:root[data-frosted='on'][data-blob-baked='on'] .blob-3 {
+  background-image: var(--blob-3-img);
+  animation: drift3 38s steps(38, end) infinite alternate;
+}
+
+/* 照片壁纸下光斑收淡，避免糊掉画面 */
+:root[data-frosted='on'][data-theme][data-wallpaper='on'] .app-background .blob {
+  opacity: 0.16;
+}
+
+@keyframes drift1 {
+  from {
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+  to {
+    transform: translate3d(10vw, 8vh, 0) scale(1.18);
+  }
+}
+@keyframes drift2 {
+  from {
+    transform: translate3d(0, 0, 0) scale(1.12);
+  }
+  to {
+    transform: translate3d(-8vw, 12vh, 0) scale(0.96);
+  }
+}
+@keyframes drift3 {
+  from {
+    transform: translate3d(0, 0, 0) scale(0.98);
+  }
+  to {
+    transform: translate3d(-6vw, -10vh, 0) scale(1.16);
+  }
+}
+
+/* 极简模式与「减少动态效果」下不显示 / 不移动光斑 */
+[data-mode='minimal'] .app-background .blob {
+  display: none !important;
+}
+@media (prefers-reduced-motion: reduce) {
+  .app-background .blob {
+    animation: none !important;
+  }
+}
+[data-reduced-motion='true'] .app-background .blob {
+  animation: none !important;
 }

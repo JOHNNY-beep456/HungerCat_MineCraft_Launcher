@@ -8,16 +8,28 @@
 
 import type {
   FeedbackCodeResult,
+  FeedbackDetail,
+  FeedbackDetailResult,
   FeedbackListItem,
   FeedbackListResult,
   FeedbackLoginResult,
+  FeedbackMessage,
+  FeedbackMessagePayload,
+  FeedbackMessageResult,
   FeedbackSubmitPayload,
   FeedbackSubmitResult,
   FeedbackWithdrawResult,
   ServerLimits
 } from '@shared/types'
+import { shell } from 'electron'
 import { netRequest } from './broker'
-import { clearFeedbackSession, getFeedbackSession, setFeedbackSession } from './secret'
+import { SERVER_BASE } from './server'
+import {
+  clearFeedbackSession,
+  getFeedbackSession,
+  setFeedbackSession,
+  type FeedbackSession
+} from './secret'
 
 /** 单个附件的体积上限（与服务端 HC_FEEDBACK_MAX_BYTES 保持一致）。 */
 export const MAX_FEEDBACK_FILE_BYTES = 3 * 1024 * 1024
@@ -48,6 +60,27 @@ function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`
   if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`
   return `${(bytes / 1024 / 1024).toFixed(2)} MB`
+}
+
+/**
+ * 「本次会话」档的令牌只留在主进程内存里。
+ *
+ * 该档位（ttl = 43200）不落盘：退出反馈界面 / 关闭启动器即失效，
+ * 与界面上「仅本次会话有效」的说明一致；同时避免 12 小时的令牌
+ * 长期留在磁盘上。长期档仍走 safeStorage 加密落盘。
+ */
+let memorySession: FeedbackSession | null = null
+
+/** 当前生效的反馈会话：内存档优先，其次才是加密落盘的长期档。 */
+function currentSession(): FeedbackSession | null {
+  if (memorySession) {
+    if (memorySession.expiresAt !== 0 && memorySession.expiresAt <= Date.now()) {
+      memorySession = null
+    } else {
+      return memorySession
+    }
+  }
+  return getFeedbackSession()
 }
 
 /**
@@ -142,10 +175,11 @@ export async function submitFeedback(payload: FeedbackSubmitPayload): Promise<Fe
 /**
  * 可选的免登录时长（秒），与服务端白名单 hc_feedback_token_ttls() 一一对应。
  *
- * 注意「不选时长」并不在这里表达：那种情况**根本不调用** feedback_login，
- * 直接用一次性验证码查询，验证状态只留在本次界面会话里，退出即失效。
+ * `session` = 本次会话：令牌只存在主进程内存，退出反馈界面 / 重启即失效。
  */
 export const FEEDBACK_LOGIN_TTL = {
+  /** 本次会话（内存，12 小时封顶） */
+  session: 43200,
   /** 1 天 */
   day: 86400,
   /** 7 天 */
@@ -156,8 +190,8 @@ export const FEEDBACK_LOGIN_TTL = {
   forever: 0
 } as const
 
-/** 服务端只认这四个时长值（秒）。 */
-const VALID_TTLS: number[] = [86400, 604800, 2592000, 0]
+/** 服务端只认这几个时长值（秒）。 */
+const VALID_TTLS: number[] = [43200, 86400, 604800, 2592000, 0]
 
 /**
  * 用邮箱验证码换发免登录令牌，并把令牌加密保存在本机。
@@ -188,7 +222,15 @@ export async function loginFeedback(
       return { ok: false, expiresAt: 0, error: res?.error }
     }
     const expiresAt = Number(res.expiresAt) || 0
-    const err = setFeedbackSession({ token: String(res.token), email: to, expiresAt })
+    const next: FeedbackSession = { token: String(res.token), email: to, expiresAt }
+    if (ttl === FEEDBACK_LOGIN_TTL.session) {
+      // 本次会话：只留在内存，不写盘
+      memorySession = next
+      clearFeedbackSession()
+      return { ok: true, expiresAt }
+    }
+    memorySession = null
+    const err = setFeedbackSession(next)
     if (err) return { ok: false, expiresAt: 0, error: err }
     return { ok: true, expiresAt }
   } catch (err) {
@@ -198,12 +240,13 @@ export async function loginFeedback(
 
 /** 当前免登录会话状态（供渲染层决定是否跳过验证码界面）。 */
 export function feedbackSessionStatus(): { email: string; expiresAt: number } | null {
-  const s = getFeedbackSession()
+  const s = currentSession()
   return s ? { email: s.email, expiresAt: s.expiresAt } : null
 }
 
-/** 退出免登录（删除本机会话）。 */
+/** 退出免登录（内存档与落盘档一起清掉）。 */
 export function logoutFeedback(): void {
+  memorySession = null
   clearFeedbackSession()
 }
 
@@ -214,7 +257,7 @@ export function logoutFeedback(): void {
  * 两者都不会在服务端保留会话，未免登录的用户每次查看仍需重新验证。
  */
 export async function listFeedback(email: string, code: string): Promise<FeedbackListResult> {
-  const session = getFeedbackSession()
+  const session = currentSession()
   // 有免登录会话时优先用它；email 以会话里的为准（避免被渲染层传错邮箱读到别人的）
   const body = session
     ? { token: session.token }
@@ -227,7 +270,7 @@ export async function listFeedback(email: string, code: string): Promise<Feedbac
     }>('server:post', { path: 'feedback_list', body })
     if (res?.ok !== true) {
       // 令牌失效 / 被撤销：清掉本机会话，渲染层下次会回到验证码界面
-      if (session) clearFeedbackSession()
+      if (session) logoutFeedback()
       return { ok: false, feedbacks: [], error: res?.error }
     }
     return { ok: true, feedbacks: Array.isArray(res.feedbacks) ? res.feedbacks : [] }
@@ -242,15 +285,126 @@ export async function withdrawFeedback(
   code: string,
   id: string
 ): Promise<FeedbackWithdrawResult> {
-  const session = getFeedbackSession()
+  const session = currentSession()
   const body = session ? { token: session.token, id } : { email: email.trim().toLowerCase(), code: code.trim(), id }
   try {
     const res = await netRequest<{ ok?: boolean; error?: string }>('server:post', {
       path: 'feedback_withdraw',
       body
     })
-    if (res?.ok !== true && session) clearFeedbackSession()
+    if (res?.ok !== true && session) logoutFeedback()
     return { ok: res?.ok === true, error: res?.error }
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) }
+  }
+}
+
+/**
+ * 读取单条反馈的完整对话。
+ *
+ * 与列表一致：优先用免登录令牌，没有令牌时回落到邮箱 + 验证码。
+ * 令牌失效会清掉本机会话，渲染层据此退回验证码界面。
+ */
+export async function fetchFeedbackDetail(
+  id: string,
+  email: string,
+  code: string
+): Promise<FeedbackDetailResult> {
+  if (!id) return { ok: false, error: '缺少反馈编号' }
+  const session = currentSession()
+  const body = session
+    ? { token: session.token, id }
+    : { email: email.trim().toLowerCase(), code: code.trim(), id }
+  try {
+    const res = await netRequest<{ ok?: boolean; feedback?: FeedbackDetail; error?: string }>(
+      'server:post',
+      { path: 'feedback_detail', body }
+    )
+    if (res?.ok !== true) {
+      if (session) logoutFeedback()
+      return { ok: false, error: res?.error }
+    }
+    return { ok: true, feedback: res.feedback }
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) }
+  }
+}
+
+/**
+ * 在反馈里追加一条消息（对话式，不限条数；可带附件）。
+ *
+ * 先在本地按服务端最新限制做体积 / 数量校验（快速失败），服务端仍会再校验一次。
+ */
+export async function postFeedbackMessage(
+  payload: FeedbackMessagePayload
+): Promise<FeedbackMessageResult> {
+  const body = payload.body.trim()
+  if (!payload.id) return { ok: false, error: '缺少反馈编号' }
+  if (!body && payload.files.length === 0) {
+    return { ok: false, error: '请输入消息内容或添加附件' }
+  }
+  if (body.length > 5000) return { ok: false, error: '消息过长（最多 5000 字）' }
+
+  const limits = await fetchServerLimits()
+  if (payload.files.length > limits.feedbackMaxFiles) {
+    return { ok: false, error: `附件数量过多（每条消息最多 ${limits.feedbackMaxFiles} 个）` }
+  }
+  for (const file of payload.files) {
+    const bytes = Buffer.from(file.contentBase64, 'base64').byteLength
+    if (bytes === 0) return { ok: false, error: `附件「${file.name}」内容为空` }
+    if (bytes > limits.feedbackMaxBytes) {
+      return {
+        ok: false,
+        error: `附件「${file.name}」超过 ${formatBytes(limits.feedbackMaxBytes)} 上限`
+      }
+    }
+  }
+
+  const session = currentSession()
+  const files = payload.files.map((f) => ({ name: f.name, content_base64: f.contentBase64 }))
+  const reqBody = session
+    ? { token: session.token, id: payload.id, body, files }
+    : {
+        email: payload.email.trim().toLowerCase(),
+        code: payload.code.trim(),
+        id: payload.id,
+        body,
+        files
+      }
+  try {
+    const res = await netRequest<{ ok?: boolean; message?: FeedbackMessage; error?: string }>(
+      'server:post',
+      { path: 'feedback_message', body: reqBody }
+    )
+    if (res?.ok !== true) {
+      if (session) logoutFeedback()
+      return { ok: false, error: res?.error }
+    }
+    return { ok: true, message: res.message }
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) }
+  }
+}
+
+/**
+ * 打开某条反馈的附件。
+ *
+ * 附件默认只允许管理员下载；这里用当前反馈令牌拼出一次性下载地址，
+ * 交给系统浏览器下载（令牌只出现在这个地址里，不落到渲染层）。
+ */
+export async function openFeedbackFile(
+  id: string,
+  name: string
+): Promise<{ ok: boolean; error?: string }> {
+  const session = currentSession()
+  if (!session) return { ok: false, error: '请先验证邮箱后再下载附件' }
+  const url =
+    `${SERVER_BASE}/feedback.php?id=${encodeURIComponent(id)}` +
+    `&file=${encodeURIComponent(name)}` +
+    `&token=${encodeURIComponent(session.token)}`
+  try {
+    await shell.openExternal(url)
+    return { ok: true }
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) }
   }

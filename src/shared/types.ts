@@ -527,10 +527,13 @@ export interface LauncherSettings {
    *   mac    液态玻璃皮肤：不换字体，玻璃更通透 + 高光/卷边描边，液态流动感
    *   material Material Design 3 风格：实色色调表面 + 大圆角 + 层级投影
    *   github  GitHub（Primer）风格：实色画布 + 1px 描边 + 6px 圆角控件 + 焦点环
+   *   winui2 WinUI 2（UWP / Win10）风格：直角控件 + Acrylic 亚克力 + 紧凑密度
+   *   winui3 WinUI 3（Win11）风格：8px 圆角 + Mica 云母 + 宽松密度 + Segoe UI Variable
+   *   minecraft 我的世界（基岩版）风格：全直角 + 2px 立体倒角 + 库存面板灰 + 像素字体
    *   win10  Win10 桌面：自动全屏，功能以桌面图标呈现，双击打开
    * 用单一字段表达「相斥」，避免多个布尔同时为真。
    */
-  experimental: 'off' | 'mica' | 'mac' | 'material' | 'github' | 'win10'
+  experimental: 'off' | 'mica' | 'mac' | 'frosted' | 'material' | 'github' | 'winui2' | 'winui3' | 'minecraft' | 'win10'
   /**
    * Material Design 3 风格类型（仅在 experimental = 'material' 时生效）：
    *   baseline   M3 静态基线配色（官方默认色板，表面不跟随主题色）
@@ -1170,6 +1173,15 @@ export interface HomepageVerifyResult {
   localVersion?: string
   /** 存在新版本时的线上最新版本号。 */
   latestVersion?: string
+  /**
+   * 哈希不一致，但线上并没有更新的版本（版本号相同或本地更高）：
+   * 说明差异来自本地编辑，而非线上有新版。这种情况下「拒绝运行」是死路——
+   * 作者正在开发自己的脚本时永远跑不起来，也无法通过「更新」回到线上版。
+   * 界面应允许用户确认后继续运行（等同无编号脚本的本地确认流程）。
+   */
+  locallyEdited?: boolean
+  /** 线上版本号（locallyEdited 时用于说明「本地 vX 与线上 vY」）。 */
+  marketVersion?: string
 }
 
 /** 主页市场条目（服务端下发）。 */
@@ -1348,9 +1360,9 @@ export interface FeedbackCodeResult {
 /**
  * 可选的免登录时长（秒）。与服务端白名单一一对应，0 = 永久。
  *
- * 「不选择时长」不在此列：那种情况不换发令牌，验证状态只存在于本次界面会话。
+ * 43200 = 「本次会话」：令牌只保存在主进程内存里，退出反馈界面 / 重启启动器即失效。
  */
-export type FeedbackLoginTtl = 86400 | 604800 | 2592000 | 0
+export type FeedbackLoginTtl = 43200 | 86400 | 604800 | 2592000 | 0
 
 /**
  * 免登录登录结果（邮箱验证码换发令牌）。
@@ -1377,8 +1389,22 @@ export interface FeedbackSessionStatus {
 
 /** 反馈附件元信息（列表展示用）。 */
 export interface FeedbackFileMeta {
+  /** 服务端落盘文件名（下载时用）。 */
   name: string
   size: number
+  /** 用户看到的原始文件名（落盘名带消息前缀时用于展示）。 */
+  display?: string
+}
+
+/** 反馈对话里的一条消息。 */
+export interface FeedbackMessage {
+  id: string
+  /** user = 提交者；admin = 站长 / 管理员。 */
+  from: 'user' | 'admin'
+  body: string
+  /** epoch ms。 */
+  at: number
+  files: FeedbackFileMeta[]
 }
 
 /**
@@ -1398,8 +1424,44 @@ export interface FeedbackListItem {
   replied: boolean
   reply: string
   repliedAt: number
+  /** 对话消息条数（列表展示用）。 */
+  messageCount: number
+  /** 最后一条消息时间（epoch ms）。 */
+  lastMessageAt: number
+  /** 最后一条消息的发送方。 */
+  lastFrom: 'user' | 'admin' | ''
+  /** 最后一条消息正文（列表预览）。 */
+  lastMessage: string
   /** 是否允许用户撤销（仅未回复时可撤销）。 */
   canWithdraw: boolean
+}
+
+/** 单条反馈的完整对话（「每个反馈独立界面」用）。 */
+export interface FeedbackDetail extends FeedbackListItem {
+  messages: FeedbackMessage[]
+}
+
+/** 在反馈里追加一条消息的载荷。 */
+export interface FeedbackMessagePayload {
+  id: string
+  email: string
+  code: string
+  body: string
+  files: FeedbackFilePayload[]
+}
+
+/** 追加消息的结果。 */
+export interface FeedbackMessageResult {
+  ok: boolean
+  message?: FeedbackMessage
+  error?: string
+}
+
+/** 读取单条反馈详情的结果。 */
+export interface FeedbackDetailResult {
+  ok: boolean
+  feedback?: FeedbackDetail
+  error?: string
 }
 
 /** 查询反馈列表结果。 */
@@ -1716,11 +1778,17 @@ export interface LauncherApi {
     submit: (payload: FeedbackSubmitPayload) => Promise<FeedbackSubmitResult>
     /** 查询某邮箱名下的全部反馈；已有免登录会话时凭令牌查询，否则用邮箱 + 验证码。 */
     list: (email: string, code: string) => Promise<FeedbackListResult>
+    /** 读取单条反馈的完整对话（每个反馈独立界面）。 */
+    detail: (id: string, email: string, code: string) => Promise<FeedbackDetailResult>
+    /** 在反馈里追加一条消息（对话式，不限条数；可带附件）。 */
+    message: (payload: FeedbackMessagePayload) => Promise<FeedbackMessageResult>
+    /** 打开某条反馈的附件（由主进程带上令牌下载，渲染层拿不到令牌）。 */
+    openFile: (id: string, name: string) => Promise<{ ok: boolean; error?: string }>
     /** 撤销自己的反馈（仅未回复可撤销）。 */
     withdraw: (email: string, code: string, id: string) => Promise<FeedbackWithdrawResult>
     /**
-     * 用邮箱验证码换发免登录令牌（1 天 / 7 天 / 30 天 / 永久）。
-     * 成功后令牌由主进程加密保存，渲染层拿不到令牌本身。
+     * 用邮箱验证码换发免登录令牌（本次会话 / 1 天 / 7 天 / 30 天 / 永久）。
+     * 成功后令牌由主进程保存：长期档加密落盘，「本次会话」只留在内存。
      */
     login: (email: string, code: string, ttl: FeedbackLoginTtl) => Promise<FeedbackLoginResult>
     /** 查询本机免登录状态；无有效会话时返回 null。 */

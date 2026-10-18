@@ -29,8 +29,6 @@ extraResources:
     filter:
       - easytier-core.exe
       - easytier-cli.exe
-      - easytier-core
-      - easytier-cli
   # 原生下载内核（Rust → .node）。由 scripts/build-native-downloader.mjs 编译。
   # 必须放在 asar 之外：原生库无法从 asar 内 dlopen，只能作为普通文件加载。
   # 运行时经 process.resourcesPath/native/<platform>-<arch>/ 定位；
@@ -39,12 +37,6 @@ extraResources:
     to: native
 # 最高压缩：仅影响安装包内的资源打包率（功能 / UI / 动画均不变），可显著减小安装包体积。
 compression: maximum
-mac:
-  category: public.app-category.games
-  target:
-    - dmg
-    - zip
-  darkModeSupport: true
 win:
   icon: build/icon.ico
   # 两个目标并存，各有用途：
@@ -60,10 +52,6 @@ win:
     - nsis
 portable:
   artifactName: "HCMCL-${version} Setup.exe"
-linux:
-  icon: build/icon.png
-  target:
-    - AppImage
 nsis:
   oneClick: false
   allowToChangeInstallationDirectory: true

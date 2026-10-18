@@ -27,9 +27,28 @@ export function buildFrameSrcDoc(
   const inject = [
     `<meta id="hc-csp" http-equiv="Content-Security-Policy" content="${csp}">`,
     `<style id="hc-base">
-        :root { color-scheme: light dark; }
+        :root {
+          color-scheme: light dark;
+          /* 形状 / 材质兜底：宿主会在 init / update 时用真实值覆盖。
+             这几项默认给中性值，保证「宿主令牌缺失」时页面仍按常规圆角、
+             实色卡片渲染，而不是出现 0 圆角或 none 模糊导致布局塌陷。 */
+          --hc-radius-control: 12px;
+          --hc-radius-card: 24px;
+          --hc-radius-full: 999px;
+          --hc-surface-material: solid;
+          --hc-surface-blur: none;
+          --hc-surface-border-width: 1px;
+        }
         html, body { margin: 0; padding: 0; min-height: 100%; background: transparent; }
         body { font-family: system-ui, -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif; color: var(--hc-text-primary, #111); }
+        /* 卡片：圆角与描边宽度跟随宿主；材质为实色时不挂 backdrop-filter，
+           省掉一整层合成开销（宿主给的是 none 时 var() 解析为 none，天然失效）。 */
+        .hc-surface {
+          border-radius: var(--hc-radius-card);
+          border: var(--hc-surface-border-width, 1px) solid var(--hc-glass-border, transparent);
+          background: var(--hc-glass-bg, transparent);
+          backdrop-filter: var(--hc-surface-blur);
+        }
       </style>`,
     `<script id="hc-sdk">${SDK}</script>`
   ].join('')

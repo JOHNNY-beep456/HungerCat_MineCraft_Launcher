@@ -149,7 +149,7 @@ export function registerModsHandlers(ctx: IpcContext): void {
   })
   // 游戏内离线翻译模组：固定直链下载到实例 mods 目录（仅 Fabric + 指定 MC 版本区间提供）。
   ipcMain.handle('mods:installOfflineTranslate', async (event, versionId: string) => {
-    const filename = 'MCAutoTranslationTool-1.3.11-fabric-all.jar'
+    const filename = 'MCAutoTranslationTool-1.4-beta3-fabric-all.jar'
     const s = settings.get()
     const controller = new AbortController()
     ctx.downloadAborts.set(filename, controller)

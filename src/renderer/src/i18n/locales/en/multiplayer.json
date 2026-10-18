@@ -18,8 +18,6 @@
   "mp.help.step4.body": "Others use \"Multiplayer → Direct Connect\" and enter \"host virtual IP:port\", e.g. 10.126.126.1:25565. The lobby home screen can copy this address with one click.",
   "mp.help.note.title": "Notes",
   "mp.help.note.body": "Everyone must use the same EasyTier node (customizable in \"Settings → Private Server\"). If you never receive a virtual IP, try another node; the lobby name and password must match exactly for everyone.",
-  "mp.notice.title": "About this feature",
-  "mp.notice.body": "Multiplayer is fully self-contained: an EasyTier core ships with the launcher, so no separate MCTier client needs to be installed or running. Creating or joining a lobby really connects to peer nodes and obtains a virtual IP via DHCP; no-TUN mode means no administrator rights are needed and system network settings are untouched.",
   "mp.bin.title": "Networking components not ready",
   "mp.bin.openDir": "Open resources folder",
   "mp.lobby.current": "Current lobby",

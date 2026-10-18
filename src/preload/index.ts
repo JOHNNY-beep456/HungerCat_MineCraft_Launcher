@@ -23,6 +23,7 @@ import type {
   DebugLogEntry,
   DevModeStatus,
   FeedbackSubmitPayload,
+  FeedbackMessagePayload,
   ModrinthProjectDetail,
   ExternalVersion,
   ConflictPolicy,
@@ -220,6 +221,10 @@ const api: LauncherApi = {
     sendCode: (email: string) => ipcRenderer.invoke('feedback:send-code', email),
     submit: (payload: FeedbackSubmitPayload) => ipcRenderer.invoke('feedback:submit', payload),
     list: (email: string, code: string) => ipcRenderer.invoke('feedback:list', email, code),
+    detail: (id: string, email: string, code: string) =>
+      ipcRenderer.invoke('feedback:detail', id, email, code),
+    message: (payload: FeedbackMessagePayload) => ipcRenderer.invoke('feedback:message', payload),
+    openFile: (id: string, name: string) => ipcRenderer.invoke('feedback:open-file', id, name),
     withdraw: (email: string, code: string, id: string) =>
       ipcRenderer.invoke('feedback:withdraw', email, code, id),
     login: (email: string, code: string, ttl: number) =>

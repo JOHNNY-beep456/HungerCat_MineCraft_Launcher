@@ -598,15 +598,6 @@ export function MultiplayerPage({ onExit }: { onExit?: () => void } = {}): JSX.E
 
               <div className="caption mt-1 text-center">{t('mp.clickHint')}</div>
 
-              {/* 功能说明：明确区分「已移植的界面」与「依赖 MCTier 后端的组网」 */}
-              <div className="glass mt-2 w-full rounded-[24px] p-4">
-                <div className="mb-1.5 flex items-center gap-2">
-                  <Icon name="info" size={16} style={{ color: 'var(--fill-warning, #f0b34a)' }} />
-                  <span className="headline">{t('mp.notice.title')}</span>
-                </div>
-                <p className="selectable text-[12.5px] leading-relaxed opacity-80">{t('mp.notice.body')}</p>
-              </div>
-
               {/* 来源与许可标注（MCTier 许可条款第 3 条要求） */}
               <div className="glass w-full rounded-[24px] p-4">
                 <div className="mb-1.5 flex items-center gap-2">

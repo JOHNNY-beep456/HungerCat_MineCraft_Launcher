@@ -36,16 +36,13 @@ const BACKGROUNDS: Array<{ key: string; label: string; colors: string[]; lightCo
 function LanguageRow(): JSX.Element {
   const { settings, updateSettings, t } = useApp()
   return (
-    <>
-      <Row label={t('settings.language')}>
-        <Segmented
-          value={settings.language}
-          onChange={(v) => void updateSettings({ language: v })}
-          options={LOCALES.map((l) => ({ value: l.value, label: l.label }))}
-        />
-      </Row>
-      <p className="caption -mt-1">{t('settings.language.desc')}</p>
-    </>
+    <Row label={t('settings.language')}>
+      <Segmented
+        value={settings.language}
+        onChange={(v) => void updateSettings({ language: v })}
+        options={LOCALES.map((l) => ({ value: l.value, label: l.label }))}
+      />
+    </Row>
   )
 }
 
@@ -187,19 +184,22 @@ function WallpaperRow(): JSX.Element {
   )
 }
 
-/** 减少动态效果：极简模式下强制开启且禁用。 */
+/**
+ * 减少动态效果：只反映用户自己的选择。
+ *
+ * 此前极简模式下会被强制显示为开启并置灰（不可点），但极简模式本身已经在 CSS 里
+ * 关掉了模糊/阴影/光斑/光晕与各段动画，不需要再借用这个开关；强制置灰反而让用户
+ * 以为设置被篡改、也无法在回到普通模式前调整它。
+ */
 function ReducedMotionRow(): JSX.Element {
   const { settings, updateSettings, t } = useApp()
   return (
-    <>
-      <Row label={t('settings.row.reducedMotion')}>
-        <Switch
-          checked={settings.reducedMotion || settings.mode === 'minimal'}
-          disabled={settings.mode === 'minimal'}
-          onChange={(v) => void updateSettings({ reducedMotion: v })}
-        />
-      </Row>
-    </>
+    <Row label={t('settings.row.reducedMotion')}>
+      <Switch
+        checked={settings.reducedMotion}
+        onChange={(v) => void updateSettings({ reducedMotion: v })}
+      />
+    </Row>
   )
 }
 
@@ -207,7 +207,7 @@ function ReducedMotionRow(): JSX.Element {
 /* 运行模式                                                            */
 /* ================================================================== */
 
-/** 运行模式：切到极简时自动关闭实验性界面皮肤（极简下皮肤开关被禁用）。 */
+/** 运行模式：极简只是「暂时按默认皮肤渲染」，不再清空 experimental —— 设置保留，切回普通自动恢复。 */
 function ModeRow(): JSX.Element {
   const { settings, updateSettings, t } = useApp()
   return (
@@ -215,13 +215,7 @@ function ModeRow(): JSX.Element {
       <Row label={t('settings.row.mode')}>
         <Segmented
           value={settings.mode}
-          onChange={(v) => {
-            const changes: Partial<LauncherSettings> = { mode: v }
-            // 极简模式下界面二维化，不再适用实验性皮肤：切入极简时自动把皮肤关掉，
-            // 避免「开了极简却还生效着 mica / M3 / GitHub」的矛盾状态。
-            if (v === 'minimal' && settings.experimental !== 'off') changes.experimental = 'off'
-            void updateSettings(changes)
-          }}
+          onChange={(v) => void updateSettings({ mode: v })}
           options={[
             { value: 'normal', label: t('settings.mode.normal') },
             { value: 'local', label: t('settings.mode.local') },
@@ -229,11 +223,6 @@ function ModeRow(): JSX.Element {
           ]}
         />
       </Row>
-      <p className="caption -mt-1">
-        {settings.mode === 'normal' && t('settings.mode.normal.desc')}
-        {settings.mode === 'local' && t('settings.mode.local.desc')}
-        {settings.mode === 'minimal' && t('settings.mode.minimal.desc')}
-      </p>
     </>
   )
 }
@@ -312,7 +301,6 @@ export function UapisKeyRow(): JSX.Element {
       <p className="caption -mt-1" style={{ color: msg?.kind === 'err' ? 'var(--fill-danger)' : undefined }}>
         {msg?.text ?? (saved ? t('settings.uapisKey.statusSet') : t('settings.uapisKey.statusUnset'))}
       </p>
-      <p className="caption -mt-1 opacity-70">{t('settings.uapisKey.desc')}</p>
     </>
   )
 }
@@ -321,7 +309,7 @@ export function UapisKeyRow(): JSX.Element {
 /* 实验性功能                                                          */
 /* ================================================================== */
 
-/** 界面皮肤：四套互斥皮肤（极简下禁用）+ Win10 桌面模式提示。 */
+/** 界面皮肤：七套互斥皮肤（极简下禁用）+ Win10 桌面模式提示。 */
 function ExperimentalRow(): JSX.Element {
   const { settings, updateSettings, t } = useApp()
   const flatMode = settings.mode === 'minimal'
@@ -342,6 +330,15 @@ function ExperimentalRow(): JSX.Element {
           onChange={(v) => void updateSettings({ experimental: v ? 'mac' : 'off' })}
         />
       </Row>
+      {/* 模糊玻璃：还原优化前的重特效（90px 模糊光斑 + 玻璃磨砂）。
+          普通模式默认已扁平化，这个选项专门给想要原观感的人用。 */}
+      <Row label={t('settings.row.frosted')}>
+        <Switch
+          checked={settings.experimental === 'frosted'}
+          disabled={flatMode}
+          onChange={(v) => void updateSettings({ experimental: v ? 'frosted' : 'off' })}
+        />
+      </Row>
       <Row label={t('settings.row.material')}>
         <Switch
           checked={settings.experimental === 'material'}
@@ -356,6 +353,27 @@ function ExperimentalRow(): JSX.Element {
           onChange={(v) => void updateSettings({ experimental: v ? 'github' : 'off' })}
         />
       </Row>
+      <Row label={t('settings.row.winui3')}>
+        <Switch
+          checked={settings.experimental === 'winui3'}
+          disabled={flatMode}
+          onChange={(v) => void updateSettings({ experimental: v ? 'winui3' : 'off' })}
+        />
+      </Row>
+      <Row label={t('settings.row.winui2')}>
+        <Switch
+          checked={settings.experimental === 'winui2'}
+          disabled={flatMode}
+          onChange={(v) => void updateSettings({ experimental: v ? 'winui2' : 'off' })}
+        />
+      </Row>
+      <Row label={t('settings.row.minecraft')}>
+        <Switch
+          checked={settings.experimental === 'minecraft'}
+          disabled={flatMode}
+          onChange={(v) => void updateSettings({ experimental: v ? 'minecraft' : 'off' })}
+        />
+      </Row>
       <Row label={t('settings.row.win10')}>
         <Switch
           checked={settings.experimental === 'win10'}
@@ -367,19 +385,8 @@ function ExperimentalRow(): JSX.Element {
           }}
         />
       </Row>
-      <p className="caption -mt-1">
-        {flatMode && t('settings.exp.minimalDisabled')}
-        {!flatMode && t('settings.exp.mutex')}
-        {settings.experimental === 'mica' && t('settings.exp.mica.desc')}
-        {settings.experimental === 'mac' && t('settings.exp.mac.desc')}
-        {settings.experimental === 'material' && t('settings.exp.material.desc')}
-        {settings.experimental === 'github' && t('settings.exp.github.desc')}
-        {settings.experimental === 'win10' && t('settings.exp.win10.desc')}
-      </p>
-
-      {/* Material Design 3 的风格类型：只有启用 M3 皮肤时才出现。
-          三类风格共用同一套组件与令牌结构，只有取值不同。 */}
-      {settings.experimental === 'material' && (
+      {/* Material Design 3 的风格类型：只有启用 M3 皮肤时才出现（极简下不生效，隐藏）。 */}
+      {!flatMode && settings.experimental === 'material' && (
         <>
           <Row label={t('settings.row.materialStyle')}>
             <Segmented
@@ -392,17 +399,12 @@ function ExperimentalRow(): JSX.Element {
               ]}
             />
           </Row>
-          <p className="caption -mt-1">
-            {settings.materialStyle === 'baseline' && t('settings.exp.material.baseline.desc')}
-            {settings.materialStyle === 'you' && t('settings.exp.material.you.desc')}
-            {settings.materialStyle === 'expressive' && t('settings.exp.material.expressive.desc')}
-          </p>
         </>
       )}
 
-      {/* GitHub（Primer）的配色子主题：只有启用 GitHub 皮肤时才出现。
+      {/* GitHub（Primer）的配色子主题：只有启用 GitHub 皮肤时才出现（极简下不生效，隐藏）。
           五套配色共用同一套组件与令牌结构，只有取值不同 —— 与 M3 同一套路。 */}
-      {settings.experimental === 'github' && (
+      {!flatMode && settings.experimental === 'github' && (
         <>
           <Row label={t('settings.row.githubStyle')}>
             <Segmented
@@ -419,14 +421,6 @@ function ExperimentalRow(): JSX.Element {
               scroll
             />
           </Row>
-          <p className="caption -mt-1">
-            {settings.githubStyle === 'system' && t('settings.exp.github.system.desc')}
-            {settings.githubStyle === 'light' && t('settings.exp.github.light.desc')}
-            {settings.githubStyle === 'dark' && t('settings.exp.github.dark.desc')}
-            {settings.githubStyle === 'dimmed' && t('settings.exp.github.dimmed.desc')}
-            {settings.githubStyle === 'light-hc' && t('settings.exp.github.lightHc.desc')}
-            {settings.githubStyle === 'dark-hc' && t('settings.exp.github.darkHc.desc')}
-          </p>
           <GithubSkinPreview />
           <p className="caption -mt-1">{t('settings.exp.github.previewHint')}</p>
         </>
@@ -680,7 +674,7 @@ function GameWindowSizeRow(): JSX.Element {
           ]}
         />
       </Row>
-      {settings.experimental === 'win10' && (
+      {settings.mode !== 'minimal' && settings.experimental === 'win10' && (
         <p className="caption -mt-1">{t('settings.game.desktopFullscreenNotice')}</p>
       )}
       {settings.gameWindowSize === 'custom' && (
@@ -845,7 +839,6 @@ function DebugKeyRow(): JSX.Element {
       <p className="caption -mt-1">
         {settings.debugKey ? t('settings.debugKey.statusSet') : t('settings.debugKey.statusUnset')}
       </p>
-      <p className="caption -mt-1">{t('settings.debugKey.desc')}</p>
       {settings.feedbackLogConsent && (
         <div className="glass-soft mt-1 flex items-center gap-2 rounded-xl p-3 text-[13px]">
           <Icon name="info" size={15} className="opacity-70" />

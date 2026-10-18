@@ -20,7 +20,7 @@
   "home.consoleEmpty": "Console output will appear here after you launch the game.",
   "home.report.title": "Launch failed",
   "home.report.analyzing": "Analyzing error…",
-  "home.model3d.hint": "Your 3D model (premium / third-party accounts only) · drag to rotate",
+  "home.model3d.hint": "Drag to rotate",
   "home.report.detail": "Key error",
   "home.report.close": "Close",
   "home.vanilla": "Vanilla",

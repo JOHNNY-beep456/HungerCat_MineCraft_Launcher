@@ -20,7 +20,7 @@
   "home.consoleEmpty": "啟動遊戲後，主控台輸出將顯示在這裡。",
   "home.report.title": "啟動失敗",
   "home.report.analyzing": "錯誤分析中…",
-  "home.model3d.hint": "你的 3D 模型（僅正版 / 第三方帳號）· 可拖動旋轉",
+  "home.model3d.hint": "滑鼠拖曳以旋轉",
   "home.report.detail": "關鍵錯誤",
   "home.report.close": "關閉",
   "home.vanilla": "原版",

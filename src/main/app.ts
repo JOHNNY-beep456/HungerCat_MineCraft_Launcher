@@ -200,6 +200,24 @@ function githubCanvasColor(dark: boolean, style: string): string {
   return GITHUB_CANVAS[key] ?? (dark ? '#0d1117' : '#ffffff')
 }
 
+/** WinUI 3（Win11）的画布色：Mica 基底取 SolidBackgroundFillColorBase。 */
+const WINUI3_CANVAS = { light: '#f3f3f3', dark: '#202020' } as const
+/** WinUI 2（UWP / Win10）的画布色：Acrylic 基底取 SystemControlBackgroundBase。 */
+const WINUI2_CANVAS = { light: '#f0f0f0', dark: '#1f1f1f' } as const
+
+/**
+ * WinUI 2 / 3 的主窗口底色。
+ * 两套皮肤都是系统材质（Mica / Acrylic），底色必须与 CSS 里的
+ * --wu*-canvas 完全一致，否则窗口边框处会露出色差。
+ */
+function winuiCanvasColor(dark: boolean, skin: 'winui2' | 'winui3'): string {
+  const table = skin === 'winui3' ? WINUI3_CANVAS : WINUI2_CANVAS
+  return dark ? table.dark : table.light
+}
+
+/** 我的世界皮肤的主窗口底色：与 CSS 里的 --mc-canvas 逐字一致（改一处必须同步另一处）。 */
+const MINECRAFT_CANVAS = { light: '#c6c6c6', dark: '#1e1e1e' } as const
+
 function windowBackgroundColor(): string {
   const s = settings.get()
   const dark = s.theme === 'dark' || (s.theme === 'system' && nativeTheme.shouldUseDarkColors)
@@ -207,6 +225,14 @@ function windowBackgroundColor(): string {
   if (s.experimental === 'material') return materialSurfaceColor(dark, s.materialStyle, s.accentColor)
   // GitHub（Primer）同理：实色 canvas-default
   if (s.experimental === 'github') return githubCanvasColor(dark, s.githubStyle)
+  // WinUI 2 / 3：系统材质（Mica / Acrylic），同样是实色基底
+  if (s.experimental === 'winui2' || s.experimental === 'winui3') {
+    return winuiCanvasColor(dark, s.experimental)
+  }
+  // 我的世界：库存面板灰（浅色）/ 石头深灰（深色），实色、无渐变无纹理
+  if (s.experimental === 'minecraft') {
+    return dark ? MINECRAFT_CANVAS.dark : MINECRAFT_CANVAS.light
+  }
   const table = dark ? WINDOW_BG_DARK : WINDOW_BG_LIGHT
   return table[s.background] ?? (dark ? '#04060f' : '#eef1fa')
 }
@@ -1075,15 +1101,12 @@ app.whenReady().then(() => {
   })
   startDevModeExpiryWatch()
   if (enforceDevModeExpiry()) broadcastDevMode()
-  app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow()
-  })
 })
 
 app.on('window-all-closed', () => {
   // 托盘后台模式下不退出：窗口虽全部关闭，程序仍在托盘常驻（联机继续）。
   if (tray) return
-  if (process.platform !== 'darwin') app.quit()
+  app.quit()
 })
 
 app.on('will-quit', () => {

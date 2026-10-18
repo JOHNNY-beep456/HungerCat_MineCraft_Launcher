@@ -3,6 +3,7 @@ import { ipcMain } from 'electron'
 import type {
   DebugLogEntry,
   FeedbackSubmitPayload,
+  FeedbackMessagePayload,
   HomepageSubmitPayload,
   HomepageUpdate
 } from '@shared/types'
@@ -31,6 +32,9 @@ import {
   submitFeedback,
   fetchServerLimits,
   listFeedback,
+  fetchFeedbackDetail,
+  postFeedbackMessage,
+  openFeedbackFile,
   withdrawFeedback,
   loginFeedback,
   feedbackSessionStatus,
@@ -65,10 +69,18 @@ export function registerHomepageHandlers(_ctx: IpcContext): void {
   ipcMain.handle('feedback:send-code', (_e, email: string) => sendFeedbackCode(email))
   ipcMain.handle('feedback:submit', (_e, payload: FeedbackSubmitPayload) => submitFeedback(payload))
   ipcMain.handle('feedback:list', (_e, email: string, code: string) => listFeedback(email, code))
+  ipcMain.handle('feedback:detail', (_e, id: string, email: string, code: string) =>
+    fetchFeedbackDetail(id, email, code)
+  )
+  ipcMain.handle('feedback:message', (_e, payload: FeedbackMessagePayload) =>
+    postFeedbackMessage(payload)
+  )
+  ipcMain.handle('feedback:open-file', (_e, id: string, name: string) => openFeedbackFile(id, name))
   ipcMain.handle('feedback:withdraw', (_e, email: string, code: string, id: string) =>
     withdrawFeedback(email, code, id)
   )
-  // 免登录：用邮箱验证码换发令牌（1天/7天/30天/永久），令牌加密留在主进程。
+  // 免登录：用邮箱验证码换发令牌（本次会话/1天/7天/30天/永久）；
+  // 「本次会话」只留在主进程内存，长期档加密落盘。
   ipcMain.handle('feedback:login', (_e, email: string, code: string, ttl: number) =>
     loginFeedback(email, code, ttl)
   )

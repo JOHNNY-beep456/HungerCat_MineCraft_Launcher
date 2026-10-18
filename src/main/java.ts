@@ -159,13 +159,6 @@ async function findJavaExecutables(): Promise<string[]> {
     for (const entry of entries) candidates.push(join(dir, entry, 'bin', JAVA_BIN))
   }
 
-  // Common macOS Homebrew openjdk symlinks
-  if (process.platform === 'darwin') {
-    for (const ver of ['21', '17', '11', '8']) {
-      candidates.push(join('/opt/homebrew/opt', `openjdk@${ver}`, 'bin', 'java'))
-    }
-  }
-
   // Explicit bundled JDK dirs shipped with vanilla launcher style layout
   const home = homedir()
   for (const rel of [
@@ -419,7 +412,7 @@ export async function installJava(
   onProgress: (percent: number, task: string, currentBytes: number, totalBytes: number, phase: DownloadPhase) => void,
   signal?: AbortSignal
 ): Promise<string> {
-  const os = process.platform === 'win32' ? 'windows' : process.platform === 'darwin' ? 'mac' : 'linux'
+  const os = process.platform === 'win32' ? 'windows' : 'linux'
   const arch = process.arch === 'arm64' ? 'aarch64' : 'x64'
 
   const root = join(gameDir, 'java', String(major))

@@ -20,7 +20,7 @@
   "home.consoleEmpty": "启动游戏后，控制台输出将显示在这里。",
   "home.report.title": "启动失败",
   "home.report.analyzing": "错误分析中…",
-  "home.model3d.hint": "你的 3D 模型（仅正版 / 第三方账号）· 可拖动旋转",
+  "home.model3d.hint": "鼠标拖动以旋转",
   "home.report.detail": "关键错误",
   "home.report.close": "关闭",
   "home.vanilla": "原版",

@@ -3,6 +3,7 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -245,16 +246,31 @@ export function AppProvider({ children }: { children: ReactNode }): JSX.Element 
   // 它对应 CSS 里的 [data-skin='glass']；实验项 mica 才对应基础的 3D 云母（无覆盖规则）。
   // mac = iOS 液态玻璃、material = Material Design 3 风格、github = GitHub（Primer）风格、
   // win10 = Win10 桌面，均按原值透传到 data-skin。
-  useEffect(() => {
-    const skin = settings?.experimental === 'off' ? 'glass' : (settings?.experimental ?? 'glass')
+  //
+  // 「模糊玻璃」不是独立皮肤，而是默认玻璃皮肤的「重特效档」：data-skin 仍是 glass
+  // （复用全部玻璃样式），另写 data-frosted='on' 来表示「保留磨砂与光斑」——普通模式
+  // 默认已扁平化，两者靠这一个标记区分，避免把整套玻璃规则复制两份。
+  //
+  // 极简模式：界面按默认皮肤渲染（极简自身已把材质全部二维化），但**不动设置里的
+  // experimental**——它只是「暂时不生效」。这样从极简切回普通模式时，之前选的主题
+  // 会自动恢复，而不是被永久清掉。
+  //
+  // 用 useLayoutEffect：皮肤/磨砂标记必须在**绘制前**写到 <html>。否则切到「模糊玻璃」
+  // 的那一帧里，光斑元素已经挂载、而 [data-frosted] 还没生效，会出现一帧既无模糊也
+  // 无贴图（看起来就像背景模糊「没有立即成型」）。
+  useLayoutEffect(() => {
+    const exp = settings?.experimental ?? 'off'
+    const effective = settings?.mode === 'minimal' ? 'off' : exp
+    const skin = effective === 'off' || effective === 'frosted' ? 'glass' : effective
     document.documentElement.dataset['skin'] = skin
+    document.documentElement.dataset['frosted'] = effective === 'frosted' ? 'on' : 'off'
     // M3 风格类型：只有 Material Design 3 皮肤会读它，其它皮肤下留着也无副作用
     // （CSS 里所有 [data-material=…] 规则都限定在 [data-skin='material'] 下）。
     document.documentElement.dataset['material'] = settings?.materialStyle ?? 'you'
     // GitHub 配色选择器当前选中的原始值（含 system），供设置页高亮用；
     // 实际生效的那一档写在 data-gh-theme 上。
     document.documentElement.dataset['github'] = settings?.githubStyle ?? 'system'
-  }, [settings?.experimental, settings?.materialStyle, settings?.githubStyle])
+  }, [settings?.experimental, settings?.mode, settings?.materialStyle, settings?.githubStyle])
 
   /**
    * GitHub（Primer）实际生效的配色档。
@@ -290,7 +306,9 @@ export function AppProvider({ children }: { children: ReactNode }): JSX.Element 
     return ghScheme === 'light' || ghScheme === 'light-hc' ? 'light' : 'dark'
   }, [settings?.experimental, ghScheme, theme])
 
-  useEffect(() => {
+  // 用 useLayoutEffect：背景预设决定光斑配色（--blob-*-c0/c1），烘焙贴图必须在
+  // 绘制前就能读到正确的变量值；同时避免切换预设时出现一帧旧配色。
+  useLayoutEffect(() => {
     const root = document.documentElement
     // 主题色写成 --accent-user（种子），由样式表里的 --fill-primary: var(--accent-user, …)
     // 转成真正上色的那个令牌。

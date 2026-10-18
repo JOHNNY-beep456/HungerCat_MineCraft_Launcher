@@ -19,6 +19,7 @@ import { FileManager } from './components/FileManager'
 import { Button, Icon, Markdown, ProgressBar } from './components/ui'
 import { renderPage, type ResourcePreset } from './pages/router'
 import { InstanceManagePage } from './pages/InstanceManagePage'
+import { bakeBlobTextures, clearBlobTextures } from './blob-texture'
 
 function Shell(): JSX.Element {
   const { settings, t, reloadAccounts, securityAlert, clearSecurityAlert, fileManagerPath, closeFileManager, launcherUpdateNotice, dismissLauncherUpdateNotice, needAgreement, announcements, dismissAnnouncements, navRequest } = useApp()
@@ -146,7 +147,36 @@ function Shell(): JSX.Element {
 
   // 实验性 Win10 桌面整块替换外壳（侧栏 / 标题栏 / 玻璃背景），
   // 液态玻璃只是皮肤，外壳保持不变。
-  const desktop = settings.experimental === 'win10'
+  // 极简模式下按默认外壳渲染（实验皮肤只是「暂不生效」，设置本身仍保留）。
+  const minimal = settings.mode === 'minimal'
+  const desktop = !minimal && settings.experimental === 'win10'
+  const frosted = !minimal && settings.experimental === 'frosted'
+
+  // 「模糊玻璃」：把 90px 模糊一次性烘焙成贴图（详见 blob-texture.ts）。
+  // 不烘焙时每帧都要重算整层模糊，实测只有 ~14fps。
+  // 放在 useEffect（绘制之后）：首帧先用 CSS 的 filter: blur(90px) 兜底——模糊从第一帧
+  // 就在；随后烘焙好的贴图（已预解码）无缝替换，不会出现「模糊迟迟不出现」或闪一下。
+  // 依赖背景预设（配色随预设变化）与窗口宽度（模糊半径按像素换算）。
+  useEffect(() => {
+    if (!frosted) {
+      clearBlobTextures()
+      return
+    }
+    void bakeBlobTextures()
+    let timer = 0
+    const onResize = (): void => {
+      window.clearTimeout(timer)
+      timer = window.setTimeout(() => void bakeBlobTextures(), 300)
+    }
+    window.addEventListener('resize', onResize)
+    return () => {
+      window.clearTimeout(timer)
+      window.removeEventListener('resize', onResize)
+    }
+  }, [frosted, settings.background])
+
+  // 退出应用 / 卸载时清掉贴图与开关，避免污染 DOM 上的残留变量。
+  useEffect(() => () => clearBlobTextures(), [])
 
   // 安全拦截：命中危险代码时强制系统全屏（连 Windows 任务栏一起盖住），
   // 关闭提示后由主进程按拦截前记住的状态精确还原（桌面模式的全屏不会被退掉）。
@@ -170,10 +200,16 @@ function Shell(): JSX.Element {
           <Win10Desktop />
         ) : (
           <>
+            {/* 装饰光斑只在实验性「模糊玻璃」下渲染：它会配合玻璃磨砂一起还原
+                优化前的重特效外观（90px 模糊 + 漂移动画，开销较高）。极简模式下不渲染。 */}
             <div className="app-background" aria-hidden>
-              <div className="blob blob-1" />
-              <div className="blob blob-2" />
-              <div className="blob blob-3" />
+              {frosted && (
+                <>
+                  <div className="blob blob-1" />
+                  <div className="blob blob-2" />
+                  <div className="blob blob-3" />
+                </>
+              )}
             </div>
 
             <TitleBar onLogoDoubleClick={() => setOnboardingOpen(true)} />
@@ -190,20 +226,25 @@ function Shell(): JSX.Element {
                 )}
 
                 <main className={settings.topNav ? 'min-w-0 flex-1 p-5' : 'min-w-0 flex-1 p-5 pl-2'}>
-                  {/* 页面 ⇄ 实例管理整页：用 key 切换同一容器内的两态视图，做淡入 + 轻微 y/scale 过渡。
-                      这里只做入场（不加 AnimatePresence 退场），避免退场延后新页面挂载。 */}
+                  {/* 页面 ⇄ 实例管理整页：用 key 切换同一容器内的两态视图，做淡入过渡。
+                      只动 opacity：位移/缩放会让整页（含几十张磨砂卡片）每帧重新采样
+                      backdrop，实测把切换帧率压到 20~30fps；淡入是纯合成器动画，观感
+                      几乎一致又不会卡。这里只做入场（不加 AnimatePresence 退场），
+                      避免退场延后新页面挂载。 */}
                   <motion.div
                     key={managingId ? 'manage' : page}
                     className="h-full"
-                    initial={{ opacity: 0, y: 12, scale: 0.995 }}
-                    animate={{ opacity: 1, y: 0, scale: 1 }}
-                    transition={{ type: 'spring', bounce: 0, duration: 0.35 }}
+                    initial={{ opacity: 0 }}
+                    animate={{ opacity: 1 }}
+                    transition={{ duration: 0.2, ease: 'easeOut' }}
                   >
-                    {managingId ? (
-                      <InstanceManagePage versionId={managingId} onBack={() => setManagingId(null)} onRename={setManagingId} />
-                    ) : (
-                      renderPage(page, setManagingId, resourcePreset, navigate, settings.enableMultiplayer)
-                    )}
+                    <div className="h-full">
+                      {managingId ? (
+                        <InstanceManagePage versionId={managingId} onBack={() => setManagingId(null)} onRename={setManagingId} />
+                      ) : (
+                        renderPage(page, setManagingId, resourcePreset, navigate, settings.enableMultiplayer)
+                      )}
+                    </div>
                   </motion.div>
                 </main>
               </div>
