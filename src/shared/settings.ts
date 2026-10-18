@@ -100,7 +100,7 @@ export const SETTINGS_DEFS: SettingsDefs = {
     ui: {
       section: 'appearance',
       control: 'segmented',
-      labelKey: 'settings.row.theme',
+      labelKey: 'settings.row.lightDark',
       disableWhen: ['autoThemeFromWallpaper'],
       options: [
         { value: 'light', labelKey: 'settings.theme.light' },
@@ -109,6 +109,13 @@ export const SETTINGS_DEFS: SettingsDefs = {
       ]
     }
   },
+  /* 界面主题（皮肤）：原先在「实验性功能」里是九个互斥开关，靠「开一个自动关别的」
+     表达单选，读起来像能多选、换皮肤还得点两下。现在并到外观里做成下拉。
+     取值不变（`off` = 扁平化，即默认观感），老配置无需迁移。 */
+  experimental: { default: 'off', ui: { section: 'appearance', control: 'custom' } },
+  /** 皮肤的子选项：由「界面主题」行按当前皮肤决定是否出现，故无独立 ui。 */
+  materialStyle: { default: 'you' },
+  githubStyle: { default: 'system' },
   accentColor: { default: '#0a84ff', ui: { section: 'appearance', control: 'custom' } },
   background: { default: 'midnight', ui: { section: 'appearance', control: 'custom' } },
   backgroundImage: { default: '', ui: { section: 'appearance', control: 'custom' } },
@@ -134,15 +141,6 @@ export const SETTINGS_DEFS: SettingsDefs = {
   },
 
   /* ============ 实验性功能（板块 id：experimental） ============ */
-  experimental: { default: 'off', ui: { section: 'experimental', control: 'custom' } },
-  materialStyle: {
-    default: 'you',
-    ui: { section: 'experimental', control: 'custom' }
-  },
-  githubStyle: {
-    default: 'system',
-    ui: { section: 'experimental', control: 'custom' }
-  },
   autoThemeFromWallpaper: {
     default: false,
     ui: {
@@ -161,6 +159,8 @@ export const SETTINGS_DEFS: SettingsDefs = {
     }
   },
   enableMultiplayer: { default: false, ui: { section: 'experimental', control: 'custom' } },
+  /* 进程级开关，必须在 app ready 之前读；自定义行里带「需重启」提示与重启按钮。 */
+  hardwareAcceleration: { default: false, ui: { section: 'experimental', control: 'custom' } },
 
   /* ============ 游戏（板块 id：game） ============ */
   gameDir: { default: '', ui: { section: 'game', control: 'custom' } },
@@ -183,6 +183,8 @@ export const SETTINGS_DEFS: SettingsDefs = {
   /* ============ Java（板块 id：java） ============ */
   javaAutoDetect: { default: true, ui: { section: 'java', control: 'custom' } },
   javaPath: { default: undefined, ui: { section: 'java', control: 'custom' } },
+  /** 实例级 Java 覆盖（versionId → 路径）：在「实例 → 版本」页设置，不占设置页的板块。 */
+  versionJava: { default: {} },
 
   /* ============ 下载（板块 id：download） ============ */
   downloadSource: {
@@ -385,4 +387,20 @@ export function sectionFields(section: string): SectionField[] {
     if (def?.ui && def.ui.section === section) out.push({ key, def })
   }
   return out
+}
+
+/**
+ * 实例级 Java 覆盖路径。
+ *
+ * 返回 `undefined` 表示「跟随全局设置」：没有条目、空串、纯空白都算未指定。
+ * 路径本身是否还能用（文件存在、能跑 `-version`）由主进程在启动 / 检查时再验证，
+ * 这里只做取值归一，方便主进程与渲染层共用同一套判定。
+ */
+export function instanceJavaPath(
+  s: Pick<LauncherSettings, 'versionJava'>,
+  versionId: string | undefined
+): string | undefined {
+  if (!versionId) return undefined
+  const path = s.versionJava?.[versionId]
+  return typeof path === 'string' && path.trim() ? path.trim() : undefined
 }

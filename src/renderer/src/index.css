@@ -17,6 +17,25 @@
   --winbtn-danger-bg: #c42b1c;
   --winbtn-danger-fg: #ffffff;
 
+  /* --- 标题栏翻译状态灯（呼吸灯）---
+     与窗口按钮同一套路：形状 / 材质全吃令牌，每套皮肤各填一份，组件本身不写死任何外形。
+     颜色默认直接复用 --fill-secondary / --text-secondary —— 这两个令牌本身已按皮肤换过，
+     所以 M3 是 secondary-container、GitHub 是 neutral-muted、WinUI 是 accent-soft、
+     我的世界是面板灰，无需为配色再抄一遍。 */
+  --status-pill-radius: var(--radius-full);
+  --status-pill-bg: var(--fill-secondary);
+  --status-pill-shade: none;
+  --status-pill-border-width: 0px;
+  --status-pill-border-color: transparent;
+  --status-pill-shadow: none;
+  --status-pill-fg: var(--text-secondary);
+  --status-pill-pad-x: 8px;
+  --status-pill-pad-y: 2px;
+  /* 灯本体：默认圆点 + 一圈辉光（呼吸时才明显）；方形 / 无辉光由皮肤覆写。 */
+  --dot-radius: 999px;
+  --dot-glow: 0 0 5px var(--dot-color);
+  --dot-glow-weak: 0 0 2px var(--dot-color);
+
   /* --- 形状 / 材质的**归一化**令牌（跨皮肤同义名）---
      各皮肤原本各自用私有变量名表达圆角与材质（--gh-radius-control、--wu3-radius-card、
      --mc-radius、--m3-shape-lg、--control-raised-blur…），名字互不相通，iframe 既读不到
@@ -247,13 +266,15 @@ body {
   }
 }
 
-/* --- 标题栏翻译状态呼吸灯 --- */
+/* --- 标题栏翻译状态呼吸灯 ---
+   形状与辉光都走令牌（--dot-radius / --dot-glow），于是随皮肤变：
+   默认圆点带光晕、我的世界是方形像素灯、M3 / GitHub / WinUI / Win10 则不做外发光。 */
 .translate-dot {
   width: 8px;
   height: 8px;
-  border-radius: 9999px;
+  border-radius: var(--dot-radius, 9999px);
   background: var(--dot-color);
-  box-shadow: 0 0 5px var(--dot-color);
+  box-shadow: var(--dot-glow, 0 0 5px var(--dot-color));
   flex: none;
 }
 /* 仅在「翻译中 / 已翻译」时应用：橙色、绿色呼吸闪烁；灰、红两种状态保持静止。 */
@@ -265,12 +286,12 @@ body {
   100% {
     opacity: 1;
     transform: scale(1);
-    box-shadow: 0 0 5px var(--dot-color);
+    box-shadow: var(--dot-glow, 0 0 5px var(--dot-color));
   }
   50% {
     opacity: 0.3;
     transform: scale(0.78);
-    box-shadow: 0 0 2px var(--dot-color);
+    box-shadow: var(--dot-glow-weak, 0 0 2px var(--dot-color));
   }
 }
 
@@ -536,6 +557,16 @@ textarea.input {
 
 }
 
+/* --- 带前置图标的输入框 ---
+   图标绝对定位在左内边距里（left-3、15px 宽，占 12~27px），占位文字必须让开 36px。
+   不能只靠 Tailwind 的 pl-9：各皮肤的 `.input` 规则都是**未分层**的，
+   层叠优先级高于 @layer utilities，会把 pl-9 直接压掉——Material 皮肤下
+   （padding: 0 14px）就表现为搜索图标与「热门推荐…」叠在一起。
+   所以这里用同属未分层的 !important 兜住，全应用六个搜索框共用这一个类。 */
+.input-leading-icon {
+  padding-left: 36px !important;
+}
+
 /* --- Scrollbar --- */
 ::-webkit-scrollbar {
   width: 10px;
@@ -609,6 +640,45 @@ textarea.input {
     var(--winbtn-danger-bevel-dark, var(--winbtn-bevel-dark, transparent))
     var(--winbtn-danger-bevel-dark, var(--winbtn-bevel-dark, transparent))
     var(--winbtn-danger-bevel-light, var(--winbtn-bevel-light, transparent));
+}
+
+/* --- 标题栏翻译状态灯 ---
+   外形同样全吃令牌（见 :root 的 --status-pill-*），于是和窗口按钮一样自动随皮肤变：
+   扁平化 = 半透明药丸；3D 云母 = 控件级云母（受光渐变 + 倒角 + 投影）；
+   液态玻璃 = 近无色小玻璃珠（镜边靠 inset 反光表达，不挂 backdrop-filter —— 小件上
+   模糊几乎看不出来，却要为它多留一个合成层）；M3 = 8px 圆角 chip；
+   GitHub = 带描边的灰标签；WinUI 3 = 4px 描边徽标；WinUI 2 / Win10 = 直角徽标；
+   我的世界 = 2px 立体倒角 + 方形像素灯。 */
+.status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: 4px;
+  padding: var(--status-pill-pad-y) var(--status-pill-pad-x);
+  border-radius: var(--status-pill-radius);
+  background-color: var(--status-pill-bg);
+  background-image: var(--status-pill-shade);
+  color: var(--status-pill-fg);
+  /* 拆成三行而不是 border 简写：我的世界的倒角是「四值不同色」，
+     而 border 简写只收一个颜色，写在一起整条声明会被判无效（边框直接消失）。 */
+  border-style: solid;
+  border-width: var(--status-pill-border-width);
+  border-color: var(--status-pill-border-color);
+  box-shadow: var(--status-pill-shadow);
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1.4;
+  white-space: nowrap;
+}
+
+/* 3D 云母没有独立的皮肤令牌块（:root 就是它的基线），所以在这里单独给它一份
+   控件级云母外观：受光渐变 + 1px 倒角 + 与 .chip 同一条紧凑投影。 */
+[data-skin='mica'] .status-pill {
+  --status-pill-bg: var(--glass-bg-strong);
+  --status-pill-shade: var(--surface-shade);
+  --status-pill-border-width: 1px;
+  --status-pill-border-color: var(--glass-border);
+  --status-pill-shadow: var(--glass-shadow-control);
 }
 
 /* --- 联机板块（MCTier 移植）局部控件 --- */
@@ -855,14 +925,19 @@ textarea.input {
 /* ------------------------------------------------------------------ */
 /* 只有用户未要求「减少透明度」且不是极简模式时，才启用磨砂 */
 @media (prefers-reduced-transparency: no-preference) {
+  /* 模糊只负责「把背景揉匀」，颜色必须原样透上来。
+     原来这里还挂了一层 brightness(1.08~1.1)：它把背后内容整体提亮，
+     正是「加了点白色」的来源——内容被抬亮 + 填充发白 = 磨砂塑料感。
+     Liquid Glass 的原则是「颜色由背后的内容决定」，所以这里只模糊 + 适度提纯，
+     不再提亮；saturate 也从 190~230% 降到 170~190%（过高会让颜色发糖果、同样塑料）。 */
   [data-skin='mac']:not([data-mode='minimal']) .glass {
-    backdrop-filter: blur(48px) saturate(215%) brightness(1.08);
+    backdrop-filter: blur(48px) saturate(180%);
   }
   [data-skin='mac']:not([data-mode='minimal']) .glass-strong {
-    backdrop-filter: blur(64px) saturate(230%) brightness(1.1);
+    backdrop-filter: blur(64px) saturate(190%);
   }
   [data-skin='mac']:not([data-mode='minimal']) .glass-soft {
-    backdrop-filter: blur(24px) saturate(190%) brightness(1.06);
+    backdrop-filter: blur(24px) saturate(170%);
   }
   /* 镜面高光描边（1px）——液态玻璃最有辨识度的一道「镜边」。
      做法是「填充 → padding-box、高光渐变 → border-box」的双背景：把 1px 边框那一圈留给
@@ -907,6 +982,10 @@ textarea.input {
    两者合起来让表面读起来「有厚度的一块玻璃」，而不是一张平铺的半透明膜。 */
 [data-skin='mac']:not([data-mode='minimal']) :is(.glass, .glass-strong) {
   box-shadow:
+    /* 边缘透镜（lensing）：Liquid Glass 的辨识度不在「糊」，而在边缘把光**折弯**——
+       1px 镜边之内紧贴一圈极淡暗环，是玻璃厚度造成的内缘暗化。缺了它，亮边就只是
+       一根描边，面板会读成「描了边的白板」而不是一块玻璃。 */
+    inset 0 0 0 1px rgba(15, 23, 42, 0.07),
     inset 0 1px 1px rgba(255, 255, 255, 0.62),
     inset 1.5px 0 2px -1px rgba(255, 255, 255, 0.3),
     inset -1.5px 0 2px -1px rgba(255, 255, 255, 0.12),
@@ -917,12 +996,39 @@ textarea.input {
 }
 [data-skin='mac'][data-theme='dark']:not([data-mode='minimal']) :is(.glass, .glass-strong) {
   box-shadow:
+    inset 0 0 0 1px rgba(0, 0, 0, 0.24),
     inset 0 1px 1px rgba(255, 255, 255, 0.4),
     inset 1.5px 0 2px -1px rgba(255, 255, 255, 0.16),
     inset -1.5px 0 2px -1px rgba(255, 255, 255, 0.06),
     inset 0 -1px 1px rgba(255, 255, 255, 0.14),
     inset 0 12px 20px -14px rgba(0, 0, 0, 0.5),
     inset 0 -14px 22px -18px rgba(255, 255, 255, 0.1),
+    var(--glass-shadow);
+}
+/* 越大的玻璃体越「厚」：Liquid Glass 在变大（侧栏 / 弹窗 / 下拉）时折射更明显、
+   投影更深，用来把浮层与内容层的卡片区分开。小件（.glass-soft）保持最薄。 */
+[data-skin='mac']:not([data-mode='minimal']) .glass-strong {
+  box-shadow:
+    inset 0 0 0 1px rgba(15, 23, 42, 0.1),
+    inset 0 0 0 2px rgba(255, 255, 255, 0.12),
+    inset 0 1px 1px rgba(255, 255, 255, 0.72),
+    inset 1.5px 0 3px -1px rgba(255, 255, 255, 0.34),
+    inset -1.5px 0 3px -1px rgba(255, 255, 255, 0.14),
+    inset 0 -1px 1px rgba(255, 255, 255, 0.5),
+    inset 0 18px 30px -18px rgba(15, 23, 42, 0.2),
+    inset 0 -20px 32px -22px rgba(255, 255, 255, 0.38),
+    var(--glass-shadow);
+}
+[data-skin='mac'][data-theme='dark']:not([data-mode='minimal']) .glass-strong {
+  box-shadow:
+    inset 0 0 0 1px rgba(0, 0, 0, 0.3),
+    inset 0 0 0 2px rgba(255, 255, 255, 0.07),
+    inset 0 1px 1px rgba(255, 255, 255, 0.45),
+    inset 1.5px 0 3px -1px rgba(255, 255, 255, 0.18),
+    inset -1.5px 0 3px -1px rgba(255, 255, 255, 0.07),
+    inset 0 -1px 1px rgba(255, 255, 255, 0.16),
+    inset 0 18px 30px -18px rgba(0, 0, 0, 0.6),
+    inset 0 -20px 32px -22px rgba(255, 255, 255, 0.12),
     var(--glass-shadow);
 }
 /* 水膜的润泽（::before）：顶部一层极淡内发光，越往下越透明——像杯壁上挂着
@@ -989,12 +1095,29 @@ textarea.input {
 [data-skin='mac']:not([data-mode='minimal']) .mica-well .mica {
   border-radius: 999px;
 }
-/* 选中块再给一道自己的镜边，读起来才是一颗玻璃珠而不是一块色片。
-   同样只在「未要求减少透明度」时画，避免与极简 / 减少透明度的实色回退打架。 */
-[data-skin='mac']:not([data-mode='minimal']) .mica-well .mica {
-  --lg-fill: var(--fill-secondary-hover);
+/* 分栏（Segmented）：这里只有「沟」（槽）与「珠」（选中项）两个角色。
+   .mica-well 在本皮肤里唯一的用途就是分栏，所以可以单独把两者做成液态玻璃：
+   · 沟 = 一道**凹**下去的玻璃槽：上缘内阴影定形 + 下缘一道反光 + 外缘一圈镜边；
+   · 珠 = 压在沟里的一滴水：近乎无色的半透明填充（让背后被模糊的背景透上来）
+     + 顶缘聚光镜边 + 抬起投影。
+   填充刻意不用 --fill-secondary*：那是中性灰实心色，正是「塑料条」读感的来源。 */
+[data-skin='mac']:not([data-mode='minimal']) .mica-well {
+  --lg-fill: var(--lg-trough-fill);
 }
+[data-skin='mac']:not([data-mode='minimal']) .mica-well .mica {
+  --lg-fill: var(--lg-bead-fill);
+}
+/* 镜边 / 内影只在「未要求减少透明度」时画，避免与极简 / 减少透明度的实色回退打架。 */
 @media (prefers-reduced-transparency: no-preference) {
+  [data-skin='mac']:not([data-mode='minimal']) .mica-well {
+    border-color: transparent;
+    background:
+      linear-gradient(var(--lg-fill), var(--lg-fill)) padding-box,
+      linear-gradient(var(--lg-trough-ring), var(--lg-trough-ring)) border-box;
+    box-shadow:
+      inset 0 1px 2px rgba(15, 23, 42, 0.14),
+      inset 0 -1px 0 rgba(255, 255, 255, 0.5);
+  }
   [data-skin='mac']:not([data-mode='minimal']) .mica-well .mica {
     border-color: transparent;
     background:
@@ -1008,7 +1131,42 @@ textarea.input {
           var(--lg-rim-bottom) 100%
         )
         border-box;
-    box-shadow: inset 0 1px 1px rgba(255, 255, 255, 0.4), var(--glass-shadow-control);
+    /* 顶缘聚光 + 底部反光 + 抬起投影。这里刻意不再叠 var(--glass-shadow-control)
+       —— 那是普通模式「云母控件」的一整套上亮下暗内影，正是塑料感的来源。
+       珠子「糊成白块」只来自 --lg-bead-fill（白色实心量），镜边本身正是液态玻璃的
+       辨识度所在，所以要压的只有填充，镜边保持与大面板一致的 --lg-rim-* 满强度。 */
+    box-shadow:
+      inset 0 1px 1px rgba(255, 255, 255, 0.55),
+      inset 0 -1px 1px rgba(255, 255, 255, 0.35),
+      0 6px 14px -8px rgba(15, 23, 42, 0.5);
+  }
+  [data-skin='mac'][data-theme='dark']:not([data-mode='minimal']) .mica-well {
+    box-shadow:
+      inset 0 1px 2px rgba(0, 0, 0, 0.3),
+      inset 0 -1px 0 rgba(255, 255, 255, 0.1);
+  }
+  [data-skin='mac'][data-theme='dark']:not([data-mode='minimal']) .mica-well .mica {
+    box-shadow:
+      inset 0 1px 1px rgba(255, 255, 255, 0.28),
+      inset 0 -1px 1px rgba(255, 255, 255, 0.12),
+      0 6px 14px -8px rgba(0, 0, 0, 0.6);
+  }
+
+  /* 标题栏状态灯：一颗缩小的玻璃珠。填充刻意压得很低（同分栏选中珠的道理：
+     小件上高白填充只会读成一块白色），形靠一圈 inset 反光 + 极淡的抬起投影来立。 */
+  [data-skin='mac']:not([data-mode='minimal']) .status-pill {
+    --status-pill-bg: rgba(255, 255, 255, 0.1);
+    --status-pill-shadow:
+      inset 0 1px 1px rgba(255, 255, 255, 0.5),
+      inset 0 -1px 1px rgba(255, 255, 255, 0.28),
+      0 2px 8px -4px rgba(15, 23, 42, 0.35);
+  }
+  [data-skin='mac'][data-theme='dark']:not([data-mode='minimal']) .status-pill {
+    --status-pill-bg: rgba(255, 255, 255, 0.06);
+    --status-pill-shadow:
+      inset 0 1px 1px rgba(255, 255, 255, 0.24),
+      inset 0 -1px 1px rgba(255, 255, 255, 0.12),
+      0 2px 8px -4px rgba(0, 0, 0, 0.5);
   }
 }
 
@@ -1368,6 +1526,15 @@ textarea.input {
   --lg-rim-low: rgba(255, 255, 255, 0.08);
   --lg-rim-bottom: rgba(255, 255, 255, 0.72);
 
+  /* 分栏控件的沟与珠（见上方皮肤段）：刻意用近乎无色的白，不用 --fill-secondary*
+     那样的中性灰——灰实心填色会让控件读成一根塑料条，透出背景才是玻璃。
+     镜边仍用大面板的 --lg-rim-*（镜边是液态玻璃的辨识度，不能降）；
+     珠子糊成白块只源于下面这层白色填充，所以只有它一路压到近乎为零（.28 → .014），
+     珠子完全交给镜边 + 内高光 + 抬起投影来立形。 */
+  --lg-trough-fill: rgba(255, 255, 255, 0.1);
+  --lg-trough-ring: rgba(255, 255, 255, 0.34);
+  --lg-bead-fill: rgba(255, 255, 255, 0.014);
+
   /* 玻璃体：纯透明——只留极薄一层，让背景完全透出 */
   --glass-bg: rgba(255, 255, 255, 0.06);
   --glass-bg-strong: rgba(255, 255, 255, 0.09);
@@ -1399,6 +1566,10 @@ textarea.input {
   --lg-rim-side: rgba(255, 255, 255, 0.15);
   --lg-rim-low: rgba(255, 255, 255, 0.05);
   --lg-rim-bottom: rgba(255, 255, 255, 0.24);
+
+  --lg-trough-fill: rgba(255, 255, 255, 0.05);
+  --lg-trough-ring: rgba(255, 255, 255, 0.14);
+  --lg-bead-fill: rgba(255, 255, 255, 0.0075);
 
   /* 纯透明：深色下也只留极薄一层提亮，不做深色实底 */
   --glass-bg: rgba(255, 255, 255, 0.045);
@@ -1522,6 +1693,14 @@ textarea.input {
   --winbtn-radius: 0px;
   --winbtn-danger-bg: #e81123;
   --winbtn-danger-fg: #ffffff;
+}
+/* Win10 的徽标：直角 + 一道 1px 灰边，灯不发光（纯扁平，没有光晕这种拟物表达）。 */
+[data-skin='win10'] .status-pill {
+  --status-pill-radius: 0px;
+  --status-pill-border-width: 1px;
+  --status-pill-border-color: var(--divider);
+  --dot-glow: none;
+  --dot-glow-weak: none;
 }
 
 [data-skin='win10'] {
@@ -1958,6 +2137,14 @@ textarea.input {
   --winbtn-radius: var(--m3-shape-md);
   --winbtn-danger-bg: #b3261e;
   --winbtn-danger-fg: #ffffff;
+}
+/* M3 的徽标：8dp 圆角、secondary-container 底色（--fill-secondary 已指向它）、
+   不发光 —— Material 的层级靠色调阶，不靠光晕。 */
+[data-skin='material'] .status-pill {
+  --status-pill-radius: var(--m3-shape-sm);
+  --status-pill-fg: var(--m3-on-secondary-container);
+  --dot-glow: none;
+  --dot-glow-weak: none;
 }
 
 /* ---- 填充输入框（Filled text field）----
@@ -2476,6 +2663,15 @@ textarea.input {
   --winbtn-danger-bg: var(--gh-danger-fg);
   --winbtn-danger-fg: #ffffff;
 }
+/* Primer 的 Label：药丸形、neutral-muted 底 + 一圈 border.muted，灰字，无光晕。
+   （字色不用另写：--text-secondary 在这套皮肤里本来就指向 --gh-fg-muted。） */
+[data-skin='github'] .status-pill {
+  --status-pill-radius: var(--gh-radius-full);
+  --status-pill-border-width: 1px;
+  --status-pill-border-color: var(--gh-border-muted);
+  --dot-glow: none;
+  --dot-glow-weak: none;
+}
 
 /* Primer 的正文栈：在启动器默认栈之后补 Noto Sans / Helvetica / Arial */
 [data-skin='github'] body {
@@ -2890,6 +3086,14 @@ textarea.input {
   --winbtn-danger-bg: #c42b1c;
   --winbtn-danger-fg: #ffffff;
 }
+/* Win11 的 InfoBadge：4dp 圆角 + 1px 底描边，不做发光（字色沿用 --text-secondary）。 */
+[data-skin='winui3'] .status-pill {
+  --status-pill-radius: var(--wu3-radius-control);
+  --status-pill-border-width: 1px;
+  --status-pill-border-color: var(--wu3-border);
+  --dot-glow: none;
+  --dot-glow-weak: none;
+}
 
 /* ---- 滚动条：Win11 的细滚动条，滑块用中性档、悬停才变强调色 ---- */
 [data-skin='winui3'] ::-webkit-scrollbar-thumb {
@@ -3106,6 +3310,14 @@ textarea.input {
   --winbtn-hover-fg: var(--wu2-text);
   --winbtn-danger-bg: #e81123;
   --winbtn-danger-fg: #ffffff;
+}
+/* UWP 的徽标：直角（--wu2-radius-control 为 0）+ 1px 描边，同样不发光。 */
+[data-skin='winui2'] .status-pill {
+  --status-pill-radius: var(--wu2-radius-control);
+  --status-pill-border-width: 1px;
+  --status-pill-border-color: var(--wu2-border);
+  --dot-glow: none;
+  --dot-glow-weak: none;
 }
 
 /* ---- 滚动条：Win10 的宽滚动条 ---- */
@@ -3409,6 +3621,16 @@ textarea.input {
 [data-skin='minecraft'] .winbtn:hover {
   border-color: var(--mc-bevel-dark) var(--mc-bevel-light) var(--mc-bevel-light) var(--mc-bevel-dark);
 }
+/* 我的世界的状态牌：2px 立体倒角（左上亮、右下暗）+ 无光晕。
+   圆角与灯的点形状不用在这里写 —— 这套皮肤的 `#root *` 已经用
+   `border-radius: var(--mc-radius) !important` 把所有元素拍成直角了。 */
+[data-skin='minecraft'] .status-pill {
+  --status-pill-border-width: var(--mc-border-width);
+  --status-pill-border-color: var(--mc-bevel-light) var(--mc-bevel-dark) var(--mc-bevel-dark)
+    var(--mc-bevel-light);
+  --dot-glow: none;
+  --dot-glow-weak: none;
+}
 
 /* ---- 滚动条：方块滑块，带倒角 ---- */
 [data-skin='minecraft'] ::-webkit-scrollbar-thumb {
@@ -3472,9 +3694,24 @@ textarea.input {
 /*  性能：filter: blur(90px) 作用在会做 transform 动画的元素上时，每一帧   */
 /*  都要重算整层模糊（实测只有 ~14fps，且加 will-change 也无效）。因此由    */
 /*  renderer/blob-texture.ts 在启用时把模糊**一次性烘焙成贴图**，元素上     */
-/*  不再有 filter——之后动画只是合成器位移。漂移按 2Hz 步进离散化（每步      */
-/*  ~2px，肉眼无差），把玻璃面板重模糊的频率从 60 次/秒降到 2 次/秒。        */
+/*  不再有 filter——之后动画只是合成器位移。漂移按 1Hz 步进离散化（每步      */
+/*  ~4px，肉眼无差），把玻璃面板重模糊的频率从 60 次/秒降到 1 次/秒。        */
 /*  未烘焙成功（老环境 / canvas 不可用）时自动回落到上面的 filter 写法。    */
+/*                                                                    */
+/*  剩余开销（实测，且 app.ts 里 disableHardwareAcceleration + disable-gpu */
+/*  让所有人都在软件渲染下跑）：滚动设置页时每帧 ~63~77ms。拆开看，磨砂     */
+/*  遮罩 .app-background::after 单独占 ~23ms，10 张卡片的 backdrop-filter   */
+/*  合计 ~23ms；两者都关掉是 16.7ms（60fps）。                             */
+/*  关键结论：成本来自「存在 backdrop-filter 的元素」本身，**与模糊半径无关** */
+/*  （blur(36px)→blur(1px) 只快 7%，把遮罩的 blur 去掉也几乎不变，只要那个  */
+/*  元素还在就要付这份固定开销）。因此没有「调小半径换性能」的余地。          */
+/*  另外这些都试过、且都没有收益（部分更慢），不要再重复：                  */
+/*    will-change: backdrop-filter / contain: paint / isolation、           */
+/*    给 .app-background 加 filter 或 opacity 建 backdrop root、            */
+/*    滚动层 will-change: transform 或 contain: paint、                    */
+/*    卡片 will-change: transform / translateZ(0) / backface-visibility。   */
+/*  想再快只能二选一：减少 backdrop-filter 元素（改观感），或打开硬件加速    */
+/*  （改内存占用）。                                                       */
 /* ==================================================================== */
 :root[data-frosted='on'] {
   --surface-material: glass;

@@ -375,20 +375,35 @@ export function registerModsHandlers(ctx: IpcContext): void {
     const s = settings.get()
     await deleteVersion(activeGameDir(s), versionId)
     ctx.installedCache.invalidateAll()
+    // 实例没了，它单独的 Java 覆盖也一并清掉，避免设置里留下悬空键。
+    if (Object.prototype.hasOwnProperty.call(s.versionJava ?? {}, versionId)) {
+      const nextJava = { ...s.versionJava }
+      delete nextJava[versionId]
+      settings.set({ versionJava: nextJava })
+    }
     return true
   })
   ipcMain.handle('manage:renameVersion', async (_e, versionId: string, newName: string) => {
     const s = settings.get()
     const newId = await renameVersion(activeGameDir(s), versionId, newName)
     ctx.installedCache.invalidateAll()
-    // 同步更新设置中对旧实例 id 的引用（隔离 / 禁用标记）
+    // 同步更新设置中对旧实例 id 的引用（隔离 / 禁用标记 / 实例级 Java）
     if (newId !== versionId) {
-      const needsUpdate =
-        s.isolatedVersions.includes(versionId) || s.disabledVersions.includes(versionId)
-      if (needsUpdate) {
+      const nextJava = { ...(s.versionJava ?? {}) }
+      const hasJavaRef = Object.prototype.hasOwnProperty.call(nextJava, versionId)
+      if (hasJavaRef) {
+        nextJava[newId] = nextJava[versionId]
+        delete nextJava[versionId]
+      }
+      if (
+        s.isolatedVersions.includes(versionId) ||
+        s.disabledVersions.includes(versionId) ||
+        hasJavaRef
+      ) {
         settings.set({
           isolatedVersions: s.isolatedVersions.map((id) => (id === versionId ? newId : id)),
-          disabledVersions: s.disabledVersions.map((id) => (id === versionId ? newId : id))
+          disabledVersions: s.disabledVersions.map((id) => (id === versionId ? newId : id)),
+          versionJava: nextJava
         })
       }
     }

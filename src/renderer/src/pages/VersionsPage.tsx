@@ -361,7 +361,7 @@ export function VersionsPage({ presetSearch }: { presetSearch?: string }): JSX.E
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
                 placeholder={t('res.versions.searchPlaceholder')}
-                className="input w-full pl-9"
+                className="input w-full input-leading-icon"
               />
             </div>
             <Segmented<Filter>

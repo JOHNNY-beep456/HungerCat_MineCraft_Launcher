@@ -249,7 +249,7 @@ function Browser({ type }: { type: BrowseTab }): JSX.Element {
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             placeholder={query.trim() ? t('res.search.placeholder') : t('res.search.hotPlaceholder')}
-            className="input w-full pl-9"
+            className="input w-full input-leading-icon"
           />
         </form>
 

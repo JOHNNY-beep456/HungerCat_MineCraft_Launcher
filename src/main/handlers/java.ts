@@ -1,6 +1,7 @@
 // Java 域 IPC：运行时检测 / 版本适配检查 / 自动安装 / 手动指定。
 import { BrowserWindow, dialog, ipcMain } from 'electron'
 import type { DownloadPhase } from '@shared/types'
+import { instanceJavaPath } from '@shared/settings'
 import { settings, activeGameDir, allVersionDirs } from '../store'
 import { detectJava, installJava, invalidateJavaCache, javaVersionAt } from '../java'
 import { resolveVersionJson } from '../versions'
@@ -19,7 +20,11 @@ export function registerJavaHandlers(ctx: IpcContext): void {
     const available = await detectJava(allVersionDirs(s).map((d) => d.path))
     // 「合适的 Java」= isJavaSuitable 判定通过（见 java.ts）。没有合适的就返回 compatible=false，
     // 由渲染层弹「是否安装 Java {required}」提示，而不是静默用不匹配的 Java 去启动。
-    const compatible = (await ctx.suitableJavaFor(s, required)) !== null
+    // 实例单独指定过 Java 时按那条路径判断（与启动时的优先级一致），不再看全局策略。
+    const pinned = instanceJavaPath(s, versionId)
+    const compatible = pinned
+      ? (await javaVersionAt(pinned)) !== null
+      : (await ctx.suitableJavaFor(s, required)) !== null
     return { required, compatible, available }
   })
   ipcMain.handle('java:install', async (event, major: number) => {

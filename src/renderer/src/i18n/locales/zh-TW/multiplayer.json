@@ -81,7 +81,7 @@
   "mp.settings": "軟體設定",
   "mp.about": "關於",
   "mp.back": "返回",
-  "mp.clickHint": "點擊下方按鈕建立或加入大廳，按 ESC 可快速返回上一頁",
+  "mp.clickHint": "按 ESC 可返回上一頁",
   "mp.form.createTitle": "建立大廳",
   "mp.form.joinTitle": "加入大廳",
   "mp.form.lobbyName": "大廳名稱",

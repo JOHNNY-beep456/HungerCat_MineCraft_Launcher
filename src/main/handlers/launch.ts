@@ -2,6 +2,7 @@
 import { BrowserWindow, dialog, ipcMain, screen } from 'electron'
 import { join } from 'path'
 import type { LaunchOptions } from '@shared/types'
+import { instanceJavaPath } from '@shared/settings'
 import { settings, accounts, activeGameDir } from '../store'
 import { refreshAccount } from '../auth'
 import { refreshYggdrasil, ensureAuthlibInjector } from '../yggdrasil'
@@ -9,6 +10,7 @@ import { resolveVersionJson } from '../versions'
 import { effectiveConcurrency } from '../network-profile'
 import { installVersion } from '../downloader'
 import { spawnGame } from '../launcher'
+import { javaVersionAt } from '../java'
 import type { IpcContext } from './context'
 
 export function registerLaunchHandlers(ctx: IpcContext): void {
@@ -103,18 +105,27 @@ export function registerLaunchHandlers(ctx: IpcContext): void {
       ctx.downloadAborts.delete(downloadKey)
     })
 
-    // Java 选择优先级：启动前提示里当场选择的路径 >（关闭自动检测时）手动指定的 Java >
-    // 按该游戏版本所需大版本自动挑选。开启自动检测时忽略手动指定的路径，
-    // 这样 1.12.2（Java 8）与 1.20.5+（Java 21）等不同版本能各自用上对的 Java。
+    // Java 选择优先级：启动前提示里当场选择的路径 > 实例单独指定的 Java >
+    //（关闭自动检测时）手动指定的全局 Java > 按该游戏版本所需大版本自动挑选。
+    // 实例级覆盖不受「自动检测」开关影响——用户为这个实例明确点过用哪个 Java。
+    // 自动挑选是必要的：1.12.2 要 Java 8、1.20.5+ 要 Java 21，不能用同一个。
     const requiredJava = json.javaVersion?.majorVersion ?? 8
     let javaPath = options.javaPath
+    if (!javaPath) {
+      const pinned = instanceJavaPath(s, options.versionId)
+      // 路径可能已被卸载 / 移动：读不出 major 就当作没指定，回落到全局逻辑，
+      // 避免直接在 spawn 阶段报一个看不懂的错误。
+      if (pinned && (await javaVersionAt(pinned))) javaPath = pinned
+    }
     if (!javaPath && !s.javaAutoDetect) javaPath = s.javaPath || undefined
     if (!javaPath) {
       javaPath = (await ctx.suitableJavaFor(s, requiredJava))?.path
     }
     if (!javaPath) {
       // 正常情况下渲染层已在启动前弹「是否安装 Java {requiredJava}」提示，这里只是兜底。
-      throw new Error(`未找到合适的 Java ${requiredJava} 运行时，请先在「设置」中安装或手动指定 Java 路径`)
+      throw new Error(
+        `未找到合适的 Java ${requiredJava} 运行时，请在「设置 → Java」中安装或指定，或为这个实例单独指定 Java`
+      )
     }
 
     if (account.authType === 'yggdrasil') {

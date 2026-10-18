@@ -230,7 +230,7 @@ export function HomePage(): JSX.Element {
                         value={search}
                         onChange={(e) => setSearch(e.target.value)}
                         placeholder={t('home.searchPlaceholder')}
-                        className="input w-full pl-9"
+                        className="input w-full input-leading-icon"
                       />
                     </div>
                     <div className="max-h-80 overflow-y-auto">

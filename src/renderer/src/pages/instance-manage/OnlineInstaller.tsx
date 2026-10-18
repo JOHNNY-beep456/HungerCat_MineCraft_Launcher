@@ -109,7 +109,7 @@ export function OnlineInstaller({
             onChange={(e) => setQuery(e.target.value)}
             onKeyDown={(e) => e.key === 'Enter' && void doSearch()}
             placeholder={type === 'shader' ? t('ins.searchShadersPlaceholder') : t('ins.searchResourcepacksPlaceholder')}
-            className="input w-full pl-9"
+            className="input w-full input-leading-icon"
           />
         </div>
         <Button variant="primary" icon="search" disabled={searching} onClick={() => void doSearch()}>

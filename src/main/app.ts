@@ -25,6 +25,7 @@ import type {
   MpHudState
 } from '@shared/types'
 import { settings, activeGameDir, allVersionDirs, flushWrites } from './store'
+import { applyHardwareAcceleration, hardwareAccelerationBooted } from './hardware-accel'
 import { initLogger, subscribeLogs } from './logger'
 import { startNetworkWorker, stopNetworkWorker } from './broker'
 import { DedupCache } from './ipc-cache'
@@ -1002,25 +1003,37 @@ function registerIpc(): void {
   registerDebugHandlers(ipcContext)
   registerWindowHandlers(ipcContext)
   registerFilesHandlers(ipcContext)
+
+  // 硬件加速是进程级开关（Chromium 只允许在 app ready 之前决定是否启用），
+  // 改完必须重启才生效：这里把「本次启动实际用的值」暴露给设置页，
+  // 并提供重启入口。重启走与托盘「退出程序」相同的收尾，
+  // 先停联机子进程（EasyTier 等），否则重启后会残留。
+  ipcMain.handle('app:hardwareAccelerationBooted', () => hardwareAccelerationBooted())
+  ipcMain.handle('app:relaunch', async () => {
+    app.relaunch()
+    await quitAppCompletely()
+  })
 }
 
 app.setName('HungerCatLauncher')
 
 // ---------- 内存优化（必须在 app ready 之前生效） ----------
 // 实测说明（Windows / Electron 33）：
-//   · disableHardwareAcceleration + disable-gpu：GPU 进程**不会消失**（Chromium 在
-//     Windows 上即使禁用硬件加速也会保留一个 GPU 进程做软件合成，实测仍 ~110MB），
-//     但它把渲染转成软件模式，对低端 GPU / 集成显卡能省显存并降低 GPU 相关崩溃，
-//     长期看也有助于压低 GPU 工作集。
+//   · 硬件加速：默认关闭（设置项「硬件加速」可开，见 hardware-accel.ts）。
+//     关闭时 disableHardwareAcceleration + disable-gpu：GPU 进程**不会消失**
+//     （Chromium 在 Windows 上即使禁用硬件加速也会保留一个 GPU 进程做软件合成，
+//     实测仍 ~110MB），但它把渲染转成软件模式，对低端 GPU / 集成显卡能省显存并
+//     降低 GPU 相关崩溃，长期看也有助于压低 GPU 工作集。开启后走正常硬件合成，
+//     模糊玻璃等特效更流畅，但会占用更多显存。
 //   · SpareRendererForSitePerProcess：Chromium 默认会常驻一个「备用渲染进程」
 //     （约 80~100MB）以备快速打开新窗口。本应用主窗口常驻、不频繁开窗口，禁用它
 //     可在确实出现备用进程的场合省掉这一路。
 //   · max-old-space-size：限制各进程 V8 老生代堆上限，避免 GC 后堆不回缩导致
 //     内存虚高（对主进程 / 渲染进程都生效）。这是最稳的一档优化。
-app.disableHardwareAcceleration()
+// 硬件加速是进程级开关，必须在 ready 之前决定，所以这里在设置缓存初始化前读一次。
+applyHardwareAcceleration(settings.get().hardwareAcceleration)
 app.commandLine.appendSwitch('js-flags', '--max-old-space-size=96')
 app.commandLine.appendSwitch('disable-features', 'SpareRendererForSitePerProcess,CalculateNativeWinOcclusion')
-app.commandLine.appendSwitch('disable-gpu')
 
 // 远端语音通过 <audio> 播放 WebRTC 轨道。Chromium 默认的自动播放策略会拦截
 // 「无用户手势」的音频播放，表现为：连接已建立、说话指示也正常，但**听不到对方说话**。

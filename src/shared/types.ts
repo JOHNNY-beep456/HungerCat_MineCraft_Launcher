@@ -440,6 +440,14 @@ export interface LauncherSettings {
   enableMultiplayer: boolean
   javaAutoDetect: boolean
   javaPath?: string
+  /**
+   * 实例级 Java 运行时覆盖：versionId → java 可执行文件绝对路径。
+   *
+   * 没有条目（或空串）= 跟随全局设置（`javaAutoDetect` / `javaPath`）。
+   * 只允许从「实例 → 版本」页设置；启动与启动前的 Java 检查都优先用它。
+   * 版本重命名 / 删除时由主进程同步迁移或清理这个键。
+   */
+  versionJava: Record<string, string>
   closeOnLaunch: boolean
   reducedMotion: boolean
   /** 是否已完成首次启动的硬件检测（保证低配提醒只出现一次）。 */
@@ -467,6 +475,17 @@ export interface LauncherSettings {
    * 三套皮肤与极简下都能开。
    */
   topNav: boolean
+  /**
+   * 实验性（默认关闭）：界面改用 GPU 硬件加速合成。
+   *
+   * 默认关闭是面向低端集显 / 虚拟机 / 远程桌面的保守选择：关掉 GPU 能省显存、
+   * 避免显卡驱动相关的崩溃与黑屏。代价是所有绘制都落到 CPU，模糊玻璃这类
+   * backdrop-filter 特效会明显掉帧（同一台机器实测滚动只有 13~16fps）。
+   *
+   * 这是**进程级**开关：Chromium 只允许在 app ready 之前决定是否启用，
+   * 所以修改后必须重启启动器才生效（设置页会给出重启入口）。
+   */
+  hardwareAcceleration: boolean
   /**
    * MC 游戏窗口尺寸：720P / 1080P / 最大化（铺满工作区）/ 全屏 / 自定义。
    * 桌面模式（experimental = 'win10'）下强制按「全屏」处理。
@@ -1495,6 +1514,15 @@ export interface LauncherApi {
   platform: string
   /** 当前启动器版本号。 */
   getVersion: () => Promise<string>
+  /**
+   * 本次进程启动时**实际使用**的硬件加速开关（不是设置里当前的值）。
+   *
+   * 硬件加速是进程级开关，只能在 app ready 之前决定；设置页用它和当前设置对比，
+   * 判断「改完还没重启」并给出重启入口。
+   */
+  hardwareAccelerationBooted: () => Promise<boolean>
+  /** 重启启动器（先停联机子进程，再以相同参数重新拉起）。 */
+  relaunch: () => Promise<void>
   debug: {
     /** 读取主进程日志滚动缓冲。 */
     getLogs: () => Promise<DebugLogEntry[]>

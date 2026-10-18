@@ -396,7 +396,7 @@ export function InstancesPage({ onManage }: { onManage: (versionId: string) => v
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
                 placeholder={t('ins.searchPlaceholder')}
-                className="input w-full pl-9"
+                className="input w-full input-leading-icon"
               />
             </div>
             <div className="flex shrink-0 items-center gap-2">

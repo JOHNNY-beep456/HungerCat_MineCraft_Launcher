@@ -58,12 +58,11 @@ export function TitleBar({ onLogoDoubleClick }: { onLogoDoubleClick?: () => void
         />
         <span className="text-[13px] font-semibold tracking-tight">HungerCat MineCraft Launcher</span>
 
-        {/* 翻译状态呼吸灯：灰=未开启/无需翻译（静止），橙=翻译中、绿=已翻译（闪烁），红=出错（静止）。 */}
-        <span
-          className="ml-1 flex items-center gap-1.5 rounded-full px-2 py-0.5 text-[11px] font-medium"
-          style={{ background: 'var(--fill-secondary)', color: 'var(--text-secondary)' }}
-          title={t(light.key)}
-        >
+        {/* 翻译状态呼吸灯：灰=未开启/无需翻译（静止），橙=翻译中、绿=已翻译（闪烁），红=出错（静止）。
+            外形（圆角 / 填充 / 描边 / 投影 / 灯的点形状与辉光）全部交给 CSS 令牌，
+            于是自动随皮肤变：扁平化是半透明药丸、3D 云母是控件级云母、液态玻璃是小玻璃珠、
+            M3 是 8px chip、GitHub 是灰标签、WinUI 是描边徽标、我的世界是立体倒角 + 方形像素灯。 */}
+        <span className="status-pill" title={t(light.key)}>
           <span
             className={`translate-dot${light.pulse ? ' translate-dot--pulse' : ''}`}
             style={{ '--dot-color': light.color } as CSSProperties}

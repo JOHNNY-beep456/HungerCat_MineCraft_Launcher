@@ -81,7 +81,7 @@
   "mp.settings": "Settings",
   "mp.about": "About",
   "mp.back": "Back",
-  "mp.clickHint": "Use the buttons below to create or join a lobby; press ESC to go back",
+  "mp.clickHint": "Press ESC to go back",
   "mp.form.createTitle": "Create Lobby",
   "mp.form.joinTitle": "Join Lobby",
   "mp.form.lobbyName": "Lobby Name",

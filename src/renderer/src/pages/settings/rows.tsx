@@ -306,83 +306,44 @@ export function UapisKeyRow(): JSX.Element {
 }
 
 /* ================================================================== */
-/* 实验性功能                                                          */
+/* 外观：界面主题（皮肤）                                               */
 /* ================================================================== */
 
-/** 界面皮肤：七套互斥皮肤（极简下禁用）+ Win10 桌面模式提示。 */
-function ExperimentalRow(): JSX.Element {
+/**
+ * 界面主题（皮肤）：从八套观感里选一套，`off` = 扁平化（默认观感）。
+ *
+ * 以前这里是九个开关——单选却用开关表达，必须靠「打开一个自动关掉别的」来维持互斥，
+ * 读起来像可以多选，换一套还得点两下。现在改成下拉；`off` 作为首选项，语义就是
+ * 「关掉所有皮肤」，与旧配置完全兼容。
+ *
+ * 「Win10 桌面」不是观感皮肤（它把整个启动器换成一块桌面），仍在「实验性功能」里
+ * 单独开关；处于该模式时这里按「扁平化」显示——那时确实没有任何皮肤生效。
+ * 皮肤自己的子选项（M3 风格类型 / GitHub 配色）挂在它下面，一起出现在「外观」里。
+ */
+function SkinThemeRow(): JSX.Element {
   const { settings, updateSettings, t } = useApp()
   const flatMode = settings.mode === 'minimal'
-  const [win10Notice, setWin10Notice] = useState(false)
+  const skin = settings.experimental === 'win10' ? 'off' : settings.experimental
+
   return (
     <>
-      <Row label={t('settings.row.mica')}>
-        <Switch
-          checked={settings.experimental === 'mica'}
+      <Row label={t('settings.row.skin')}>
+        <Select
+          value={skin}
           disabled={flatMode}
-          onChange={(v) => void updateSettings({ experimental: v ? 'mica' : 'off' })}
-        />
-      </Row>
-      <Row label={t('settings.row.mac')}>
-        <Switch
-          checked={settings.experimental === 'mac'}
-          disabled={flatMode}
-          onChange={(v) => void updateSettings({ experimental: v ? 'mac' : 'off' })}
-        />
-      </Row>
-      {/* 模糊玻璃：还原优化前的重特效（90px 模糊光斑 + 玻璃磨砂）。
-          普通模式默认已扁平化，这个选项专门给想要原观感的人用。 */}
-      <Row label={t('settings.row.frosted')}>
-        <Switch
-          checked={settings.experimental === 'frosted'}
-          disabled={flatMode}
-          onChange={(v) => void updateSettings({ experimental: v ? 'frosted' : 'off' })}
-        />
-      </Row>
-      <Row label={t('settings.row.material')}>
-        <Switch
-          checked={settings.experimental === 'material'}
-          disabled={flatMode}
-          onChange={(v) => void updateSettings({ experimental: v ? 'material' : 'off' })}
-        />
-      </Row>
-      <Row label={t('settings.row.github')}>
-        <Switch
-          checked={settings.experimental === 'github'}
-          disabled={flatMode}
-          onChange={(v) => void updateSettings({ experimental: v ? 'github' : 'off' })}
-        />
-      </Row>
-      <Row label={t('settings.row.winui3')}>
-        <Switch
-          checked={settings.experimental === 'winui3'}
-          disabled={flatMode}
-          onChange={(v) => void updateSettings({ experimental: v ? 'winui3' : 'off' })}
-        />
-      </Row>
-      <Row label={t('settings.row.winui2')}>
-        <Switch
-          checked={settings.experimental === 'winui2'}
-          disabled={flatMode}
-          onChange={(v) => void updateSettings({ experimental: v ? 'winui2' : 'off' })}
-        />
-      </Row>
-      <Row label={t('settings.row.minecraft')}>
-        <Switch
-          checked={settings.experimental === 'minecraft'}
-          disabled={flatMode}
-          onChange={(v) => void updateSettings({ experimental: v ? 'minecraft' : 'off' })}
-        />
-      </Row>
-      <Row label={t('settings.row.win10')}>
-        <Switch
-          checked={settings.experimental === 'win10'}
-          disabled={flatMode}
-          onChange={(v) => {
-            // 开启前先弹提示：该功能 Bug 较多，仅建议尝鲜 / 测试。
-            if (v) setWin10Notice(true)
-            else void updateSettings({ experimental: 'off' })
-          }}
+          onChange={(v) => void updateSettings({ experimental: v as LauncherSettings['experimental'] })}
+          className="w-[280px] max-w-[65%]"
+          options={[
+            { value: 'off', label: t('settings.skin.flat') },
+            { value: 'mica', label: t('settings.row.mica') },
+            { value: 'mac', label: t('settings.row.mac') },
+            { value: 'frosted', label: t('settings.row.frosted') },
+            { value: 'material', label: t('settings.row.material') },
+            { value: 'github', label: t('settings.row.github') },
+            { value: 'winui3', label: t('settings.row.winui3') },
+            { value: 'winui2', label: t('settings.row.winui2') },
+            { value: 'minecraft', label: t('settings.row.minecraft') }
+          ]}
         />
       </Row>
       {/* Material Design 3 的风格类型：只有启用 M3 皮肤时才出现（极简下不生效，隐藏）。 */}
@@ -425,17 +386,46 @@ function ExperimentalRow(): JSX.Element {
           <p className="caption -mt-1">{t('settings.exp.github.previewHint')}</p>
         </>
       )}
+    </>
+  )
+}
 
+/* ================================================================== */
+/* 实验性功能                                                          */
+/* ================================================================== */
+
+/**
+ * Win10 桌面模式：把整个启动器换成一块 Win10 桌面（含开始菜单、任务栏）。
+ *
+ * 它不是观感皮肤，所以不放进「外观 → 主题」下拉，单独在这里开关。
+ * 开启前先弹提示：该功能 Bug 较多，仅建议尝鲜 / 测试。
+ */
+export function Win10DesktopRow(): JSX.Element {
+  const { settings, updateSettings, t } = useApp()
+  const [notice, setNotice] = useState(false)
+
+  return (
+    <>
+      <Row label={t('settings.row.win10')}>
+        <Switch
+          checked={settings.experimental === 'win10'}
+          disabled={settings.mode === 'minimal'}
+          onChange={(v) => {
+            if (v) setNotice(true)
+            else void updateSettings({ experimental: 'off' })
+          }}
+        />
+      </Row>
       {createPortal(
         <AnimatePresence>
-          {win10Notice && (
+          {notice && (
             <motion.div
               className="fixed inset-0 z-[115] flex items-center justify-center p-6"
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
             >
-              <div className="absolute inset-0" style={{ background: 'var(--scrim)' }} onClick={() => setWin10Notice(false)} />
+              <div className="absolute inset-0" style={{ background: 'var(--scrim)' }} onClick={() => setNotice(false)} />
               <motion.div
                 className="glass-strong relative z-10 w-full max-w-md rounded-[32px] p-7"
                 initial={{ scale: 0.92, opacity: 0, y: 24 }}
@@ -449,7 +439,7 @@ function ExperimentalRow(): JSX.Element {
                 </div>
                 <p className="caption mt-3">{t('settings.win10.desc')}</p>
                 <div className="mt-6 flex items-center gap-2">
-                  <Button className="flex-1" onClick={() => setWin10Notice(false)}>
+                  <Button className="flex-1" onClick={() => setNotice(false)}>
                     {t('settings.common.cancel')}
                   </Button>
                   <Button
@@ -457,7 +447,7 @@ function ExperimentalRow(): JSX.Element {
                     className="flex-1"
                     icon="check"
                     onClick={() => {
-                      setWin10Notice(false)
+                      setNotice(false)
                       void updateSettings({ experimental: 'win10' })
                     }}
                   >
@@ -473,6 +463,7 @@ function ExperimentalRow(): JSX.Element {
     </>
   )
 }
+
 
 /** 联机板块开关：正在联机时禁用（关开关不会停掉组网进程）。 */
 function EnableMultiplayerRow(): JSX.Element {
@@ -511,6 +502,54 @@ function EnableMultiplayerRow(): JSX.Element {
       <p className="caption -mt-1">
         {inLobby ? t('settings.exp.multiplayer.inLobby') : t('settings.exp.multiplayer.desc')}
       </p>
+    </>
+  )
+}
+
+/**
+ * 硬件加速（实验性）。
+ *
+ * 这是进程级开关：Chromium 只允许在 app ready 之前决定是否启用，所以改完要重启
+ * 才生效。这里把「设置里的值」和「本次进程实际用的值」对比，不一致时给出重启入口，
+ * 免得用户以为开关没反应。
+ */
+function HardwareAccelerationRow(): JSX.Element {
+  const { settings, updateSettings, t } = useApp()
+  const [booted, setBooted] = useState<boolean | null>(null)
+
+  useEffect(() => {
+    let alive = true
+    void window.api.hardwareAccelerationBooted().then(
+      (v) => {
+        if (alive) setBooted(v)
+      },
+      () => {
+        /* 取值失败就不提示重启，不影响开关本身 */
+      }
+    )
+    return () => {
+      alive = false
+    }
+  }, [])
+
+  const pending = booted !== null && booted !== settings.hardwareAcceleration
+
+  return (
+    <>
+      <Row label={t('settings.row.hardwareAcceleration')}>
+        <Switch
+          checked={settings.hardwareAcceleration}
+          onChange={(v) => void updateSettings({ hardwareAcceleration: v })}
+        />
+      </Row>
+      {pending && (
+        <div className="mb-2 flex items-center gap-3">
+          <span className="caption">{t('settings.exp.hardwareAcceleration.restartHint')}</span>
+          <Button size="sm" icon="refresh" onClick={() => void window.api.relaunch()}>
+            {t('settings.exp.hardwareAcceleration.restartNow')}
+          </Button>
+        </div>
+      )}
     </>
   )
 }
@@ -1077,8 +1116,9 @@ export const CUSTOM_ROWS: Partial<Record<keyof LauncherSettings, () => JSX.Eleme
   background: BackgroundRow,
   backgroundImage: WallpaperRow,
   reducedMotion: ReducedMotionRow,
-  experimental: ExperimentalRow,
+  experimental: SkinThemeRow,
   enableMultiplayer: EnableMultiplayerRow,
+  hardwareAcceleration: HardwareAccelerationRow,
   gameDir: GameDirRow,
   gameWindowSize: GameWindowSizeRow,
   debugMode: DebugModeRow,

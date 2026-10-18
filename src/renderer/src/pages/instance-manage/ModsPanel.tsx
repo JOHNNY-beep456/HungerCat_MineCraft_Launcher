@@ -75,7 +75,7 @@ export function ModsPanel({
                 onChange={(e) => onQueryChange(e.target.value)}
                 onKeyDown={(e) => e.key === 'Enter' && void onSearch()}
                 placeholder={t('ins.searchModsPlaceholder')}
-                className="input w-full pl-9"
+                className="input w-full input-leading-icon"
               />
             </div>
             <Button variant="primary" icon="search" disabled={searching} onClick={() => void onSearch()}>

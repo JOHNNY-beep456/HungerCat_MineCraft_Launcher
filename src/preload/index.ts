@@ -46,6 +46,8 @@ function subscribe<T>(channel: string): (cb: (payload: T) => void) => () => void
 const api: LauncherApi = {
   platform: process.platform,
   getVersion: () => ipcRenderer.invoke('app:version'),
+  hardwareAccelerationBooted: () => ipcRenderer.invoke('app:hardwareAccelerationBooted'),
+  relaunch: () => ipcRenderer.invoke('app:relaunch'),
   debug: {
     getLogs: () => ipcRenderer.invoke('debug:getLogs'),
     onLog: subscribe<DebugLogEntry>('debug:log'),
