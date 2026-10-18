@@ -39,12 +39,9 @@ extraResources:
 compression: maximum
 win:
   icon: build/icon.ico
-  # 两个目标并存，各有用途：
+  # 两个目标并存：
   #   portable 主产物 —— Setup.exe **就是启动器自身**（electron-builder 的 portable
-  #     目标把应用封成单文件 exe）。主进程检测到 PORTABLE_EXECUTABLE_FILE 就切到
-  #     安装模式（src/main/installer/），因此安装包里只有**一份** Electron 运行时。
-  #     早前是把启动器当载荷塞进另一个 Electron 安装器，等于带了两份运行时
-  #     （约 2 × 268 MB 未压缩），这是安装包体积的最大来源。
+  #     目标把应用封成单文件 exe）。启动器仅以便携/已安装两种身份运行。
   #   nsis 应急兜底 —— electron-builder 自带的安装器，不依赖安装模式那条代码路径，
   #     万一便携包在实机上出问题，仍可出一条 100% 可靠的安装包。
   target:

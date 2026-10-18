@@ -184,8 +184,23 @@ export function FeedbackPage(): JSX.Element {
           }
           return
         }
-        setDetail(res.feedback ?? null)
-        if (!silent) setError('')
+        if (silent) {
+          // 静默刷新：内容与状态都没变就不重绘，避免聊天窗口无谓抖动
+          setDetail((prev) => {
+            if (
+              prev &&
+              res.feedback &&
+              prev.status === res.feedback.status &&
+              JSON.stringify(prev.messages) === JSON.stringify(res.feedback.messages)
+            ) {
+              return prev
+            }
+            return res.feedback ?? null
+          })
+        } else {
+          setDetail(res.feedback ?? null)
+          setError('')
+        }
       } catch (err) {
         if (!silent) setError(err instanceof Error ? err.message : String(err))
       } finally {
@@ -282,14 +297,33 @@ export function FeedbackPage(): JSX.Element {
     }
   }, [])
 
-  // 打开着的对话每 15 秒静默刷新一次（窗口不可见时跳过），接近聊天的体验
+  // 打开着的对话每 3 秒静默刷新一次（窗口不可见时跳过），让「另一端已发消息/改状态」
+  // 尽快可见，接近聊天的体验
   useEffect(() => {
     if (view !== 'detail' || !detailId) return
     const timer = window.setInterval(() => {
-      if (document.visibilityState === 'visible') void loadDetail(detailId, true)
-    }, 15000)
+      if (document.visibilityState !== 'visible') return
+      void loadDetail(detailId, true)
+    }, 3000)
     return () => window.clearInterval(timer)
   }, [view, detailId, loadDetail])
+
+  // 列表每 10 秒静默刷新一次（登录后）：后台改了状态 / 发了新消息，回来就能看到最新
+  useEffect(() => {
+    if (view === 'gate') return
+    const timer = window.setInterval(() => {
+      if (document.visibilityState !== 'visible') return
+      void window.api.feedback.list('', '').then((r) => {
+        if (!r.ok) return
+        setList((prev) => {
+          // 无变化不更新，避免无意义的整页重渲染
+          if (JSON.stringify(r.feedbacks) === JSON.stringify(prev)) return prev
+          return r.feedbacks
+        })
+      })
+    }, 10000)
+    return () => window.clearInterval(timer)
+  }, [view])
 
   /** 打开某条反馈的独立对话界面。 */
   const openDetail = (item: FeedbackListItem): void => {
