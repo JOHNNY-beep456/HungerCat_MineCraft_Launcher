@@ -1,4 +1,4 @@
-﻿﻿<#
+﻿<#
 .SYNOPSIS
   从 EasyTier 源码构建「不链接 Npcap」的 easytier-core / easytier-cli，用于随启动器分发。
 
@@ -131,7 +131,23 @@ Info "cargo：$cargo"
 
 # ---- 1. 克隆源码 ----
 $srcRoot = Join-Path $env:TEMP "easytier-src-$Version"
-if (Test-Path $srcRoot) { Remove-Item -Recurse -Force $srcRoot }
+
+# 上一次构建被中断时，git 可能在 .git\objects\pack 下留下 tmp_pack_* 且仍被
+# git 进程占用，直接 Remove-Item 会抛 IOException 并因 EAP=Stop 中止整个脚本。
+# 这里先重试几次，仍不行就换用带序号的新目录，避免和残留进程抢同一路径。
+function Remove-TreeBestEffort($path) {
+  for ($i = 0; $i -lt 3; $i++) {
+    try { Remove-Item -Recurse -Force $path -ErrorAction Stop; return $true }
+    catch { Start-Sleep -Milliseconds 800 }
+  }
+  return (-not (Test-Path $path))
+}
+
+if (-not (Remove-TreeBestEffort $srcRoot)) {
+  $alt = "$srcRoot-$(Get-Random)"
+  Warn "临时目录被残留 git 进程占用，改用：$alt"
+  $srcRoot = $alt
+}
 Info "克隆 EasyTier $Version …"
 & git clone --depth 1 --branch $Version https://github.com/EasyTier/EasyTier.git $srcRoot
 if ($LASTEXITCODE -ne 0) { Fail '克隆失败，请检查网络（国内可能需要代理）。' }
@@ -151,7 +167,10 @@ if (Test-Path $networkRs) {
 # pnet 各子 crate 是 path 依赖，crates.io 的 .crate 包不含它们，因此从 git 取完整工作区。
 $pnetVer = '0.35.0'
 $workDir = Join-Path $env:TEMP "easytier-pnet-patch-$Version"
-if (Test-Path $workDir) { Remove-Item -Recurse -Force $workDir }
+if (-not (Remove-TreeBestEffort $workDir)) {
+  $workDir = "$workDir-$(Get-Random)"
+  Warn "临时目录被占用，改用：$workDir"
+}
 New-Item -ItemType Directory -Path $workDir -Force | Out-Null
 
 Info "克隆 libpnet v$pnetVer …"
@@ -551,7 +570,13 @@ function Ensure-GitHubAsset($url, $destFile) {
     $url
   )
   foreach ($m in $mirrors) {
-    & curl.exe -Lkf --connect-timeout 15 --retry 2 -o $destFile $m 2>$null
+    # --silent --show-error 抑制进度条（进度条写 stderr，在 $ErrorActionPreference='Stop'
+    # 下会被 PowerShell 5.1 当作 NativeCommandError 而中断脚本），仅保留真正的错误行。
+    # 结果一律以 $LASTEXITCODE + 文件大小判定，不依赖 stderr。
+    $oldEap = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    & curl.exe -Lkf --silent --show-error --connect-timeout 15 --retry 2 -o $destFile $m 2>&1 | Out-Null
+    $ErrorActionPreference = $oldEap
     if ($LASTEXITCODE -eq 0 -and (Test-Path $destFile) -and (Get-Item $destFile).Length -gt 0) { return $true }
     Remove-Item $destFile -Force -ErrorAction SilentlyContinue
   }
@@ -596,14 +621,24 @@ try {
   Pop-Location
 }
 
-$releaseDir = Join-Path $crateDir 'target\release'
-$suffix     = if ($env:OS -eq 'Windows_NT') { '.exe' } else { '' }
-$coreName   = "easytier-core$suffix"
-$cliName    = "easytier-cli$suffix"
-$coreSrc    = Join-Path $releaseDir $coreName
-$cliSrc     = Join-Path $releaseDir $cliName
-if (-not (Test-Path $coreSrc)) { Fail "未找到产物：$coreSrc" }
-if (-not (Test-Path $cliSrc))  { Fail "未找到产物：$cliSrc" }
+# cargo 对 workspace 会把产物统一放在「工作区根」的 target\release 下，
+# 而不是执行 cargo 的那个成员 crate 目录。两处都找，兼容单 crate 仓库。
+$suffix   = if ($env:OS -eq 'Windows_NT') { '.exe' } else { '' }
+$coreName = "easytier-core$suffix"
+$cliName  = "easytier-cli$suffix"
+$candidates = @(
+  (Join-Path $srcRoot "target\release"),
+  (Join-Path $crateDir "target\release")
+) | Select-Object -Unique
+$releaseDir = $null
+foreach ($c in $candidates) {
+  if ((Test-Path (Join-Path $c $coreName)) -and (Test-Path (Join-Path $c $cliName))) { $releaseDir = $c; break }
+}
+if (-not $releaseDir) {
+  Fail "未找到产物 $($coreName) / $($cliName)。已查找：$($candidates -join '、')"
+}
+$coreSrc = Join-Path $releaseDir $coreName
+$cliSrc  = Join-Path $releaseDir $cliName
 
 # ---- 6. 强制校验：不得再导入 packet.dll ----
 function Test-NpcapImport($path) {
