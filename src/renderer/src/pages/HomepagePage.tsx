@@ -61,6 +61,8 @@ export function HomepagePage(): JSX.Element {
   const [loading, setLoading] = useState(true)
   const [market, setMarket] = useState<MarketScript[] | null>(null)
   const [busyId, setBusyId] = useState<string | null>(null)
+  /** 「全部更新」进行中：按钮显示进度，且所有单条更新按钮一并禁用。 */
+  const [bulk, setBulk] = useState<{ done: number; total: number } | null>(null)
   const [checking, setChecking] = useState(false)
   const [notice, setNotice] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null)
   /** 待过闸门的脚本 id：通过后才设为当前主页。 */
@@ -201,6 +203,48 @@ export function HomepagePage(): JSX.Element {
       fail(err)
     } finally {
       setBusyId(null)
+    }
+  }
+
+  /**
+   * 全部更新：按顺序逐个更新，单个失败不打断其余项。
+   *
+   * 串行而不是并发：每项都要「下载 → 校验 SHA256 → 覆盖落盘」，并发只会互相抢带宽，
+   * 且多个脚本同时 writeFile 更容易撞上杀软扫描导致的 EPERM。失败的条目汇总成一条提示，
+   * 成功的仍留在「已安装」里。
+   */
+  const updateAll = async (): Promise<void> => {
+    const targets = [...homepageUpdates]
+    if (targets.length === 0 || bulk) return
+    setBulk({ done: 0, total: targets.length })
+    let ok = 0
+    const failed: string[] = []
+    try {
+      for (let i = 0; i < targets.length; i++) {
+        const u = targets[i]
+        setBusyId(u.localId)
+        try {
+          await window.api.homepage.update(u)
+          ok++
+        } catch (err) {
+          failed.push(`${u.name || u.id}：${err instanceof Error ? err.message : String(err)}`)
+        }
+        setBulk({ done: i + 1, total: targets.length })
+      }
+    } finally {
+      setBusyId(null)
+      setBulk(null)
+    }
+    // 整体刷新：成功项的哈希已与线上一致，会自动从「可更新」消失。
+    await refresh()
+    await refreshHomepageUpdates()
+    if (failed.length > 0) {
+      setNotice({
+        kind: 'err',
+        text: t('hp.notice.updateAllFailed', { n: ok, list: failed.join('；') })
+      })
+    } else {
+      setNotice({ kind: 'ok', text: t('hp.notice.updatedAll', { n: ok }) })
     }
   }
 
@@ -356,11 +400,21 @@ export function HomepagePage(): JSX.Element {
 
         {tab === 'updates' && (
           <div className="flex flex-col gap-3">
-            <div className="flex items-center justify-between gap-3">
-              <p className="caption">
-                {t('hp.updates.hint')}
-              </p>
-              <Button size="sm" icon="refresh" disabled={checking} onClick={() => void checkUpdates()}>
+            <div className="flex items-center justify-end gap-2">
+              {homepageUpdates.length > 0 && (
+                <Button
+                  size="sm"
+                  variant="primary"
+                  icon="download"
+                  disabled={!!bulk || !!busyId || checking}
+                  onClick={() => void updateAll()}
+                >
+                  {bulk
+                    ? t('hp.updates.updatingAll', { done: bulk.done, total: bulk.total })
+                    : t('hp.updates.updateAll', { n: homepageUpdates.length })}
+                </Button>
+              )}
+              <Button size="sm" icon="refresh" disabled={checking || !!bulk} onClick={() => void checkUpdates()}>
                 {checking ? t('hp.updates.checking') : t('hp.updates.check')}
               </Button>
             </div>
@@ -398,7 +452,10 @@ export function HomepagePage(): JSX.Element {
                       </div>
                       <div className="flex shrink-0 flex-col items-end gap-1">
                         <span className="caption">
-                          v{u.localVersion || '?'} → v{u.latestVersion || '?'}
+                          {u.localVersion && u.latestVersion && u.localVersion !== u.latestVersion
+                            ? `v${u.localVersion} → v${u.latestVersion}`
+                            : /* 只改内容、没升版本号：没有版本落差可显示，直接说明是内容变了 */
+                              t('hp.updates.sameVersion')}
                         </span>
                         {u.updatedAt > 0 && (
                           <span className="caption">{new Date(u.updatedAt).toLocaleDateString()}</span>
@@ -410,7 +467,7 @@ export function HomepagePage(): JSX.Element {
                         size="sm"
                         variant="primary"
                         icon="download"
-                        disabled={busyId === u.localId}
+                        disabled={busyId === u.localId || !!bulk}
                         onClick={() => void update(u)}
                       >
                         {busyId === u.localId ? t('hp.updates.updating') : t('hp.updates.update')}

@@ -229,6 +229,22 @@ export function OnboardingModal({
                 </Button>
               )}
             </div>
+
+            {/* 跳过：直接记下「已看过引导」并关闭，不跳任何页面。
+                放在底部一行而不是标题栏角落，是为了不跟「上一步 / 下一步」抢点击区域，
+                也避免新手把跳过误当成关闭按钮。 */}
+            <button
+              type="button"
+              onClick={() => {
+                void updateSettings({ onboardingDone: true })
+                onFinishRef.current()
+                setIndex(0)
+              }}
+              className="mt-3 w-full text-center text-[12px] transition-opacity hover:opacity-100 no-drag"
+              style={{ color: 'var(--text-tertiary)' }}
+            >
+              {t('cmp.onboarding.skip')}
+            </button>
           </motion.div>
         </motion.div>
       )}

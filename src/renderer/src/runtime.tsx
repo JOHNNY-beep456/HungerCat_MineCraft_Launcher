@@ -8,7 +8,7 @@ import {
   useState,
   type ReactNode
 } from 'react'
-import type { DownloadProgress, LaunchEvent, LaunchOptions, LaunchState } from '@shared/types'
+import type { DownloadProgress, LaunchEvent, LaunchOptions, LaunchState, ModpackProbe } from '@shared/types'
 import { diagnoseLaunch, type LaunchReport } from './launch-diagnosis'
 import { useApp } from './store'
 
@@ -29,6 +29,13 @@ interface RuntimeState {
   javaPrompt: { required: number } | null
   /** 下载光球动画的起点（屏幕坐标） */
   flyFrom: { x: number; y: number; key: number } | null
+  /**
+   * 已下载并解析完、等待用户确认实例名的整合包。
+   *
+   * 放在全局而不是「资源下载」页组件里：整合包的下载 + 解析动辄几十秒，用户很可能
+   * 中途切到别的页面；状态挂在页面组件上会随卸载一起丢掉，下载完成后弹窗再也不出现。
+   */
+  modpackPending: { temp: string; probe: ModpackProbe } | null
   triggerFly: (x: number, y: number) => void
   installVersion: (id: string, dirId?: string) => Promise<void>
   cancelDownload: () => void
@@ -41,6 +48,10 @@ interface RuntimeState {
   cancelJavaPrompt: () => void
   /** 关闭启动异常报告弹窗。 */
   dismissLaunchReport: () => void
+  /** 整合包下载 + 解析完成后登记待导入项（弹窗由 Shell 层的 ModpackImportDialog 呈现）。 */
+  beginModpackImport: (temp: string, probe: ModpackProbe) => void
+  /** 关闭 / 取消整合包导入。 */
+  clearModpackPending: () => void
 }
 
 const RuntimeContext = createContext<RuntimeState | null>(null)
@@ -63,6 +74,10 @@ interface RuntimeActions {
   cancelJavaPrompt: () => void
   /** 关闭启动异常报告弹窗。 */
   dismissLaunchReport: () => void
+  /** 整合包下载 + 解析完成后登记待导入项（弹窗由 Shell 层的 ModpackImportDialog 呈现）。 */
+  beginModpackImport: (temp: string, probe: ModpackProbe) => void
+  /** 关闭 / 取消整合包导入。 */
+  clearModpackPending: () => void
 }
 
 const RuntimeActionsContext = createContext<RuntimeActions | null>(null)
@@ -84,6 +99,7 @@ export function RuntimeProvider({ children }: { children: ReactNode }): JSX.Elem
   const [busy, setBusy] = useState(false)
   const [installingId, setInstallingId] = useState<string | null>(null)
   const [javaPrompt, setJavaPrompt] = useState<{ required: number } | null>(null)
+  const [modpackPending, setModpackPending] = useState<{ temp: string; probe: ModpackProbe } | null>(null)
   const [flyFrom, setFlyFrom] = useState<{ x: number; y: number; key: number } | null>(null)
   const pendingLaunchRef = useRef<LaunchOptions | null>(null)
 
@@ -275,6 +291,8 @@ export function RuntimeProvider({ children }: { children: ReactNode }): JSX.Elem
 
   const clearLog = useCallback(() => setLaunchLog([]), [])
   const dismissLaunchReport = useCallback(() => setLaunchReport(null), [])
+  const beginModpackImport = useCallback((temp: string, probe: ModpackProbe) => setModpackPending({ temp, probe }), [])
+  const clearModpackPending = useCallback(() => setModpackPending(null), [])
 
   const triggerFly = useCallback((x: number, y: number) => {
     setFlyFrom({ x, y, key: Date.now() })
@@ -291,9 +309,11 @@ export function RuntimeProvider({ children }: { children: ReactNode }): JSX.Elem
       clearLog,
       installJavaAndLaunch,
       cancelJavaPrompt,
-      dismissLaunchReport
+      dismissLaunchReport,
+      beginModpackImport,
+      clearModpackPending
     }),
-    [triggerFly, installVersion, cancelDownload, cancelTask, launch, stopLaunch, clearLog, installJavaAndLaunch, cancelJavaPrompt, dismissLaunchReport]
+    [triggerFly, installVersion, cancelDownload, cancelTask, launch, stopLaunch, clearLog, installJavaAndLaunch, cancelJavaPrompt, dismissLaunchReport, beginModpackImport, clearModpackPending]
   )
 
   const value = useMemo<RuntimeState>(
@@ -309,9 +329,10 @@ export function RuntimeProvider({ children }: { children: ReactNode }): JSX.Elem
       installingId,
       javaPrompt,
       flyFrom,
+      modpackPending,
       ...actions
     }),
-    [download, downloads, launchState, launchLog, launchPid, launchReport, analyzingReport, busy, installingId, javaPrompt, flyFrom, actions]
+    [download, downloads, launchState, launchLog, launchPid, launchReport, analyzingReport, busy, installingId, javaPrompt, flyFrom, modpackPending, actions]
   )
 
   return (

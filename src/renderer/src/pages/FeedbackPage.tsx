@@ -703,7 +703,6 @@ export function FeedbackPage(): JSX.Element {
                     {verifying ? t('feedback.verify.loading') : t('feedback.verify.viewMine')}
                   </Button>
                 </div>
-                <p className="caption mt-1">{t('feedback.gate.hint')}</p>
               </div>
 
               {/* 免登录时长：默认仅本次会话有效 */}
@@ -715,7 +714,6 @@ export function FeedbackPage(): JSX.Element {
                   options={LOGIN_TTLS.map((o) => ({ value: o.key, label: t(o.labelKey) }))}
                   scroll
                 />
-                <p className="caption mt-1">{t('feedback.ttl.desc')}</p>
               </div>
 
               {error && (

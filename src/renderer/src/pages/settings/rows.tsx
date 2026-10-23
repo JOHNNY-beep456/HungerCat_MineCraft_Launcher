@@ -984,7 +984,6 @@ function JavaAutoRow(): JSX.Element {
           }}
         />
       </Row>
-      {settings.javaAutoDetect && <p className="caption -mt-1">{t('settings.java.autoDetectHint')}</p>}
 
       {createPortal(
         <AnimatePresence>

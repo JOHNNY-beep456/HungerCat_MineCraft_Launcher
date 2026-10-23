@@ -1,13 +1,13 @@
 // 远程服务端 JSON 请求（about/agreement/update）已迁至网络进程（server:api）；
 // 更新文件网络下载走 streamDownload（broker 代理网络进程）。runUpdate/spawn 仍为本进程编排。
-import { existsSync, promises as fsp } from 'fs'
+import { existsSync, promises as fsp, chmodSync } from 'fs'
 import { createHash } from 'crypto'
-import { join } from 'path'
+import { dirname, join } from 'path'
 import { spawn } from 'child_process'
 import type { AboutGroup, AgreementContent, Announcement, DownloadProgress, UpdateInfo } from '@shared/types'
 import { netRequest } from './broker'
 import { streamDownload } from './stream-download'
-import { isPortable } from './portable'
+import { isPortable, portableBinaryPath } from './portable'
 import { resolveUpdateForIdentity } from './update-resolve'
 
 /**
@@ -16,9 +16,21 @@ import { resolveUpdateForIdentity } from './update-resolve'
  */
 export const SERVER_BASE = 'https://hcmcl.johnnyblog.top'
 
-async function apiGet<T>(path: string): Promise<T> {
+async function apiGet<T>(path: string, query?: Record<string, string>): Promise<T> {
   // 真实网络执行由网络进程承担（统一 10s 超时在其内部）。
-  return netRequest<T>('server:api', { path })
+  return netRequest<T>('server:api', { path, query })
+}
+
+/**
+ * 本机的发布标识（`win32-x64` / `linux-armv7l` …）。
+ *
+ * 与服务端 `hc_release_targets()`、构建脚本 `--target` 三方必须一致：
+ * 客户端用它向服务端要「自己这一份」更新包，避免 x64 用户下到 arm 包。
+ * Node 在 32 位 ARM 上 `process.arch` 报 `arm`，发布名却是 armv7l，这里归一。
+ */
+export function releaseTarget(): string {
+  const arch = process.arch === 'arm' ? 'armv7l' : process.arch
+  return `${process.platform === 'win32' ? 'win32' : 'linux'}-${arch}`
 }
 
 /** 获取关于页分组与人物（服务端返回 { groups: [...] }，这里解出数组）。 */
@@ -53,9 +65,10 @@ export async function fetchAnnouncements(): Promise<Announcement[]> {
   return Array.isArray(data?.announcements) ? data.announcements : []
 }
 
-/** 获取服务端发布的最新版本信息（已按当前身份解析出实际下载地址）。 */
+/** 获取服务端发布的最新版本信息（按 平台+架构 与 便携/安装 身份解析出实际下载地址）。 */
 export async function fetchUpdateInfo(): Promise<UpdateInfo> {
-  return resolveUpdateForIdentity(await apiGet<UpdateInfo>('update'), isPortable)
+  const info = await apiGet<UpdateInfo>('update', { target: releaseTarget() })
+  return resolveUpdateForIdentity(info, isPortable)
 }
 
 /**
@@ -125,18 +138,43 @@ export function compareMainVersions(a: string, b: string): number {
 
 function filenameFrom(info: UpdateInfo): string {
   if (info.filename && info.filename.trim()) return info.filename.trim()
+  // 服务端没给文件名时按平台猜扩展名：Windows 是 exe，Linux 发行包是 AppImage，
+  // macOS 是 dmg。
+  const fallbackExt = process.platform === 'linux' ? 'AppImage' : process.platform === 'darwin' ? 'dmg' : 'exe'
   const seg = info.url.split(/[?#]/)[0].split('/').filter(Boolean).pop()
-  return seg && seg.includes('.') ? seg : `HungerCatLauncher-${info.version}.exe`
+  if (!seg || !seg.includes('.')) return `HungerCatLauncher-${info.version}.${fallbackExt}`
+  // URL 路径里的中文 / 空格是百分号编码的（网盘外链很常见），落盘前解码，
+  // 否则文件夹里会出现 `HungerCat%20MineCraft%20Launcher%20Setup%200.6.17.exe` 这种名字。
+  // 解码后仍要去掉路径分隔符：`%2F` 解出来就是 `/`，直接当文件名会写到别的目录去。
+  try {
+    return decodeURIComponent(seg).replace(/[\\/]/g, '_')
+  } catch {
+    return seg
+  }
 }
 
-/** 下载更新文件到 `<gameDir>/updates/`，返回保存路径。 */
+/**
+ * 更新包落盘目录。
+ *
+ * 便携版（Windows portable / Linux AppImage）放在**可执行文件所在目录**——更新时直接
+ * 替换手边这个文件；安装版仍放在游戏目录下的 updates/，由安装程序接管。
+ */
+export function updateTargetDir(gameDir: string): string {
+  const bin = portableBinaryPath()
+  return bin ? dirname(bin) : join(gameDir, 'updates')
+}
+
+/**
+ * 下载更新文件到指定目录，返回保存路径。
+ *
+ * `dir` 由 updateTargetDir() 给出：便携版是 exe 所在目录，安装版是 <gameDir>/updates。
+ */
 export async function downloadUpdate(
   info: UpdateInfo,
-  gameDir: string,
+  dir: string,
   onProgress: (p: DownloadProgress) => void
 ): Promise<string> {
   const filename = filenameFrom(info)
-  const dir = join(gameDir, 'updates')
   await fsp.mkdir(dir, { recursive: true })
   const dest = join(dir, filename)
 
@@ -226,13 +264,33 @@ export function updateFileName(info: UpdateInfo): string {
 }
 
 /** 当前是否已存在更新文件（用于避免重复下载）。 */
-export function updateFileExists(gameDir: string, info: UpdateInfo): boolean {
-  return existsSync(join(gameDir, 'updates', filenameFrom(info)))
+export function updateFileExists(dir: string, info: UpdateInfo): boolean {
+  return existsSync(join(dir, filenameFrom(info)))
 }
 
-/** 运行更新程序（安装包 / 便携版 exe），分离进程并立即解绑，不阻塞启动器退出。 */
+/**
+ * 运行更新程序（Windows 安装包 / 便携版 exe，或 Linux 的 AppImage），分离进程并立即解绑，
+ * 不阻塞启动器退出。
+ *
+ * Linux 的更新包是 AppImage，下载下来默认没有可执行位，必须先 chmod 才能运行；
+ * 失败就算了（用户仍可在文件管理器里手动运行）。
+ */
 export function runUpdate(exePath: string): void {
   try {
+    if (process.platform === 'darwin') {
+      // macOS 的更新包是 dmg，不能直接 exec（会报 exec format error），交给 open 挂载。
+      const child = spawn('open', [exePath], { detached: true, stdio: 'ignore' })
+      child.on('error', () => {})
+      child.unref()
+      return
+    }
+    if (process.platform !== 'win32') {
+      try {
+        chmodSync(exePath, 0o755)
+      } catch {
+        /* 只读目录等情况：继续尝试运行，失败由 spawn 的 error 事件兜底 */
+      }
+    }
     const child = spawn(exePath, [], { detached: true, stdio: 'ignore' })
     child.on('error', () => {
       /* 运行失败仅忽略，用户仍可手动打开文件 */
@@ -241,4 +299,53 @@ export function runUpdate(exePath: string): void {
   } catch {
     /* 运行失败仅忽略 */
   }
+}
+
+/** PowerShell 单引号字符串转义 */
+function psQuote(p: string): string {
+  return `'${p.replace(/'/g, "''")}'`
+}
+
+/** POSIX shell 单引号字符串转义 */
+function shQuote(p: string): string {
+  return `'${p.replace(/'/g, `'\\''`)}'`
+}
+
+/**
+ * 便携版自替换：下载到同目录的新文件 → 等本进程退出 → 删旧文件 → 启动新程序。
+ *
+ * 为什么必须借外部进程：Windows 上正在运行的 exe 不能删除/覆盖，Linux 的 AppImage
+ * 挂载点也一样。这里起一个脱离的脚本等本进程结束再动手，然后由调用方退出应用。
+ *
+ * @returns 是否已安排好自替换（false 表示当前不是便携版，调用方走普通 runUpdate）
+ */
+export function replacePortableUpdate(newPath: string): boolean {
+  const oldPath = portableBinaryPath()
+  if (!oldPath) return false
+  try {
+    if (process.platform === 'win32') {
+      const script = [
+        `Wait-Process -Id ${process.pid} -ErrorAction SilentlyContinue`,
+        // 进程刚退出时文件可能还被占用，重试最多 6 秒
+        `for ($i = 0; $i -lt 20 -and (Test-Path -LiteralPath ${psQuote(oldPath)}); $i++) { Start-Sleep -Milliseconds 300; Remove-Item -LiteralPath ${psQuote(oldPath)} -Force -ErrorAction SilentlyContinue }`,
+        `Start-Process -FilePath ${psQuote(newPath)}`
+      ].join('; ')
+      spawn('powershell.exe', ['-NoProfile', '-WindowStyle', 'Hidden', '-Command', script], {
+        detached: true,
+        stdio: 'ignore',
+        windowsHide: true
+      }).unref()
+      return true
+    }
+    if (process.platform === 'linux') {
+      const script =
+        `while kill -0 ${process.pid} 2>/dev/null; do sleep 0.3; done; ` +
+        `rm -f ${shQuote(oldPath)}; chmod +x ${shQuote(newPath)}; ${shQuote(newPath)} >/dev/null 2>&1 &`
+      spawn('/bin/sh', ['-c', script], { detached: true, stdio: 'ignore' }).unref()
+      return true
+    }
+  } catch {
+    /* 安排失败就退回普通运行方式 */
+  }
+  return false
 }

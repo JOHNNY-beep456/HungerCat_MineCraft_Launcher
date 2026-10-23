@@ -19,37 +19,40 @@ electronLanguages:
 extraResources:
   - from: build/icon.png
     to: icon.png
-  # 联机板块（MCTier 移植）所需的 EasyTier 内核。
-  # 由 scripts/build-easytier-npcap-free.ps1 构建（无 Npcap）；不进 Git。
-  # 只打包 core + cli：组网以 --no-tun 运行，不需要 wintun.dll / WinDivert64.sys；
-  # 显式列出文件名，避免把调试用的 easytier-core.vendor/ 也带进安装包。
-  # 运行时经 process.resourcesPath/easytier/ 定位。
-  - from: resources/easytier
-    to: easytier
-    filter:
-      - easytier-core.exe
-      - easytier-cli.exe
-  # 原生下载内核（Rust → .node）。由 scripts/build-native-downloader.mjs 编译。
-  # 必须放在 asar 之外：原生库无法从 asar 内 dlopen，只能作为普通文件加载。
-  # 运行时经 process.resourcesPath/native/<platform>-<arch>/ 定位；
-  # 缺失该平台产物时自动降级到 TS 下载器（见 src/main/native-downloader.ts）。
-  - from: resources/native
-    to: native
+  # 原生下载内核（Rust → .node）与 EasyTier 内核都**按平台**打包，
+  # 见下方 win: / linux: 各自的 extraResources。
+  # 放在顶层会把两个平台的二进制同时塞进每一份包里：Linux 包里带着 20MB 用不到的
+  # .exe、Windows 包里带着加载不了的 .node。
 # 最高压缩：仅影响安装包内的资源打包率（功能 / UI / 动画均不变），可显著减小安装包体积。
 compression: maximum
 win:
   icon: build/icon.ico
+  # 联机板块（MCTier 移植）所需的 EasyTier 内核，按平台分开打：
+  # 只把 Windows 的两个 .exe 打进 Windows 包，避免 Linux 包里塞进用不到的 20MB。
+  # 由 scripts/build-easytier-npcap-free.ps1 构建（无 Npcap）；不进 Git。
+  # 只打包 core + cli：组网以 --no-tun 运行，不需要 wintun.dll / WinDivert64.sys；
+  # 显式列出文件名，避免把调试用的 easytier-core.vendor/ 也带进安装包。
+  extraResources:
+    - from: resources/easytier
+      to: easytier
+      filter:
+        - easytier-core.exe
+        - easytier-cli.exe
+    - from: resources/native/win32-${arch}
+      to: native/win32-${arch}
   # 两个目标并存：
   #   portable 主产物 —— portable.exe **就是启动器自身**（electron-builder 的 portable
   #     目标把应用封成单文件 exe）。启动器仅以便携/已安装两种身份运行。
   #   nsis 应急兜底 —— electron-builder 自带的安装器，不依赖安装模式那条代码路径，
   #     万一便携包在实机上出问题，仍可出一条 100% 可靠的安装包。
+  # 产物名必须带 ${arch}：多架构一次构建时否则 x64 / ia32 / arm64 会互相覆盖。
   target:
     - portable
     - nsis
 portable:
-  artifactName: "HCMCL${version}-portable.exe"
+  artifactName: "HCMCL${version}-win-${arch}-portable.exe"
 nsis:
+  artifactName: "HCMCL${version}-win-${arch}-setup.exe"
   oneClick: false
   allowToChangeInstallationDirectory: true
   createDesktopShortcut: true
@@ -57,3 +60,65 @@ nsis:
   installerIcon: build/icon.ico
   uninstallerIcon: build/icon.ico
   installerHeaderIcon: build/icon.ico
+# ---------------------------------------------------------------------------
+# Linux：AppImage（单文件可执行，对应 Windows 的 portable）+ deb + rpm
+#
+# 在 Windows 上构建时，build-all 脚本会把源码同步进 WSL、在 WSL 里完成下面的
+# electron-builder 调用，再把 *.AppImage / *.deb / *.rpm 拷回 release/
+# （见 scripts/build-all.mjs；用 --no-wsl 可关掉）。直接跑 npx electron-builder
+# --linux 时则要求当前环境满足：
+#   · AppImage 需要符号链接权限（Linux 原生文件系统，/mnt 上不行）
+#   · deb 的 fpm 由 electron-builder 自动下载，不需要额外安装
+#   · rpm 依赖宿主机的 rpmbuild（sudo apt install rpm）
+# 原生下载内核按平台分目录（resources/native/linux-x64/*.node）。WSL 里没装 Rust
+# 时该目录为空，运行时会自动降级到 TS 下载器（功能不变、速度略低）。
+# EasyTier 的 Linux 版二进制需要手动放进 resources/easytier/ 才会被打进去。
+# ---------------------------------------------------------------------------
+linux:
+  icon: build/icon.png
+  category: Game
+  synopsis: Minecraft 启动器
+  description: HungerCat MineCraft Launcher
+  maintainer: Hunger Cat <noreply@johnnyblog.top>
+  target:
+    - AppImage
+    - deb
+    - rpm
+  # EasyTier 的 Linux 版二进制（无扩展名）。仓库自带的 resources/easytier 里通常只有
+  # Windows 的 .exe，因此这里匹配不到东西是正常的 —— 放进去 linux 版才会被打包。
+  extraResources:
+    - from: resources/easytier
+      to: easytier
+      filter:
+        - easytier-core
+        - easytier-cli
+    - from: resources/native/linux-${arch}
+      to: native/linux-${arch}
+appImage:
+  artifactName: "HCMCL${version}-${arch}.AppImage"
+deb:
+  artifactName: "hcmcl_${version}_${arch}.deb"
+rpm:
+  artifactName: "hcmcl-${version}-${arch}.rpm"
+
+# ---------------------------------------------------------------------------
+# macOS：dmg（安装镜像）+ zip（免安装 / 自动更新用）
+#
+# 只能在 macOS 上构建：dmg 依赖系统的 hdiutil，签名与公证依赖 codesign / notarytool，
+# 跨平台伪造不出来（WSL 也不行，所以构建脚本不会把 mac 目标丢给 WSL）。
+# 未配置证书时产出的是未签名包（首次打开需右键 → 打开）。
+#
+# 原生内核按架构分目录（resources/native/darwin-x64 / darwin-arm64），
+# 需要在 macOS 上跑 `node scripts/build-native-downloader.mjs --target darwin-arm64`
+# 才会生成（交叉编译 macOS 需要 Apple SDK，其它机器上没有）。
+# ---------------------------------------------------------------------------
+mac:
+  icon: build/icon.png
+  category: public.app-category.games
+  target:
+    - dmg
+    - zip
+  artifactName: "HCMCL${version}-mac-${arch}.${ext}"
+  extraResources:
+    - from: resources/native/darwin-${arch}
+      to: native/darwin-${arch}

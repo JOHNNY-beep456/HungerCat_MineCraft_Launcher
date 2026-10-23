@@ -1,5 +1,6 @@
 {
   "home.title": "启动游戏",
+  "home.versionBadge": "启动器版本号",
   "home.subtitle": "选择一个版本，一键进入方块世界",
   "home.notLoggedIn": "未登录账号",
   "home.versionDir": "版本目录",

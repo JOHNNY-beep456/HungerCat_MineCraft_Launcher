@@ -11,7 +11,7 @@
 // ---------------------------------------------------------------------------
 
 import { BMCLAPI, OFFICIAL, getVersionListStrategy, manifestUrls } from '../mirror'
-import { streamDownload } from './stream-download'
+import { probeContentLength, streamDownload } from './stream-download'
 import { nativeStreamDownload } from '../native-downloader'
 import { translateTexts, testUapisKey } from './translate'
 import { fetchMinecraftUserinfo, fetchMinecraftServerStatus } from './minecraft'
@@ -378,8 +378,9 @@ function fetchModrinthVersions(slug: string, loaders: string[], gameVersions: st
 
 const SERVER_BASE = 'https://hcmcl.johnnyblog.top'
 
-function serverApi(path: string): Promise<unknown> {
-  return fetchJson(`${SERVER_BASE}/api.php?action=${path}`, AbortSignal.timeout(10_000))
+function serverApi(path: string, query?: Record<string, string>): Promise<unknown> {
+  const qs = query && Object.keys(query).length > 0 ? `&${new URLSearchParams(query).toString()}` : ''
+  return fetchJson(`${SERVER_BASE}/api.php?action=${path}${qs}`, AbortSignal.timeout(10_000))
 }
 
 /**
@@ -959,6 +960,8 @@ interface ModrinthVersionsParams {
 }
 interface ServerApiParams {
   path: string
+  /** 附加查询参数（如更新接口的 target=win32-x64）。 */
+  query?: Record<string, string>
 }
 interface ServerPostParams {
   path: string
@@ -990,7 +993,7 @@ const handlers: Record<string, NetHandler> = {
     searchModrinth(p.query, p.limit, p.type, p.category, p.gameVersion, p.loader, p.offset),
   'modrinth:versions': (p: ModrinthVersionsParams) => fetchModrinthVersions(p.slug, p.loaders, p.gameVersions),
   'modrinth:project': (p: { id: string }) => fetchModrinthProject(p.id),
-  'server:api': (p: ServerApiParams) => serverApi(p.path),
+  'server:api': (p: ServerApiParams) => serverApi(p.path, p.query),
   'server:post': (p: ServerPostParams) => serverApiPost(p.path, p.body),
   'yggdrasil:authenticate': (p: YggAuthParams) => yggdrasilAuthenticate(p.server, p.email ?? '', p.password ?? '', p.clientToken),
   'yggdrasil:refresh': (p: YggAuthParams) =>
@@ -1048,13 +1051,20 @@ const handlers: Record<string, NetHandler> = {
     // 全局连接预算：把本次下载的连接数纳入进程级统一上限，跨队列协调。
     // 小文件本来也只走单连接，这里按请求并发数申请即可；获批数可能小于请求值。
     const granted = await acquireConnections(p.connections ?? 64)
+    // 没带 sizeHint 时先探一次总长：原生内核与 TS 回退都要靠它出进度条。
+    // 探测本身很轻（HEAD 有 content-length 就只发一个请求），但拿不到总长时
+    // 进度会全程停在 0%，所以放在公共入口而不是某一条实现里。
+    const sizeHint =
+      p.sizeHint && p.sizeHint > 0
+        ? p.sizeHint
+        : await probeContentLength(p.url, { headers: p.headers, signal: ctx.signal }).catch(() => 0)
     try {
       // 优先走原生（Rust）下载内核：多连接 + 原生 TLS，比 JS 侧更省 CPU/内存。
       // 返回 null 表示当前平台没有编译好的原生库 —— 这不是错误，自动回退到 TS 实现。
       // 若原生路径抛错（HTTP/网络错误），直接上抛给上层 downloader.ts 走既有镜像回退与重试。
       const native = await nativeStreamDownload(p.url, p.dest, {
         signal: ctx.signal,
-        sizeHint: p.sizeHint,
+        sizeHint,
         headers: p.headers,
         connections: granted,
         onBytes,
@@ -1068,7 +1078,7 @@ const handlers: Record<string, NetHandler> = {
 
       await streamDownload(p.url, p.dest, {
         signal: ctx.signal,
-        sizeHint: p.sizeHint,
+        sizeHint,
         headers: p.headers,
         connections: granted,
         onBytes,

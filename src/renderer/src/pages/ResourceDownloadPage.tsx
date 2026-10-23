@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { AnimatePresence, motion } from 'motion/react'
-import type { ModEntry, ModpackProbe, ModrinthProject, ModrinthProjectDetail, ModrinthType, ModrinthVersion, SourceFilter, VersionDirInstance, VersionManifest } from '@shared/types'
+import type { ModEntry, ModrinthProject, ModrinthProjectDetail, ModrinthType, ModrinthVersion, SourceFilter, VersionDirInstance, VersionManifest } from '@shared/types'
 import { useRuntimeActions } from '../runtime'
 import { Button, Icon, LoadingState, Markdown, Segmented, Select, Spinner } from '../components/ui'
 import { VersionsPage } from './VersionsPage'
@@ -385,14 +385,7 @@ function ProjectDetail({
   const preferredLoader = filterLoader !== 'all' ? filterLoader : ''
 
   const isModpack = type === 'modpack'
-  const [modpackPending, setModpackPending] = useState<{ temp: string; probe: ModpackProbe } | null>(null)
-  const [modpackRename, setModpackRename] = useState('')
-  // 整合包导入目标版本目录：空串表示跟随当前生效目录。
-  const [modpackDirId, setModpackDirId] = useState('')
-  const dirOptions = useMemo(
-    () => allVersionDirs(settings).map((d) => ({ value: d.id, label: versionDirLabel(d) })),
-    [settings]
-  )
+  const { beginModpackImport } = useRuntimeActions()
   const [modpackBusy, setModpackBusy] = useState(false)
   const [notice, setNotice] = useState<string | null>(null)
   // 「完整介绍」弹窗开关
@@ -431,48 +424,8 @@ function ProjectDetail({
     try {
       const temp = await window.api.modpack.download(file.url, file.filename)
       const probe = await window.api.modpack.probe(temp)
-      // 先下载并解析，再弹出弹窗让用户自定义实例名（默认取不重名且不等于版本号的名称，可再手动改）
-      setModpackPending({ temp, probe })
-      setModpackRename(uniqueInstanceName(probe.name, probe.mcVersion))
-    } catch (err) {
-      setNotice(t('res.installFailed', { msg: err instanceof Error ? err.message : String(err) }))
-    } finally {
-      setModpackBusy(false)
-    }
-  }
-
-  // 目标版本目录：整合包重名判断按它（而非跨所有目录）判断。
-  const modpackTargetDirId = modpackDirId || settings.selectedVersionDirId || 'default'
-  const modpackNameTaken =
-    modpackPending !== null &&
-    modpackRename.trim() !== '' &&
-    installed.some((ins) => ins.dirId === modpackTargetDirId && ins.id === modpackRename.trim())
-
-  const uniqueInstanceName = (base: string, mcVersion?: string): string => {
-    const taken = (n: string): boolean => installed.some((ins) => ins.id === n) || (!!mcVersion && mcVersion === n)
-    if (!taken(base)) return base
-    for (let i = 2; i < 10000; i++) {
-      const cand = `${base}-${i}`
-      if (!taken(cand)) return cand
-    }
-    return `${base}-${Date.now()}`
-  }
-
-  const confirmModpackImport = async (): Promise<void> => {
-    if (!modpackPending) return
-    const name = modpackRename.trim()
-    if (!name) return
-    if (installed.some((ins) => ins.dirId === modpackTargetDirId && ins.id === name)) {
-      setNotice(t('res.nameExists', { name }))
-      return
-    }
-    const { temp } = modpackPending
-    setModpackPending(null)
-    setModpackBusy(true)
-    setNotice(null)
-    try {
-      await window.api.modpack.import(temp, name, modpackTargetDirId)
-      setNotice(t('res.modpackInstalled', { name }))
+      // 交给 Shell 层的全局弹窗：这一步之后即使用户已经切到别的页面，确认框也会照常出现。
+      beginModpackImport(temp, probe)
     } catch (err) {
       setNotice(t('res.installFailed', { msg: err instanceof Error ? err.message : String(err) }))
     } finally {
@@ -564,58 +517,6 @@ function ProjectDetail({
           </button>
         </div>
       )}
-
-      {/* 整合包重命名弹窗 */}
-      <AnimatePresence>
-        {modpackPending && (
-          <motion.div
-            className="absolute inset-0 z-50 flex items-center justify-center p-6"
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-          >
-            <motion.div className="absolute inset-0" style={{ background: 'var(--scrim)' }} onClick={() => setModpackPending(null)} />
-            <motion.div
-              className="glass-strong relative z-10 w-full max-w-sm rounded-[28px] p-6"
-              initial={{ scale: 0.94, opacity: 0, y: 12 }}
-              animate={{ scale: 1, opacity: 1, y: 0 }}
-              exit={{ scale: 0.94, opacity: 0, y: 12 }}
-              transition={{ type: 'spring', bounce: 0.18, duration: 0.4 }}
-            >
-              <h2 className="title mb-1">{t('res.modpack.title')}</h2>
-              <p className="caption mb-4">{t('res.modpack.desc', { name: modpackPending.probe.name })}</p>
-              <input
-                autoFocus
-                value={modpackRename}
-                onChange={(e) => setModpackRename(e.target.value)}
-                onKeyDown={(e) => e.key === 'Enter' && modpackRename.trim() && !modpackNameTaken && void confirmModpackImport()}
-                placeholder={t('res.modpack.namePlaceholder')}
-                className="input mb-3 w-full"
-              />
-              <div className="caption mb-2">{t('res.modpack.installDir')}</div>
-              <Select
-                value={modpackDirId || settings.selectedVersionDirId || 'default'}
-                onChange={setModpackDirId}
-                className="mb-5 w-full"
-                options={dirOptions}
-              />
-              {modpackNameTaken && (
-                <p className="mb-4 -mt-3 text-[12px]" style={{ color: 'var(--fill-danger)' }}>
-                  {t('res.modpack.nameTaken', { name: modpackRename.trim() })}
-                </p>
-              )}
-              <div className="flex gap-2">
-                <Button className="flex-1" onClick={() => setModpackPending(null)}>
-                  {t('res.cancel')}
-                </Button>
-                <Button variant="primary" className="flex-1" disabled={!modpackRename.trim() || modpackNameTaken} onClick={() => void confirmModpackImport()}>
-                  {t('res.install')}
-                </Button>
-              </div>
-            </motion.div>
-          </motion.div>
-        )}
-      </AnimatePresence>
 
       {/* 完整介绍弹窗 */}
       <AnimatePresence>

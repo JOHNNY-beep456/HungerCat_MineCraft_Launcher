@@ -51,6 +51,7 @@
   "cmp.onboarding.installVanilla": "Install vanilla 26.2",
   "cmp.onboarding.finish": "Done",
   "cmp.onboarding.next": "Next",
+  "cmp.onboarding.skip": "Skip guide",
   "cmp.agreement.welcome": "Welcome to the HungerCat MineCraft Launcher",
   "cmp.agreement.intro": "Before using it for the first time, please read and agree to the following agreements.",
   "cmp.agreement.loading": "Loading agreement…",

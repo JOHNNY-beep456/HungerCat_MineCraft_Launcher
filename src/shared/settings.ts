@@ -119,6 +119,22 @@ export const SETTINGS_DEFS: SettingsDefs = {
   accentColor: { default: '#0a84ff', ui: { section: 'appearance', control: 'custom' } },
   background: { default: 'midnight', ui: { section: 'appearance', control: 'custom' } },
   backgroundImage: { default: '', ui: { section: 'appearance', control: 'custom' } },
+  /* 导航栏位置：上 / 下 / 左 / 右。上、下是横向长条，左、右是竖栏。
+     老配置里的布尔值 topNav 在读取时迁移成 'top' / 'left'（见 main/store.ts）。 */
+  navPosition: {
+    default: 'left',
+    ui: {
+      section: 'appearance',
+      control: 'segmented',
+      labelKey: 'settings.row.navPosition',
+      options: [
+        { value: 'top', labelKey: 'settings.nav.top' },
+        { value: 'bottom', labelKey: 'settings.nav.bottom' },
+        { value: 'left', labelKey: 'settings.nav.left' },
+        { value: 'right', labelKey: 'settings.nav.right' }
+      ]
+    }
+  },
   reducedMotion: { default: false, ui: { section: 'appearance', control: 'custom' } },
   autoTranslateResources: {
     default: false,
@@ -148,14 +164,6 @@ export const SETTINGS_DEFS: SettingsDefs = {
       control: 'switch',
       labelKey: 'settings.row.autoThemeWallpaper',
       hintKey: 'settings.exp.autoTheme.desc'
-    }
-  },
-  topNav: {
-    default: false,
-    ui: {
-      section: 'experimental',
-      control: 'switch',
-      labelKey: 'settings.row.topNav'
     }
   },
   enableMultiplayer: { default: false, ui: { section: 'experimental', control: 'custom' } },

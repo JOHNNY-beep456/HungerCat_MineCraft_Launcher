@@ -14,3 +14,8 @@
 
 # 其余文本文件统一按 LF 存放（跨平台友好）；二进制由 Git 自行识别。
 * text=auto
+
+# Linux 侧直接执行的脚本必须是 LF：脚本会从 Windows 工作区同步进 WSL，
+# 若被检出成 CRLF，shebang 会变成 "bash\r" 而无法执行。
+*.sh text eol=lf
+*.mjs text eol=lf

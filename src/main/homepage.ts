@@ -737,10 +737,15 @@ export async function checkHomepageUpdates(): Promise<HomepageUpdate[]> {
   for (const e of numbered) {
     const m = byId.get(e.meta.id)
     if (!m) continue
-    // 哈希一致即本地已是最新；版本号变化但内容未变（理论上不会）也不算更新。
-    if (m.sha256 && m.sha256.toLowerCase() === e.sha256.toLowerCase()) continue
-    // 哈希不同但版本号没变 → 差异来自本地改动，不是「线上有更新」。
-    if (!isMarketNewer(e.meta.version, m.version)) continue
+    // 判据是**内容哈希**，不是版本号：只要服务端记录的 SHA256 与本地文件不同就算有更新。
+    // 作者只改内容、忘了升版本号是常事，按版本号判断会让这类更新永远提示不出来
+    // （表现为「主页市场里显示可更新，可更新页却是空的、角标也不出现」）。
+    // 市场记录缺哈希（早期上架的数据）时才退回版本号比较。
+    if (m.sha256) {
+      if (m.sha256.toLowerCase() === e.sha256.toLowerCase()) continue
+    } else if (!isMarketNewer(e.meta.version, m.version)) {
+      continue
+    }
     updates.push({
       localId: e.id,
       id: e.meta.id,
@@ -764,17 +769,13 @@ export async function updateHomepage(update: HomepageUpdate): Promise<HomepageEn
   const dest = resolveEntry(update.localId)
   await ensureDir()
 
-  // 拒绝降级覆盖：本地版本已经不低于市场记录时，「更新」只会把作者自己的改动用线上
-  // 旧版抹掉。凡是判为可更新的条目都应满足线上版本更高（见 isMarketNewer），
-  // 这里再核一次，防止过期的更新记录或调用方传错对象造成不可逆的丢失。
-  const localVersion = await fsp
-    .readFile(dest, 'utf-8')
-    .then((text) => parseHomepageMeta(text, update.localId).version)
-    .catch(() => '')
-  if (localVersion && !isMarketNewer(localVersion, update.latestVersion)) {
-    throw new Error(
-      `本地版本 v${localVersion || '未填'} 不低于线上 v${update.latestVersion || '未填'}，已拒绝用线上版本覆盖本地脚本`
-    )
+  // 内容已经和线上一致：说明调用方拿的是过期记录，直接返回即可（不做无谓的覆盖）。
+  // 注意这里**不再用版本号拦更新**：哈希变了就说明内容确实不同，而版本号可能没动
+  // （作者只改内容不升版本号）——按版本号拦会让「可更新」里的条目点了报错。
+  const before = await fsp.readFile(dest).catch(() => null)
+  if (before && update.latestSha256 && sha256(before) === update.latestSha256.toLowerCase()) {
+    const { content: _content, ...entry } = await buildEntry(update.localId, await loadState())
+    return entry
   }
 
   const tmp = `${dest}.download`

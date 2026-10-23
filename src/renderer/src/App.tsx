@@ -9,6 +9,7 @@ import { FlyDot } from './components/FlyDot'
 import { AgreementModal } from './components/AgreementModal'
 import { AnnouncementModal } from './components/AnnouncementModal'
 import { OnboardingModal } from './components/OnboardingModal'
+import { ModpackImportDialog } from './components/ModpackImportDialog'
 import { SecurityBlockedOverlay } from './components/SecurityBlockedOverlay'
 import { SecurityEngineNotice } from './components/SecurityEngineNotice'
 import { CursorGlow } from './components/CursorGlow'
@@ -151,6 +152,7 @@ function Shell(): JSX.Element {
   const minimal = settings.mode === 'minimal'
   const desktop = !minimal && settings.experimental === 'win10'
   const frosted = !minimal && settings.experimental === 'frosted'
+  const navPosition = settings.navPosition
 
   // 「模糊玻璃」：把 90px 模糊一次性烘焙成贴图（详见 blob-texture.ts）。
   // 不烘焙时每帧都要重算整层模糊，实测只有 ~14fps。
@@ -215,17 +217,22 @@ function Shell(): JSX.Element {
             <TitleBar onLogoDoubleClick={() => setOnboardingOpen(true)} />
 
             <div className="flex h-full flex-col pt-12">
-              {/* 实验性「导航栏置于顶部」：左侧竖栏换成顶部圆弧长条，两者互斥显示。 */}
-              {settings.topNav && <TopNav active={page} onNavigate={navigate} />}
+              {/* 导航栏位置（上 / 下 / 左 / 右）：横条与竖栏互斥显示。
+                  横向时贴在内容上方或下方，竖向时贴在内容左侧或右侧。 */}
+              {navPosition === 'top' && <TopNav active={page} onNavigate={navigate} side="top" />}
 
               <div className="flex min-h-0 flex-1">
-                {!settings.topNav && (
+                {navPosition === 'left' && (
                   <div className="w-[224px] shrink-0">
-                    <Sidebar active={page} onNavigate={navigate} />
+                    <Sidebar active={page} onNavigate={navigate} side="left" />
                   </div>
                 )}
 
-                <main className={settings.topNav ? 'min-w-0 flex-1 p-5' : 'min-w-0 flex-1 p-5 pl-2'}>
+                <main
+                  className={`min-w-0 flex-1 p-5 ${
+                    navPosition === 'left' ? 'pl-2' : navPosition === 'right' ? 'pr-2' : ''
+                  }`}
+                >
                   {/* 页面 ⇄ 实例管理整页：用 key 切换同一容器内的两态视图，做淡入过渡。
                       只动 opacity：位移/缩放会让整页（含几十张磨砂卡片）每帧重新采样
                       backdrop，实测把切换帧率压到 20~30fps；淡入是纯合成器动画，观感
@@ -247,7 +254,15 @@ function Shell(): JSX.Element {
                     </div>
                   </motion.div>
                 </main>
+
+                {navPosition === 'right' && (
+                  <div className="w-[224px] shrink-0">
+                    <Sidebar active={page} onNavigate={navigate} side="right" />
+                  </div>
+                )}
               </div>
+
+              {navPosition === 'bottom' && <TopNav active={page} onNavigate={navigate} side="bottom" />}
             </div>
 
             <DownloadOrb onNavigate={navigate} />
@@ -300,6 +315,8 @@ function Shell(): JSX.Element {
           onInstallVanilla={installVanillaGuide}
           onFinish={() => setOnboardingOpen(false)}
         />
+        {/* 整合包导入确认：挂在 Shell 层，切换页面 / 下载期间离开资源页都不会丢。 */}
+        <ModpackImportDialog />
         <AnimatePresence>
           {tokenExpiredError && (
             <motion.div

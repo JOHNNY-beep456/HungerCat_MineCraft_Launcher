@@ -75,15 +75,34 @@ function supportsOfflineTranslate(mc: string): boolean {
   return inOld || inNew
 }
 
+/**
+ * 版本列表分批渲染的批次大小。
+ *
+ * 两个常量：首屏直接渲染的张数、以及之后每次追加的张数。120 张约等于 40 行
+ * （xl 三列），足够填满一屏还有余量，单批渲染开销也能压在两帧以内。
+ */
+const LIST_FIRST = 120
+const LIST_CHUNK = 120
+
 export function VersionsPage({ presetSearch }: { presetSearch?: string }): JSX.Element {
   const { download, installingId, busy, installVersion } = useRuntime()
   const { t, settings } = useApp()
 
   const [manifest, setManifest] = useState<VersionManifest | null>(null)
   const [loading, setLoading] = useState(true)
+  /** 版本清单拉取失败的原因（网络错误 / 超时）。空串表示没有错误。 */
+  const [error, setError] = useState('')
   const [installed, setInstalled] = useState<InstalledVersion[]>([])
   const [filter, setFilter] = useState<Filter>('all')
   const [search, setSearch] = useState(presetSearch ?? '')
+  /**
+   * 版本列表是异步分批渲染的：858 张卡片一次性挂载会长时间占满主线程
+   * （实测返回列表时出现 399ms 长任务 + 随后近 1 秒掉帧）。首屏先出 LIST_FIRST 张，
+   * 其余在浏览器空闲时按 LIST_CHUNK 张一批补齐；滚到底部附近时也会立刻补一批，
+   * 保证快速滚动不会看到空白。
+   */
+  const [shown, setShown] = useState(LIST_FIRST)
+  const listScrollRef = useRef<HTMLDivElement>(null)
 
   const [loaderTarget, setLoaderTarget] = useState<string | null>(null)
   const [loaderKind, setLoaderKind] = useState<InstallKind>('vanilla')
@@ -114,22 +133,27 @@ export function VersionsPage({ presetSearch }: { presetSearch?: string }): JSX.E
   // 防止乱序返回的旧响应把当前选择的加载器版本覆盖掉。
   const loaderReqSeq = useRef(0)
 
-  const refresh = useCallback(async () => {
+  const refresh = useCallback(async (force = false) => {
     setLoading(true)
-    try {
-      const [m, i] = await Promise.all([
-        window.api.versions.list().catch(() => null),
-        window.api.installed.list().catch(() => [] as InstalledVersion[])
-      ])
-      setManifest(m)
-      setInstalled(i)
-    } finally {
-      setLoading(false)
-    }
+    setError('')
+    const [m, i] = await Promise.all([
+      window.api.versions.list(force).catch((err: unknown) => {
+        setError(err instanceof Error ? err.message : String(err))
+        return null
+      }),
+      window.api.installed.list().catch(() => [] as InstalledVersion[])
+    ])
+    // 清单失败时保留上一次的结果，不要把已经在显示的列表清空。
+    if (m) setManifest(m)
+    setInstalled(i)
+    setLoading(false)
   }, [])
 
   useEffect(() => {
-    void refresh()
+    // 首次进入即**真的走一次网络**（force）：版本清单在主进程有 5 分钟缓存，
+    // 不 force 的话这里只会拿到别处（如「模组」页）刚拉过的缓存，页面看起来
+    // 完全没有网络加载过程。等一下再显示「已加载」是符合预期的。
+    void refresh(true)
   }, [refresh])
 
   useEffect(() => {
@@ -157,6 +181,40 @@ export function VersionsPage({ presetSearch }: { presetSearch?: string }): JSX.E
       return true
     })
   }, [manifest, filter, search])
+
+  // 列表内容变化（搜索 / 筛选 / 清单更新）时回到首屏张数，避免一次重画上千张卡。
+  useEffect(() => {
+    setShown(LIST_FIRST)
+  }, [list])
+
+  // 空闲时继续补下一批：不抢用户滚动 / 输入所需的帧。
+  useEffect(() => {
+    if (shown >= list.length) return
+    let cancelled = false
+    let idleId: number | undefined
+    let timerId: ReturnType<typeof setTimeout> | undefined
+    const addChunk = (): void => {
+      if (!cancelled) setShown((n) => Math.min(list.length, n + LIST_CHUNK))
+    }
+    const ric = (window as unknown as { requestIdleCallback?: (cb: () => void, o?: { timeout: number }) => number })
+      .requestIdleCallback
+    if (typeof ric === 'function') idleId = ric(addChunk, { timeout: 300 })
+    else timerId = setTimeout(addChunk, 32)
+    return () => {
+      cancelled = true
+      const cic = (window as unknown as { cancelIdleCallback?: (id: number) => void }).cancelIdleCallback
+      if (idleId !== undefined && typeof cic === 'function') cic(idleId)
+      if (timerId !== undefined) clearTimeout(timerId)
+    }
+  }, [shown, list.length])
+
+  /** 滚到距底部不足一屏时立刻补一批，保证快速滚动也不会看到空白。 */
+  const onListScroll = (): void => {
+    const el = listScrollRef.current
+    if (!el || shown >= list.length) return
+    if (el.scrollTop + el.clientHeight < el.scrollHeight - 600) return
+    setShown((n) => Math.min(list.length, n + LIST_CHUNK))
+  }
 
   const fetchLoaderVersions = async (mc: string, kind: AnyLoader): Promise<void> => {
     const seq = ++loaderReqSeq.current
@@ -316,17 +374,18 @@ export function VersionsPage({ presetSearch }: { presetSearch?: string }): JSX.E
 
   return (
     <div className="flex h-full flex-col gap-5">
-      {/* 版本列表 ⇄ 安装整页：同一时刻只渲染一个视图，按 key 切换做淡入入场。
-          只用入场、不用 AnimatePresence 的 mode="wait" 退场——退场会延后新视图挂载，
-          若退场期间发生重渲染，新视图可能一直不挂载而出现空白屏。 */}
-      {!loaderTarget && (
-        <motion.div
-          key="list"
-          className="flex min-h-0 flex-1 flex-col gap-5"
-          initial={{ opacity: 0, y: 10, scale: 0.995 }}
-          animate={{ opacity: 1, y: 0, scale: 1 }}
-          transition={{ type: 'spring', bounce: 0, duration: 0.3 }}
-        >
+      {/* 版本列表 ⇄ 安装整页：两者**同时挂载**，列表在打开安装页时只是 hidden。
+          之前用 {!loaderTarget && …} 条件渲染，返回时会把 858 张卡片整个重新挂载
+          （外加每张卡的入场动画），实测一次 399ms 长任务 + 随后近 1 秒 100~175ms 的掉帧，
+          而且滚动位置也归零。保持挂载后返回是纯 CSS 显隐，既没有重排也没有丢位置；
+          真正「贵」的那部分渲染交给下面的渐进渲染。*/}
+      <motion.div
+        key="list"
+        className={`flex min-h-0 flex-1 flex-col gap-5 ${loaderTarget ? 'hidden' : ''}`}
+        initial={{ opacity: 0, y: 10, scale: 0.995 }}
+        animate={{ opacity: 1, y: 0, scale: 1 }}
+        transition={{ type: 'spring', bounce: 0, duration: 0.3 }}
+      >
           <div className="flex items-end justify-between">
           <div>
             <h1 className="display">{t('res.versions.title')}</h1>
@@ -337,18 +396,30 @@ export function VersionsPage({ presetSearch }: { presetSearch?: string }): JSX.E
                   snapshot: manifest.latest.snapshot,
                   n: installed.length
                 })
-              : t('res.versions.loadingManifest')}
+              : error
+                ? t('res.versions.loadFailed')
+                : t('res.versions.loadingManifest')}
           </p>
         </div>
-        <Button icon="refresh" onClick={() => void refresh()}>
+        <Button icon="refresh" disabled={loading} onClick={() => void refresh(true)}>
           {t('res.versions.refresh')}
         </Button>
       </div>
 
       {loading ? (
         <LoadingState text={t('res.versions.loadingList')} />
+      ) : !manifest ? (
+        /* 清单拉取失败（网络错误 / 超时）时的兜底：以前这里会把错误吞掉、页面停在
+           「正在加载版本清单…」并留下一个空列表，看起来像永久卡住。 */
+        <div className="glass flex flex-col items-center gap-3 rounded-[24px] p-8 text-center">
+          <Icon name="info" size={22} className="opacity-60" />
+          <p className="caption max-w-[520px] break-all">{error || t('res.versions.loadFailed')}</p>
+          <Button icon="refresh" onClick={() => void refresh(true)}>
+            {t('res.versions.retry')}
+          </Button>
+        </div>
       ) : (
-        <div className="min-h-0 flex-1 overflow-y-auto pr-1">
+        <div ref={listScrollRef} onScroll={onListScroll} className="min-h-0 flex-1 overflow-y-auto pr-1">
           {/* 所有版本（可重复安装） */}
           <div className="mb-2 flex flex-wrap items-center gap-3">
             <div className="flex items-center gap-2">
@@ -375,13 +446,15 @@ export function VersionsPage({ presetSearch }: { presetSearch?: string }): JSX.E
             />
           </div>
 
-          <div className="grid grid-cols-1 gap-2.5 pb-4 sm:grid-cols-2 xl:grid-cols-3">
-            {list.map((v, i) => {
+          <div className="res-ver-grid grid grid-cols-1 gap-2.5 pb-4 sm:grid-cols-2 xl:grid-cols-3">
+            {list.slice(0, shown).map((v, i) => {
               const installing = installingId === v.id
               return (
                 <motion.div
                   key={v.id}
-                  initial={{ opacity: 0, y: 8 }}
+                  /* 只有首屏前几张播放入场动画：858 张卡全部带动画会强制整页参与绘制
+                     （与实例列表同一处理），屏幕外的卡片直接以终态渲染。 */
+                  initial={i < 8 ? { opacity: 0, y: 8 } : false}
                   animate={{ opacity: 1, y: 0 }}
                   transition={{ delay: Math.min(i * 0.008, 0.2) }}
                   className="glass flex items-center gap-3 rounded-2xl p-3.5"
@@ -434,9 +507,7 @@ export function VersionsPage({ presetSearch }: { presetSearch?: string }): JSX.E
           )}
         </div>
       )}
-
-        </motion.div>
-      )}
+      </motion.div>
 
       {loaderTarget && (
         <motion.div

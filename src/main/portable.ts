@@ -1,6 +1,6 @@
 import { app } from 'electron'
 import { accessSync, constants, mkdirSync } from 'fs'
-import { join } from 'path'
+import { basename, join } from 'path'
 
 /**
  * 便携版判定与数据目录。
@@ -28,6 +28,23 @@ export function portableDataDir(): string {
 /** 便携版的游戏目录：<exe 目录>/.minecraft */
 export function portableGameDir(): string {
   return join(portableDir, '.minecraft')
+}
+
+/**
+ * 便携版可执行文件本身的路径；安装版返回空串。
+ *
+ * Windows portable：electron-builder 把自解压后的 exe 放在临时目录运行，
+ * `process.execPath` 指向那份临时文件，真正要替换的是 `PORTABLE_EXECUTABLE_FILE`。
+ * Linux AppImage：运行的是挂载点里的可执行文件，真正要替换的是 `$APPIMAGE`。
+ *
+ * 更新流程用它决定「下载到哪、删哪个、启动哪个」。
+ */
+export function portableBinaryPath(): string {
+  const file = (process.env.PORTABLE_EXECUTABLE_FILE ?? '').trim()
+  if (file) return file
+  if (portableDir) return join(portableDir, basename(process.execPath))
+  const appImage = (process.env.APPIMAGE ?? '').trim()
+  return appImage
 }
 
 /**

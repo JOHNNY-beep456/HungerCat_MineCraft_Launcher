@@ -64,6 +64,38 @@ export interface StreamDownloadOptions {
   connections?: number
 }
 
+/**
+ * 探测远端文件的总字节数；探测不到返回 0。
+ *
+ * 先看 HEAD 的 `content-length`；拿不到时退到一次 1 字节的 Range 请求，读
+ * `Content-Range: bytes 0-0/<total>` 里的总长。
+ *
+ * 为什么需要第二条路：网盘外链（AList / Cloudreve 之类）与部分对象存储的 HEAD
+ * 只回 `etag` + `accept-ranges`，**不回 content-length**。只认 HEAD 的实现在这类
+ * 地址上永远拿不到总长 → `totalBytes = 0` → 进度条恒为 0%（也顺带失去分段下载）。
+ */
+export async function probeContentLength(
+  url: string,
+  opts: { headers?: Record<string, string>; signal?: AbortSignal } = {}
+): Promise<number> {
+  const headers = { ...UA, ...(opts.headers ?? {}) }
+  try {
+    const head = await fetch(url, { method: 'HEAD', headers, signal: opts.signal })
+    const cl = Number(head.headers.get('content-length') ?? 0)
+    if (cl > 0) return cl
+  } catch {
+    /* HEAD 不被支持：继续用 Range 探 */
+  }
+  try {
+    const res = await fetch(url, { headers: { ...headers, Range: 'bytes=0-0' }, signal: opts.signal })
+    const total = res.status === 206 ? /\/(\d+)\s*$/.exec(res.headers.get('content-range') ?? '') : null
+    await res.body?.cancel().catch(() => {})
+    return total ? Number(total[1]) : 0
+  } catch {
+    return 0
+  }
+}
+
 /* ---------- 瞬时 HTTP 错误（429 限流 / 408 / 5xx）自动重试 ---------- */
 const TRANSIENT_STATUS = new Set([408, 425, 429, 500, 502, 503, 504])
 
@@ -211,6 +243,9 @@ async function streamOnce(url: string, dest: string, opts: StreamDownloadOptions
       /* 服务器不支持 HEAD 时忽略，退化为单连接 */
     }
   }
+
+  // 总长的探测统一放在 `stream:download` 的入口（network/index.ts），因为原生内核
+  // 与这里的 TS 回退都要用同一份 sizeHint：只在这一层探会让原生路径拿不到总长。
   if (size > 0) onSize?.(size)
 
   // 大文件优先动态分段；服务器不支持 Range（返回 200）时并行流程返回 false，回退单连接。
@@ -232,7 +267,7 @@ async function streamOnce(url: string, dest: string, opts: StreamDownloadOptions
  * 自带停滞看门狗：连续 STALL_TIMEOUT_MS 无字节即中断并报告「网络连接超时」。
  */
 async function singleDownload(url: string, dest: string, opts: StreamDownloadOptions): Promise<void> {
-  const { signal, onBytes, headers } = opts
+  const { signal, onBytes, onSize, headers } = opts
   // 只中断本次尝试：外部取消经 forwardAbort 转发，停滯由 watchdog 触发。
   const attempt = new AbortController()
   let lastBytesAt = Date.now()
@@ -246,6 +281,13 @@ async function singleDownload(url: string, dest: string, opts: StreamDownloadOpt
   try {
     const res = await fetch(url, { headers: { ...UA, ...(headers ?? {}) }, signal: attempt.signal })
     if (!res.ok || !res.body) throw await httpError(res.status, res)
+    // 兜底：HEAD / Range 探测都没拿到总长时（有些服务器只对完整 GET 回 content-length），
+    // 直接用这里的 content-length 补一次，否则进度条仍然是 0%。206 的 content-length
+    // 只是本段长度，不能当总长用。
+    if (res.status === 200) {
+      const total = Number(res.headers.get('content-length') ?? 0)
+      if (total > 0) onSize?.(total)
+    }
     const reader = res.body.getReader()
     const out = createWriteStream(dest)
     try {

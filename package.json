@@ -1,9 +1,10 @@
 {
   "name": "hunger-cat-minecraft-launcher",
-  "version": "0.6.17",
+  "version": "0.7.0-hotfix1",
   "description": "HungerCat MineCraft Launcher",
   "main": "./out/main/index.js",
   "author": "Hunger Cat",
+  "homepage": "https://github.com/JOHNNY-beep456/HungerCat_MineCraft_Launcher",
   "license": "SEE LICENSE IN LICENSE",
   "scripts": {
     "dev": "electron-vite dev",
@@ -16,7 +17,8 @@
     "native:build:debug": "node scripts/build-native-downloader.mjs --debug",
     "win": "electron-vite build && electron-builder --win",
     "dist": "electron-vite build && electron-builder --win",
-    "dist:win": "electron-vite build && electron-builder --win"
+    "dist:win": "electron-vite build && electron-builder --win",
+    "dist:linux": "electron-vite build && electron-builder --linux"
   },
   "dependencies": {},
   "devDependencies": {

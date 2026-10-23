@@ -19,7 +19,13 @@ export function HomePage(): JSX.Element {
   const [memInfo, setMemInfo] = useState<SystemMemoryInfo | null>(null)
   const [pickerOpen, setPickerOpen] = useState(false)
   const [search, setSearch] = useState('')
+  const [appVersion, setAppVersion] = useState('')
   const logRef = useRef<HTMLDivElement>(null)
+
+  // 启动器版本号：显示在标题左侧，便于用户反馈问题时直接对照版本。
+  useEffect(() => {
+    void window.api.getVersion().then(setAppVersion).catch(() => setAppVersion(''))
+  }, [])
 
   const activeDirId = settings.selectedVersionDirId || 'default'
 
@@ -142,6 +148,65 @@ export function HomePage(): JSX.Element {
     setMemory(Math.min(auto, memInfo.free))
   }
 
+  /**
+   * 内存条的两段比例（相对物理总内存）。
+   *
+   * 内存信息探测失败时仍要保留调节能力：已用记 0、整条按预留画，
+   * 这样这条「轨道 + 把手」不会因为一次 IPC 失败就整个消失。
+   */
+  const usedPct = memInfo ? pct(memInfo.used, memInfo.total) : 0
+  const reservedPct = memInfo ? pct(memory, memInfo.total) : 100
+
+  /** 预留内存的可调上限（当前可用内存；探测失败时给个保守值让控件仍可用）。 */
+  const memMax = Math.max(1024, memInfo?.free ?? 16384)
+  /** 拖动状态：按下时的指针 X 与当时的预留值。为 null 表示没在拖。 */
+  const memDrag = useRef<{ x: number; value: number } | null>(null)
+
+  /**
+   * 拖动改预留值（只认拖动，不认点击）。
+   *
+   * 按下只记录起点、**不改值**；移动时按「位移 / 轨道宽度」换算成内存增量。
+   * 换算是相对按下时的值累加，而不是按指针绝对位置取值 —— 后者就是原生 range 的
+   * 「点哪跳哪」，在只有一条细轨道的控件上很容易误触。
+   */
+  const onBarPointerDown = (e: React.PointerEvent<HTMLDivElement>): void => {
+    memDrag.current = { x: e.clientX, value: memory }
+    e.currentTarget.setPointerCapture(e.pointerId)
+  }
+
+  const onBarPointerMove = (e: React.PointerEvent<HTMLDivElement>): void => {
+    const drag = memDrag.current
+    if (!drag) return
+    const width = e.currentTarget.clientWidth
+    if (width <= 0) return
+    const next = drag.value + ((e.clientX - drag.x) / width) * (memMax - 1024)
+    setMemory(Math.min(memMax, Math.max(1024, Math.round(next / 512) * 512)))
+  }
+
+  const onBarPointerUp = (e: React.PointerEvent<HTMLDivElement>): void => {
+    if (!memDrag.current) return
+    memDrag.current = null
+    if (e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId)
+  }
+
+  /** 键盘等价操作：方向键 ±512MB，Shift 加速到 ±2048MB，Home/End 到两端。 */
+  const onBarKeyDown = (e: React.KeyboardEvent<HTMLDivElement>): void => {
+    const step = e.shiftKey ? 2048 : 512
+    if (e.key === 'ArrowLeft' || e.key === 'ArrowDown') {
+      e.preventDefault()
+      setMemory((v) => Math.max(1024, v - step))
+    } else if (e.key === 'ArrowRight' || e.key === 'ArrowUp') {
+      e.preventDefault()
+      setMemory((v) => Math.min(memMax, v + step))
+    } else if (e.key === 'Home') {
+      e.preventDefault()
+      setMemory(1024)
+    } else if (e.key === 'End') {
+      e.preventDefault()
+      setMemory(memMax)
+    }
+  }
+
   const handleLaunch = (): void => {
     if (!selectedAccount) return
     if (!versionId) return
@@ -160,7 +225,17 @@ export function HomePage(): JSX.Element {
     <div className="flex h-full flex-col gap-5">
       <div className="flex items-end justify-between">
         <div>
-          <h1 className="display">{t('home.title')}</h1>
+          {/* 版本号贴在标题左上角：反馈问题时用户能直接照着念，
+              也便于区分「是不是装到了旧版本」。取主进程的 app.getVersion()，
+              与「设置 → 更新」显示的是同一个来源。 */}
+          <div className="mb-1 flex items-center gap-2">
+            <h1 className="display">{t('home.title')}</h1>
+            {appVersion && (
+              <span className="chip selectable" title={t('home.versionBadge')}>
+                v{appVersion}
+              </span>
+            )}
+          </div>
           <p className="caption mt-1">{t('home.subtitle')}</p>
         </div>
         <div className="flex items-center gap-2">
@@ -272,45 +347,67 @@ export function HomePage(): JSX.Element {
               </div>
             </div>
 
-            {/* 内存显示条：极淡主题色打底=总内存，深主题色=已用，浅主题色=游戏预留 */}
-            {memInfo && (
-              <div className="mb-3">
+            {/* 内存条：极淡主题色打底=总内存，深主题色=已用，浅主题色=游戏预留。
+                统一走 --fill-primary 而不是直接用 settings.accentColor：GitHub / WinUI 3 /
+                WinUI 2 / 我的世界这几套皮肤**自带主题色**（它们的 --fill-primary 指向自己的
+                品牌色），直接用用户设定的色值会让这条进度条与界面其余蓝色控件脱节。
+
+                这条本身就是调节控件，且**只认拖动**：按下时记下起点与当时的预留值，
+                移动时按位移换算增量 —— 而不是原生 range 那种「点哪跳哪」。这样点一下
+                不会误改数值，也不会因为想点把手而把值甩到另一头。
+                没有把手，边界靠「已用段 / 预留段」两种情况色的分界来读。 */}
+            <div className="mb-3">
+              <div
+                role="slider"
+                tabIndex={0}
+                aria-label={t('home.memReserved', { n: gb(memory) })}
+                aria-valuemin={1024}
+                aria-valuemax={memMax}
+                aria-valuenow={memory}
+                aria-valuetext={`${gb(memory)} GB`}
+                onPointerDown={onBarPointerDown}
+                onPointerMove={onBarPointerMove}
+                onPointerUp={onBarPointerUp}
+                onPointerCancel={onBarPointerUp}
+                onKeyDown={onBarKeyDown}
+                className="mem-bar relative h-6 cursor-ew-resize select-none touch-none"
+              >
                 <div
-                  className="relative h-3 overflow-hidden rounded-full"
-                  style={{ background: hexToRgba(settings.accentColor, 0.12) }}
+                  className="pointer-events-none absolute inset-x-0 top-1/2 h-3 -translate-y-1/2 overflow-hidden rounded-full"
+                  style={{ background: 'color-mix(in srgb, var(--fill-primary) 12%, transparent)' }}
                 >
                   <div
-                    className="absolute left-0 top-0 h-full transition-all"
-                    style={{ width: `${pct(memInfo.used, memInfo.total)}%`, background: hexToRgba(settings.accentColor, 0.85) }}
+                    className="absolute left-0 top-0 h-full"
+                    style={{
+                      width: `${usedPct}%`,
+                      background: 'color-mix(in srgb, var(--fill-primary) 85%, transparent)',
+                      /* 只过渡 width / left。写 transition-all 会连同 background 一起过渡，
+                         而 Chromium 无法在 color-mix() 之间插值，切换皮肤后填充色会卡在
+                         上一次的插值结果上（表现为「换主题了但这条还是旧主题色」）。 */
+                      transition: 'width 150ms, left 150ms'
+                    }}
                   />
                   <div
-                    className="absolute top-0 h-full transition-all"
+                    className="absolute top-0 h-full"
                     style={{
-                      left: `${pct(memInfo.used, memInfo.total)}%`,
-                      width: `${pct(memory, memInfo.total)}%`,
-                      background: hexToRgba(settings.accentColor, 0.42)
+                      left: `${usedPct}%`,
+                      width: `${reservedPct}%`,
+                      background: 'color-mix(in srgb, var(--fill-primary) 42%, transparent)',
+                      transition: 'width 150ms, left 150ms'
                     }}
                   />
                 </div>
+              </div>
+
+              {memInfo && (
                 <div className="mt-1 flex justify-between text-[11px] opacity-50">
                   <span>
                     {t('home.memUsedTotal', { used: gb(memInfo.used), total: gb(memInfo.total) })}
                   </span>
                   <span>{t('home.memReserved', { n: gb(memory) })}</span>
                 </div>
-              </div>
-            )}
-
-            <input
-              type="range"
-              min={1024}
-              max={Math.max(1024, memInfo?.free ?? 16384)}
-              step={512}
-              value={memory}
-              onChange={(e) => setMemory(Number(e.target.value))}
-              className="w-full"
-              style={{ accentColor: 'var(--fill-primary)' }}
-            />
+              )}
+            </div>
           </div>
 
           <div className="mt-auto">
@@ -496,14 +593,4 @@ function gb(mb: number): string {
 function pct(part: number, total: number): number {
   if (total <= 0) return 0
   return Math.min(100, Math.max(0, (part / total) * 100))
-}
-
-function hexToRgba(hex: string, alpha: number): string {
-  const m = hex.replace('#', '')
-  const full = m.length === 3 ? m.split('').map((c) => c + c).join('') : m
-  const r = parseInt(full.slice(0, 2), 16)
-  const g = parseInt(full.slice(2, 4), 16)
-  const b = parseInt(full.slice(4, 6), 16)
-  if ([r, g, b].some(Number.isNaN)) return `rgba(10,132,255,${alpha})`
-  return `rgba(${r}, ${g}, ${b}, ${alpha})`
 }

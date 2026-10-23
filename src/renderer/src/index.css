@@ -812,6 +812,25 @@ textarea.input {
   contain-intrinsic-size: auto 200px;
 }
 
+/* --- 主页内存条的键盘焦点环 ---
+   这条内存条本身是 role="slider" 的可聚焦控件（拖动改预留内存），
+   鼠标拖动时不需要焦点环，但键盘 Tab 过来必须能看见落点。 */
+.mem-bar:focus-visible {
+  outline: 2px solid var(--fill-primary);
+  outline-offset: 4px;
+  border-radius: 9999px;
+}
+
+/* --- 版本列表：屏幕外的卡片跳过布局与绘制 ---
+   「资源下载 → 版本」一次渲染 858 张卡片。从安装页返回时列表由 display:none 恢复，
+   Chromium 要为全部卡片做一遍布局 + 绘制（每张还带 backdrop 模糊），
+   实测一次 290ms 长任务。content-visibility: auto 让视口外的卡片跳过这两个阶段；
+   contain-intrinsic-size 的高度按卡片实际高度给（p-3.5 + 36px 图标），滚动时不跳动。 */
+.res-ver-grid > * {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 66px;
+}
+
 /* 卡片内的小行（存档 / 服务器）不再各做一层 backdrop 模糊：
    它们的背景就是父卡片的半透明表面，再模糊一次肉眼几乎看不出来，
    但实例多时会产生数百层模糊，切换页面/滚动时逐帧重算。 */

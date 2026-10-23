@@ -12,7 +12,9 @@ import {
   fetchAnnouncements,
   fetchUpdateInfo,
   downloadUpdate,
+  replacePortableUpdate,
   runUpdate,
+  updateTargetDir,
   compareVersions,
   compareMainVersions,
   updateFileExists,
@@ -123,20 +125,26 @@ export function registerNetworkHandlers(ctx: IpcContext): void {
   })
   ipcMain.handle('update:download', async (event, info: UpdateInfo) => {
     const s = settings.get()
-    return downloadUpdate(info, s.gameDir, (p) => {
+    return downloadUpdate(info, updateTargetDir(s.gameDir), (p) => {
       ctx.sendToSender(event.sender, 'update:progress', p)
     })
   })
   ipcMain.handle('update:downloadAndRun', async (event, info: UpdateInfo) => {
     const s = settings.get()
+    // 便携版落在 exe 同目录（直接替换手边这个文件），安装版落在 <gameDir>/updates。
+    const dir = updateTargetDir(s.gameDir)
     // 已经下载过同一版本：直接运行，避免重复下载时再次对同名 exe 做覆盖写（Windows 上易 EPERM）。
-    const existing = updateFileExists(s.gameDir, info)
-    const path = existing
-      ? join(s.gameDir, 'updates', updateFileName(info))
-      : await downloadUpdate(info, s.gameDir, (p) => {
+    const path = updateFileExists(dir, info)
+      ? join(dir, updateFileName(info))
+      : await downloadUpdate(info, dir, (p) => {
           ctx.sendToSender(event.sender, 'update:progress', p)
         })
-    runUpdate(path)
+    // 便携版：删掉旧文件并自动打开新版（等本进程退出后由外部脚本完成），随后退出应用
+    if (replacePortableUpdate(path)) {
+      setTimeout(() => app.quit(), 300)
+    } else {
+      runUpdate(path)
+    }
     return path
   })
 }

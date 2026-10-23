@@ -1,5 +1,6 @@
 {
   "home.title": "啟動遊戲",
+  "home.versionBadge": "啟動器版本號",
   "home.subtitle": "選擇一個版本，一鍵進入方塊世界",
   "home.notLoggedIn": "未登入帳號",
   "home.versionDir": "版本目錄",

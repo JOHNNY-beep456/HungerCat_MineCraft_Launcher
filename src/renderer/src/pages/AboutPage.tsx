@@ -95,11 +95,14 @@ export function AboutPage(): JSX.Element {
         )}
       </div>
 
-      {/* 多链接弹窗：询问去哪个链接（都写名，不直接展示 URL） */}
+      {/* 多链接弹窗：询问去哪个链接（都写名，不直接展示 URL）。
+          用 fixed 而不是 absolute：absolute 的包含块受外层动画的 transform/will-change 影响，
+          实测只覆盖了内容区（948×712），侧栏与标题栏不会被遮罩盖住，观感上像「属于页面」而不是
+          「属于启动器」。形状 / 配色全部走皮肤令牌（见下方注释）。 */}
       <AnimatePresence>
         {linkPerson && (
           <motion.div
-            className="absolute inset-0 z-50 flex items-center justify-center p-6"
+            className="fixed inset-0 z-[128] flex items-center justify-center p-6"
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
@@ -109,8 +112,11 @@ export function AboutPage(): JSX.Element {
               style={{ background: 'var(--scrim)' }}
               onClick={() => setLinkPerson(null)}
             />
+            {/* 圆角交给 .glass-strong（它读 --radius-card），不再写死 rounded-[28px]：
+                写死会让「液态玻璃 / 扁平化 / M3」这些没有覆写 .glass-strong 圆角的皮肤
+                永远停在 28px，与同页卡片的 24~26px 对不上。 */}
             <motion.div
-              className="glass-strong relative z-10 w-full max-w-sm rounded-[28px] p-6"
+              className="glass-strong relative z-10 w-full max-w-sm p-6"
               initial={{ scale: 0.94, opacity: 0, y: 12 }}
               animate={{ scale: 1, opacity: 1, y: 0 }}
               exit={{ scale: 0.94, opacity: 0, y: 12 }}
@@ -126,17 +132,20 @@ export function AboutPage(): JSX.Element {
               <p className="caption mb-4">{t('about.chooseLink')}</p>
               <div className="space-y-2">
                 {linkPerson.links.map((link) => (
-                  <button
+                  /* 直接复用启动器的次级按钮样式：换绑任何皮肤时，圆角 / 描边 / 倒角 / 投影都
+                     已由 `.btn` 的皮肤规则统一处理，不用在这里另造一套「行」的材质。 */
+                  <Button
                     key={link.url}
-                    className="glass-soft flex w-full items-center justify-between rounded-xl px-4 py-3 no-drag transition-transform active:scale-[0.98]"
+                    variant="secondary"
+                    className="w-full justify-between px-4"
                     onClick={() => {
                       openUrl(link.url)
                       setLinkPerson(null)
                     }}
                   >
-                    <span className="text-[14px] font-medium">{tr(link.name)}</span>
+                    <span className="truncate text-[14px] font-medium">{tr(link.name)}</span>
                     <Icon name="link" size={16} className="opacity-60" />
-                  </button>
+                  </Button>
                 ))}
               </div>
             </motion.div>

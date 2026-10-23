@@ -280,14 +280,17 @@ function createWindow(): void {
   const iconPath = app.isPackaged
     ? join(process.resourcesPath, 'icon.png')
     : join(app.getAppPath(), 'build', 'icon.png')
+  // 主窗口是自绘标题栏（登录框、状态灯、窗口按钮都在渲染层），所以必须去掉系统标题栏。
+  // Windows / macOS 用 titleBarStyle: 'hidden'；Linux 不认识这个选项，只能显式 frame: false，
+  // 否则会出现「系统标题栏 + 自绘标题栏」两层。
+  const isLinux = process.platform === 'linux'
   mainWindow = new BrowserWindow({
     width: 1200,
     height: 800,
     minWidth: 960,
     minHeight: 640,
     show: false,
-    titleBarStyle: 'hidden',
-    trafficLightPosition: { x: 18, y: 18 },
+    ...(isLinux ? { frame: false } : { titleBarStyle: 'hidden' as const, trafficLightPosition: { x: 18, y: 18 } }),
     backgroundColor: windowBackgroundColor(),
     icon: iconPath,
     webPreferences: {
@@ -361,7 +364,8 @@ function createWindow(): void {
       } else if (response === 1) {
         // 放置后台：隐藏窗口 + 建托盘，联机不中断。
         ensureTray()
-        win.hide()
+        // 托盘建不起来（Linux 缺 AppIndicator 等）时不能隐藏：隐藏后就再也唤不回来了。
+        if (tray) win.hide()
       }
       // 取消：什么都不做。
     })()
@@ -541,7 +545,16 @@ let isQuitting = false
 function ensureTray(): void {
   if (tray) return
   const icon = nativeImage.createFromPath(iconPathForWindows())
-  tray = new Tray(icon.isEmpty() ? nativeImage.createEmpty() : icon)
+  try {
+    tray = new Tray(icon.isEmpty() ? nativeImage.createEmpty() : icon)
+  } catch (err) {
+    // Linux 上托盘依赖桌面环境的 AppIndicator / StatusNotifier 支持，缺了会直接抛异常。
+    // 托盘只是「窗口隐藏后唤回」的一个入口，没有它也不该让整个流程崩掉：
+    // 记一条日志，转为「直接显示主窗口」的降级行为。
+    console.warn('[tray] 创建托盘失败，已降级为不使用托盘：', err)
+    tray = null
+    return
+  }
   tray.setToolTip('饥饿猫我的世界启动器')
   const menu = Menu.buildFromTemplate([
     {
@@ -1051,6 +1064,10 @@ process.on('uncaughtException', (err) => {
 
 app.whenReady().then(() => {
   initLogger()
+  // 启动器是自绘界面（含标题栏、菜单跳转全在渲染层），不需要 Electron 的默认应用菜单。
+  // Windows 下它本来就被隐藏，但 Linux 会把默认菜单栏画进窗口内部 —— 那会出现
+  // 「自绘标题栏下面多一条 File/Edit/View」的错位，所以这里直接去掉。
+  Menu.setApplicationMenu(null)
   // 联机语音需要麦克风。必须**显式**放行 media 权限：
   // 未设置该处理函数时，是否放行取决于 Electron 版本（部分版本对 media 默认拒绝），
   // 被拒后 getUserMedia 会直接抛 NotAllowedError，而渲染层只写进控制台 ——

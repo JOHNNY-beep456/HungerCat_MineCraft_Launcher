@@ -470,11 +470,13 @@ export interface LauncherSettings {
    */
   autoThemeFromWallpaper: boolean
   /**
-   * 实验性（默认关闭）：导航栏置于顶部，改用一条「圆弧长条」横向导航，不再占用左侧竖栏。
-   * 与上面的界面皮肤（mica / mac / win10）和运行模式相互独立 —— 不参与互斥组，
-   * 三套皮肤与极简下都能开。
+   * 导航栏位置：上 / 下 / 左 / 右。
+   *
+   * 上、下是「圆弧长条」横向导航（条目多时横向滚动），左、右是竖栏。
+   * 与界面皮肤（mica / mac / win10）和运行模式相互独立 —— 不参与互斥组，
+   * 三套皮肤与极简下都能用。
    */
-  topNav: boolean
+  navPosition: 'top' | 'bottom' | 'left' | 'right'
   /**
    * 实验性（默认关闭）：界面改用 GPU 硬件加速合成。
    *
@@ -1569,7 +1571,11 @@ export interface LauncherApi {
     ) => Promise<{ skinUrl: string; skinModel: 'classic' | 'slim'; capeUrl: string } | undefined>
   }
   versions: {
-    list: () => Promise<VersionManifest>
+    /**
+     * 版本清单。`force` 为真时**跳过缓存**、真正走一次网络 —— 「刷新」按钮用它，
+     * 否则在缓存有效期内（5 分钟）点刷新只会拿到同一个缓存 Promise，看起来毫无反应。
+     */
+    list: (force?: boolean) => Promise<VersionManifest>
     get: (id: string) => Promise<VersionJson>
     createVanilla: (baseVersion: string, customName: string, dirId?: string) => Promise<void>
     /** 扫描外部 .minecraft 目录中的可导入版本（标注重名）。 */

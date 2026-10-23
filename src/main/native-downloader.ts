@@ -103,10 +103,16 @@ function isValidModule(mod: unknown): mod is NativeModule {
 
 let cached: NativeModule | null | undefined
 
-/** 当前平台的产物目录名，与 scripts/build-native-downloader.mjs 保持一致。 */
+/**
+ * 当前平台的产物目录名，与 scripts/build-native-downloader.mjs 的目标 key 一致。
+ *
+ * 注意 armv7：Node 在 32 位 ARM 上 `process.arch` 报的是 `arm`，而发布名（以及
+ * electron-builder 的 ${arch}）是 `armv7l`，这里必须归一，否则永远找不到产物。
+ */
 function platformDir(): string {
-  const os = process.platform === 'win32' ? 'win32' : 'linux'
-  return `${os}-${process.arch}`
+  const os = process.platform === 'win32' ? 'win32' : process.platform === 'darwin' ? 'darwin' : 'linux'
+  const arch = process.arch === 'arm' ? 'armv7l' : process.arch
+  return `${os}-${arch}`
 }
 
 /** 依次尝试「打包态 → 开发态」两处路径，返回第一个存在的 .node。 */

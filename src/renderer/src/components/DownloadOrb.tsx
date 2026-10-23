@@ -6,7 +6,14 @@ import type { PageId } from './Sidebar'
 
 /**
  * 全局右下角常驻的下载浮球：对所有进行中任务（phase !== 'done'）汇总总进度与实时速度。
- * 采用与启动器一致的毛玻璃材质 + 主题色环形进度，仅在有任务时渲染，无任务即从 DOM 卸载。
+ * 仅在有任务时渲染，无任务即从 DOM 卸载。
+ *
+ * 材质 / 圆角 / 投影全部交给 `.glass-strong`：它本来就按皮肤走（Minecraft 是直角 +
+ * 硬投影、WinUI 8px、M3 层级色、液态玻璃是玻璃珠）。之前这里写死了 `rounded-full`
+ * 和一圈 `--fill-primary` 光晕，等于把皮肤的材质覆盖掉，九套皮肤下浮球长得一模一样。
+ *
+ * 进度环用 conic-gradient + 遮罩画在「边框那一圈」上，`border-radius: inherit` 让它
+ * 跟着容器走 —— 圆角皮肤是圆环，直角皮肤就是直角环。SVG 圆环做不到这一点。
  *
  * z-index 取 130：高于页面级遮罩（自定义主页安全闸门 z-120、设置弹窗 z-115 等），
  * 这样「启动游戏」页在自定义主页闸门之下时浮球依然可见；仍低于安全封锁遮罩（z-200）。
@@ -21,18 +28,13 @@ export function DownloadOrb({ onNavigate }: { onNavigate: (p: PageId) => void })
   const percent = totalTotal > 0 ? Math.round((totalCurrent / totalTotal) * 100) : 0
   const speed = active.reduce((s, d) => s + (d.speed || 0), 0)
 
-  const R = 26
-  const C = 2 * Math.PI * R
-  const offset = C * (1 - Math.min(100, Math.max(0, percent)) / 100)
-
   return (
     <AnimatePresence>
       {active.length > 0 && (
         <motion.button
           key="download-orb"
           onClick={() => onNavigate('downloads')}
-          className="glass-strong no-drag fixed right-5 bottom-6 z-[130] flex h-16 w-16 cursor-pointer items-center justify-center rounded-full"
-          style={{ boxShadow: '0 10px 30px -8px var(--fill-primary)' }}
+          className="glass-strong no-drag fixed right-5 bottom-6 z-[130] flex h-16 w-16 cursor-pointer items-center justify-center"
           initial={{ opacity: 0, scale: 0.6, y: 16 }}
           animate={{ opacity: 1, scale: 1, y: 0 }}
           exit={{ opacity: 0, scale: 0.6, y: 16 }}
@@ -42,24 +44,20 @@ export function DownloadOrb({ onNavigate }: { onNavigate: (p: PageId) => void })
           aria-label={t('orb.viewProgress')}
           title={t('orb.viewProgress')}
         >
-          <svg
-            className="pointer-events-none absolute inset-0 h-full w-full -rotate-90"
-            viewBox="0 0 64 64"
+          <span
             aria-hidden
-          >
-            <circle cx="32" cy="32" r={R} fill="none" stroke="var(--divider)" strokeWidth="3" />
-            <circle
-              cx="32"
-              cy="32"
-              r={R}
-              fill="none"
-              stroke="var(--fill-primary)"
-              strokeWidth="3"
-              strokeLinecap="round"
-              strokeDasharray={C}
-              strokeDashoffset={offset}
-            />
-          </svg>
+            className="pointer-events-none absolute inset-0"
+            style={{
+              borderRadius: 'inherit',
+              background: `conic-gradient(from -90deg, var(--fill-primary) ${percent * 3.6}deg, var(--divider) 0)`,
+              /* 只保留 3px 的「边框那一圈」，中间挖空露出玻璃底 */
+              padding: 3,
+              mask: 'linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0)',
+              maskComposite: 'exclude',
+              WebkitMask: 'linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0)',
+              WebkitMaskComposite: 'xor'
+            }}
+          />
           <span className="relative flex flex-col items-center leading-none">
             <span className="text-[14px] font-bold">{percent}%</span>
             <span className="mt-1 text-[9px] opacity-75">{formatSpeed(speed)}</span>

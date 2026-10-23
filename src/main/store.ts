@@ -251,12 +251,23 @@ export const settings = {
       if (legacy) setUapisKey(legacy)
       writeJson('settings.json', raw)
     }
+    // 导航栏位置：旧配置是布尔开关 topNav（true = 顶部，false = 左侧）。
+    // 必须在合并默认值**之前**处理 raw：否则 `s` 已经拷进了旧键，删 raw 也删不掉 s 里那份，
+    // 之后任何一次 settings.set() 都会把 topNav 原样写回磁盘，迁移等于白做。
+    const legacyTopNav = (raw as { topNav?: unknown }).topNav
+    if (legacyTopNav !== undefined) {
+      if (typeof legacyTopNav === 'boolean') raw.navPosition = legacyTopNav ? 'top' : 'left'
+      delete (raw as { topNav?: unknown }).topNav
+      writeJson('settings.json', raw)
+    }
     const s = { ...getDefaultSettings(), ...raw }
     // 派生状态：KEY 是否已保存以主进程的加密存储为准（该字段本身不持久化）。
     s.uapisApiKeySet = hasUapisKey()
     // 旧版本有独立的「原毛玻璃」实验项（'glass'），现已取消并成为默认观感，
     // 读到旧值时归一为 'off'，避免落到一个已不存在的皮肤上。
     if ((s.experimental as string) === 'glass') s.experimental = 'off'
+    // 导航栏位置：非法 / 手改坏的取值回落到默认的左侧竖栏。
+    if (!['top', 'bottom', 'left', 'right'].includes(s.navPosition)) s.navPosition = 'left'
     // 「Material Design 3 风格」曾用内部值 'google'（早期命名），读到旧值时归一为 'material'。
     if ((s.experimental as string) === 'google') s.experimental = 'material'
     // M3 风格类型：非三者之一（旧值 / 手改坏）时回退到默认的 Material You。

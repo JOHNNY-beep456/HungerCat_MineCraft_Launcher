@@ -55,17 +55,20 @@ export function isPageVisible(settings: { mode: string; enableMultiplayer: boole
 
 export function Sidebar({
   active,
-  onNavigate
+  onNavigate,
+  side = 'left'
 }: {
   active: PageId
   onNavigate: (p: PageId) => void
+  /** 竖栏贴哪一边：左侧是默认布局，右侧时把外边距镜像过去。 */
+  side?: 'left' | 'right'
 }): JSX.Element {
   const { accounts, selectedAccount, settings, homepageUpdates, t } = useApp()
   const { downloads } = useRuntime()
   const nav = visibleNav(settings)
 
   return (
-    <aside className="flex h-full flex-col gap-3 p-4 pr-1">
+    <aside className={`flex h-full flex-col gap-3 p-4 ${side === 'left' ? 'pr-1' : 'pl-1'}`}>
       <nav className="glass-strong flex-1 rounded-[26px] p-2.5">
         <div className="flex flex-col gap-1">
           {nav.map((item) => {
@@ -141,22 +144,25 @@ function modeLabel(mode: string, t: (k: string) => string): string {
 }
 
 /**
- * 实验性「导航栏置于顶部」：把左侧竖栏换成顶部一条「圆弧长条」（全圆角胶囊）横向导航。
+ * 横向导航栏（导航栏位置 = 上 / 下）：把竖栏换成一条「圆弧长条」（全圆角胶囊）横向导航。
  * 条目过多时横向滚动；右侧固定放运行模式徽标与账号入口，不随滚动移动。
  */
 export function TopNav({
   active,
-  onNavigate
+  onNavigate,
+  side = 'top'
 }: {
   active: PageId
   onNavigate: (p: PageId) => void
+  /** 贴上边还是下边：决定内外边距朝向，避免下方导航栏贴着窗口底边。 */
+  side?: 'top' | 'bottom'
 }): JSX.Element {
   const { accounts, selectedAccount, settings, homepageUpdates, t } = useApp()
   const { downloads } = useRuntime()
   const nav = visibleNav(settings)
 
   return (
-    <div className="shrink-0 px-4 pb-1 pt-3">
+    <div className={`shrink-0 px-4 ${side === 'top' ? 'pb-1 pt-3' : 'pb-3 pt-1'}`}>
       <nav className="glass-strong flex items-center gap-2 rounded-full p-2">
         <div className="no-scrollbar flex min-w-0 flex-1 items-center gap-1 overflow-x-auto">
           {nav.map((item) => {

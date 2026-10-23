@@ -15,11 +15,17 @@ import type { IpcContext } from './context'
 
 export function registerVersionsHandlers(ctx: IpcContext): void {
   // ---- Versions ----
-  ipcMain.handle('versions:list', () =>
-    // 缓存 key 带上「版本列表源」：来源现在由用户可选，切换来源后必须重新拉取，
-    // 否则会一直返回旧来源的清单（表现为「改了来源没生效」）。
-    ctx.versionsCache.get(`manifest:${settings.get().versionListSource}`, () => fetchVersionManifest())
-  )
+  // 缓存 key 带上「版本列表源」：来源现在由用户可选，切换来源后必须重新拉取，
+  // 否则会一直返回旧来源的清单（表现为「改了来源没生效」）。
+  //
+  // force=true（用户点「刷新」）先作废该 key 再拉：缓存 TTL 是 5 分钟，不作废的话
+  // 刷新按钮只会拿到同一个已完成的 Promise，界面毫无反应 —— 这正是「版本页没有
+  // 异步网络加载」的由来。首次进入页面时渲染层也传 force，保证真的走一次网络。
+  ipcMain.handle('versions:list', (_e, force?: boolean) => {
+    const key = `manifest:${settings.get().versionListSource}`
+    if (force) ctx.versionsCache.invalidate(key)
+    return ctx.versionsCache.get(key, () => fetchVersionManifest())
+  })
   ipcMain.handle('versions:get', (_e, id: string) => {
     const s = settings.get()
     return resolveVersionJson(id, activeGameDir(s))

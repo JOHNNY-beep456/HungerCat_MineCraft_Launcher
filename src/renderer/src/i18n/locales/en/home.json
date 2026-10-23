@@ -1,5 +1,6 @@
 {
   "home.title": "Launch game",
+  "home.versionBadge": "Launcher version",
   "home.subtitle": "Pick a version and jump into the blocky world",
   "home.notLoggedIn": "No account signed in",
   "home.versionDir": "Version directory",

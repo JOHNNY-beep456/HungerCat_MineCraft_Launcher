@@ -51,6 +51,7 @@
   "cmp.onboarding.installVanilla": "去安装 26.2 原版",
   "cmp.onboarding.finish": "完成",
   "cmp.onboarding.next": "下一步",
+  "cmp.onboarding.skip": "跳过引导",
   "cmp.agreement.welcome": "欢迎使用 HungerCat MineCraft Launcher",
   "cmp.agreement.intro": "首次使用前，请阅读并同意以下协议。",
   "cmp.agreement.loading": "正在加载协议…",

@@ -78,7 +78,7 @@ const api: LauncherApi = {
     yggdrasilSkin: (server: string, uuid: string) => ipcRenderer.invoke('yggdrasil:skin', server, uuid)
   },
   versions: {
-    list: () => ipcRenderer.invoke('versions:list'),
+    list: (force?: boolean) => ipcRenderer.invoke('versions:list', force),
     get: (id: string) => ipcRenderer.invoke('versions:get', id),
     createVanilla: (baseVersion: string, customName: string, dirId?: string) =>
       ipcRenderer.invoke('versions:createVanilla', baseVersion, customName, dirId),
