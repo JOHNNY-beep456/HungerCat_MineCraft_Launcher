@@ -211,8 +211,10 @@ for (const t of targets) {
 if (targets.includes('mac') && !IS_MAC_HOST) {
   process.stderr.write(
     '[build] ERROR: macOS 包只能在 macOS 上构建（dmg 依赖 hdiutil，签名/公证依赖 codesign）。\n' +
-      '[build]        这不是 WSL 能代劳的事：Apple 的打包工具链没有 Linux/Windows 版本。\n' +
-      '[build]        请在 Mac 上执行 ./build-all.sh --platform mac --arch all。\n'
+      '[build]        electron-builder 在非 macOS 上会直接拒绝，WSL / 交叉编译也绕不过去。\n' +
+      '[build]        两条路：\n' +
+      '[build]          1) 推送到 GitHub 后手动触发 .github/workflows/build-mac.yml（macOS runner 出 dmg + zip）\n' +
+      '[build]          2) 在任意 Mac 上执行 ./build-all.sh --platform mac --arch all\n'
   )
   process.exit(1)
 }

@@ -1,0 +1,53 @@
+name: build-mac
+
+# macOS 的 dmg 只能在 macOS 上产出：electron-builder 在 Windows / Linux 上会直接拒绝
+# （Build for macOS is supported only on macOS），dmg 本身还依赖系统的 hdiutil。
+# 这里用 GitHub 的 macOS runner 补齐：产出 x64 / arm64 的 dmg + zip（未签名）。
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+jobs:
+  mac:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      # 原生下载内核：两个 macOS 架构各编一份，随包进 resources/native/darwin-*
+      # （electron-builder 的 extraResources 按 ${arch} 各取一份）
+      - name: Build native downloader
+        run: |
+          rustup target add x86_64-apple-darwin aarch64-apple-darwin
+          node scripts/build-native-downloader.mjs --target darwin-arm64
+          node scripts/build-native-downloader.mjs --target darwin-x64
+
+      - name: Package dmg + zip
+        run: |
+          npm run build
+          npx electron-builder --mac --x64 --arm64
+        env:
+          # 没有开发者证书：产出未签名包（首次打开需右键 → 打开）
+          CSC_IDENTITY_AUTO_DISCOVERY: false
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: mac-dmg
+          path: |
+            release/*.dmg
+            release/*.zip
+          if-no-files-found: error
