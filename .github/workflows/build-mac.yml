@@ -38,7 +38,7 @@ jobs:
       - name: Package dmg + zip
         run: |
           npm run build
-          npx electron-builder --mac --x64 --arm64
+          npx electron-builder --mac --x64 --arm64 --publish never
         env:
           # 没有开发者证书：产出未签名包（首次打开需右键 → 打开）
           CSC_IDENTITY_AUTO_DISCOVERY: false
