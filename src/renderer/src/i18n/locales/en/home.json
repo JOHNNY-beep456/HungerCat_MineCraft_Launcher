@@ -8,6 +8,7 @@
   "home.noVersion": "No version selected",
   "home.versionSummary": "{loader} · MC {mc}",
   "home.selectVersion": "Select version",
+  "home.manage": "Manage",
   "home.searchPlaceholder": "Search versions…",
   "home.emptyInstalled": "No downloaded versions yet — install one from the Versions page",
   "home.memoryAlloc": "Memory allocation",

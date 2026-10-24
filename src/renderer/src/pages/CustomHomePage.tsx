@@ -30,9 +30,9 @@ import { buildFrameSrcDoc } from './customhome/sandbox'
 import { HomepageFrame } from './customhome/frame'
 
 /** 「启动游戏」板块的替代界面：有自定义主页时顶替内置启动页。 */
-export function HomeRoute(): JSX.Element {
+export function HomeRoute({ onManage }: { onManage?: (versionId: string) => void }): JSX.Element {
   const { settings } = useApp()
-  if (!settings.homepageId) return <HomePage />
+  if (!settings.homepageId) return <HomePage onManage={onManage} />
   return <CustomHomePage key={settings.homepageId} id={settings.homepageId} />
 }
 

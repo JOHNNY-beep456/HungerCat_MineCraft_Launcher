@@ -34,7 +34,7 @@ export function renderPage(
 ): JSX.Element {
   switch (page) {
     case 'home':
-      return <HomeRoute />
+      return <HomeRoute onManage={onManage} />
     case 'homepage':
       return <HomepagePage />
     case 'resources':

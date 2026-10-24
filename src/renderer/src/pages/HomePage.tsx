@@ -7,7 +7,7 @@ import { useRuntime } from '../runtime'
 import { Avatar, Button, Icon, ProgressBar, Select } from '../components/ui'
 import { PlayerModel3D } from '../components/PlayerModel3D'
 
-export function HomePage(): JSX.Element {
+export function HomePage({ onManage }: { onManage?: (versionId: string) => void }): JSX.Element {
   const { settings, selectedAccount, updateSettings, reloadSettings, t } = useApp()
   const { download, launchState, launchLog, busy, launch, stopLaunch } = useRuntime()
   /** 仅正版 / 第三方账号展示 3D 模型；离线账号不展示。 */
@@ -284,53 +284,64 @@ export function HomePage(): JSX.Element {
                   : t('home.noVersion')}
               </div>
             </div>
-            <div className="relative">
-              <Button icon="cube" onClick={() => setPickerOpen((v) => !v)}>
-                {versionId || t('home.selectVersion')}
-                <Icon name="chevronRight" size={15} className="rotate-90" />
+            <div className="flex items-center gap-2">
+              <div className="relative">
+                <Button icon="cube" onClick={() => setPickerOpen((v) => !v)}>
+                  {versionId || t('home.selectVersion')}
+                  <Icon name="chevronRight" size={15} className="rotate-90" />
+                </Button>
+                <AnimatePresence>
+                  {pickerOpen && (
+                    <motion.div
+                      initial={{ opacity: 0, y: -8, scale: 0.98 }}
+                      animate={{ opacity: 1, y: 0, scale: 1 }}
+                      exit={{ opacity: 0, y: -8, scale: 0.98 }}
+                      transition={{ type: 'spring', bounce: 0.15, duration: 0.32 }}
+                      className="glass-strong absolute right-0 z-50 mt-2 w-72 overflow-hidden rounded-2xl p-2"
+                    >
+                      <div className="relative mb-1">
+                        <Icon name="search" size={15} className="absolute left-3 top-1/2 -translate-y-1/2 opacity-50" />
+                        <input
+                          autoFocus
+                          value={search}
+                          onChange={(e) => setSearch(e.target.value)}
+                          placeholder={t('home.searchPlaceholder')}
+                          className="input w-full input-leading-icon"
+                        />
+                      </div>
+                      <div className="max-h-80 overflow-y-auto">
+                        {filtered.length === 0 ? (
+                          <div className="px-3 py-4 text-center text-[13px] opacity-60">
+                            {t('home.emptyInstalled')}
+                          </div>
+                        ) : (
+                          filtered.map((v) => (
+                            <VersionOption
+                              key={v.id}
+                              v={v}
+                              active={v.id === versionId}
+                              onSelect={() => {
+                                setVersionId(v.id)
+                                setPickerOpen(false)
+                                setSearch('')
+                              }}
+                            />
+                          ))
+                        )}
+                      </div>
+                    </motion.div>
+                  )}
+                </AnimatePresence>
+              </div>
+              {/* 直接进入当前选中版本的管理页（模组 / 资源 / 存档 / 设置） */}
+              <Button
+                size="sm"
+                icon="settings"
+                disabled={!versionId}
+                onClick={() => versionId && onManage?.(versionId)}
+              >
+                {t('home.manage')}
               </Button>
-              <AnimatePresence>
-                {pickerOpen && (
-                  <motion.div
-                    initial={{ opacity: 0, y: -8, scale: 0.98 }}
-                    animate={{ opacity: 1, y: 0, scale: 1 }}
-                    exit={{ opacity: 0, y: -8, scale: 0.98 }}
-                    transition={{ type: 'spring', bounce: 0.15, duration: 0.32 }}
-                    className="glass-strong absolute right-0 z-50 mt-2 w-72 overflow-hidden rounded-2xl p-2"
-                  >
-                    <div className="relative mb-1">
-                      <Icon name="search" size={15} className="absolute left-3 top-1/2 -translate-y-1/2 opacity-50" />
-                      <input
-                        autoFocus
-                        value={search}
-                        onChange={(e) => setSearch(e.target.value)}
-                        placeholder={t('home.searchPlaceholder')}
-                        className="input w-full input-leading-icon"
-                      />
-                    </div>
-                    <div className="max-h-80 overflow-y-auto">
-                      {filtered.length === 0 ? (
-                        <div className="px-3 py-4 text-center text-[13px] opacity-60">
-                          {t('home.emptyInstalled')}
-                        </div>
-                      ) : (
-                        filtered.map((v) => (
-                          <VersionOption
-                            key={v.id}
-                            v={v}
-                            active={v.id === versionId}
-                            onSelect={() => {
-                              setVersionId(v.id)
-                              setPickerOpen(false)
-                              setSearch('')
-                            }}
-                          />
-                        ))
-                      )}
-                    </div>
-                  </motion.div>
-                )}
-              </AnimatePresence>
             </div>
           </div>
 

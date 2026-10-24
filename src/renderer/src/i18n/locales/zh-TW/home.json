@@ -8,6 +8,7 @@
   "home.noVersion": "未選擇版本",
   "home.versionSummary": "{loader} · MC {mc}",
   "home.selectVersion": "選擇版本",
+  "home.manage": "管理",
   "home.searchPlaceholder": "搜尋版本…",
   "home.emptyInstalled": "還沒有已下載的版本，請先到「版本」頁安裝",
   "home.memoryAlloc": "分配記憶體",
