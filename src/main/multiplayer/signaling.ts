@@ -24,9 +24,6 @@ export type P2PMessage =
       port: number
       virtualIp?: string
     }
-  | { type: 'status-update'; playerId: string; micEnabled: boolean }
-  /** 语音状态（说话中）：驱动 HUD / 成员列表的说话指示。 */
-  | { type: 'voice-state'; playerId: string; micEnabled: boolean; speaking: boolean }
   /**
    * 聊天消息（消息收发）。
    *
@@ -83,9 +80,6 @@ export interface SignalingHandlers {
   onPlayerLeft?: (peer: LeftPeer) => void
   /** 已知成员补齐/更新了虚拟 IP。 */
   onPeerUpdated?: (peer: Peer) => void
-  onStatusUpdate?: (playerId: string, micEnabled: boolean) => void
-  /** 语音状态（含说话中）：驱动 HUD / 成员列表。 */
-  onVoiceState?: (playerId: string, micEnabled: boolean, speaking: boolean) => void
   /** 收到一条聊天消息。 */
   onChat?: (msg: {
     playerId: string
@@ -289,21 +283,6 @@ export class P2PSignaling {
     return this.sendRaw(message, peer.address, peer.port)
   }
 
-  /** 广播自己的麦克风状态。 */
-  broadcastStatus(micEnabled: boolean): void {
-    this.sendRaw({ type: 'status-update', playerId: this.playerId, micEnabled })
-  }
-
-  /**
-   * 广播「麦克风 + 说话中」状态。
-   *
-   * 说话状态用于 HUD / 成员列表的绿点指示；单独走 voice-state 而不是复用
-   * status-update，是为了让「开麦但没说话」与「正在说话」可区分。
-   */
-  broadcastVoiceState(micEnabled: boolean, speaking: boolean): void {
-    this.sendToAll({ type: 'voice-state', playerId: this.playerId, micEnabled, speaking })
-  }
-
   /**
    * 广播一条聊天消息（消息收发）。
    *
@@ -475,8 +454,7 @@ export class P2PSignaling {
     }
     if (!message || typeof message.type !== 'string') return
 
-    // 语音已改走 UDP 中继（见 voice-relay.ts），不再使用 WebRTC 信令。
-    // 旧版本对端仍可能发来 offer / answer / ice-candidate：必须在这里直接丢弃，
+    // 旧版本对端仍可能发来 WebRTC 的 offer / answer / ice-candidate：必须在这里直接丢弃，
     // 否则会被下面的 trackPeer 当成成员登记，凭空多出一个幽灵成员。
     // （先赋给 string 再比较：这几个类型已不在联合里，直接比较会被 TS 判为无重叠。）
     const rawType: string = message.type
@@ -522,12 +500,6 @@ export class P2PSignaling {
 
     this.trackPeer(message, rinfo)
 
-    if (message.type === 'status-update') {
-      this.handlers.onStatusUpdate?.(message.playerId, message.micEnabled)
-    }
-    if (message.type === 'voice-state') {
-      this.handlers.onVoiceState?.(message.playerId, message.micEnabled, message.speaking)
-    }
     if (message.type === 'chat') {
       // 去重：同一条消息会经多条通道重复到达。msgId 优先；老版本无 msgId 时
       // 退化为 `playerId-timestamp-content`，同样能挡住副本。
@@ -561,7 +533,7 @@ export class P2PSignaling {
       port = message.port
       virtualIp = message.virtualIp ?? ''
     } else {
-      // 其余报文（心跳 / 状态 / 聊天 / voice-state / player-left）都带 playerId。
+      // 其余报文（心跳 / 聊天 / player-left）都带 playerId。
       playerId = message.playerId
       // 心跳也会捎带虚拟 IP，用于补齐之前只拿到名字的成员。
       if ('virtualIp' in message) virtualIp = message.virtualIp ?? ''

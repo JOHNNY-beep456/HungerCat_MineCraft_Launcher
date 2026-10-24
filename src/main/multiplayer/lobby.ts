@@ -9,8 +9,6 @@ import {
   type EasyTierSession
 } from './easytier'
 import { P2PSignaling, SIGNALING_PORT } from './signaling'
-// 语音音频中继（经 EasyTier UDP 端口转发），退出大厅时需一并停止。
-import { stopVoiceRelay } from './voice-relay'
 import {
   startLanBroadcast,
   stopLanBroadcast,
@@ -38,25 +36,17 @@ export interface LobbyPlayer {
   virtualIp?: string
   virtualDomain?: string
   useDomain?: boolean
-  micEnabled: boolean
-  isMuted: boolean
   joinedAt: string
   isSelf: boolean
-  /** 当前是否正在说话（本机音量检测 / 他人 voice-state 报文）。 */
-  speaking?: boolean
   /**
-   * 语音 / 身份的唯一键（由玩家名规整得到，各端结果一致）。
+   * 成员去重的唯一键（由玩家名规整得到，各端结果一致）。
    *
    * 为什么不能直接用 `id`：同一个成员可能经两条路径进入名单 —— 信令发现
    * （`id` = 对方 playerId）与 EasyTier 路由表（`id` = `et-ip:10.126.126.x`），
-   * 于是同一个人会带两个互不相干的 `id`。语音建连要求「本端记录的对方 id」
-   * 与「对方发来的 from」完全一致，用 `id` 会导致永不匹配、语音打不通；
-   * 成员列表也会因此把一个人显示成两个。
-   *
-   * `voiceId` 取「规整后的玩家名」，是各端都能独立算出、且完全一致的键，
-   * 语音寻址与成员去重统一以它为准。
+   * 于是同一个人会带两个互不相干的 `id`，成员列表会把一个人显示成两个。
+   * `playerKey` 取「规整后的玩家名」，是各端都能独立算出、且完全一致的键。
    */
-  voiceId?: string
+  playerKey?: string
   /**
    * 该成员是否仅由 EasyTier 路由表发现（跨局域网来源，见 syncEasyTierPeers）。
    *
@@ -111,17 +101,13 @@ interface LobbyState {
   lobby: Lobby | null
   players: LobbyPlayer[]
   session: EasyTierSession | null
-  micEnabled: boolean
-  globalMuted: boolean
 }
 
 const state: LobbyState = {
   appState: 'idle',
   lobby: null,
   players: [],
-  session: null,
-  micEnabled: false,
-  globalMuted: false
+  session: null
 }
 
 /** P2P 发现与信令（UDP 广播）。 */
@@ -130,38 +116,15 @@ const signaling = new P2PSignaling()
 /** 状态变化回调：由主进程注册，用于刷新悬浮窗。 */
 let changeListener: (() => void) | null = null
 
-/**
- * 「说话状态」变化的轻量回调。
- *
- * 为什么单独拆出来：说话开/关在一次对话里可能每秒切换多次，而 notify() 会触发
- * 全窗口广播 + 重建悬浮窗快照 + 同步浮层窗口（甚至创建/关闭系统窗口），代价很高。
- * 说话状态只影响 HUD 浮层上的小圆点，因此单独走这条轻量通道，只推 HUD 状态。
- */
-let speakingListener: (() => void) | null = null
-
 /** 注册状态变化监听（悬浮窗据此刷新）。 */
 export function setLobbyChangeListener(fn: (() => void) | null): void {
   changeListener = fn
-}
-
-/** 注册「说话状态」轻量监听（只刷新 HUD 浮层）。 */
-export function setSpeakingListener(fn: (() => void) | null): void {
-  speakingListener = fn
 }
 
 /** 通知状态变化（失败不影响主流程）。 */
 function notify(): void {
   try {
     changeListener?.()
-  } catch {
-    /* 忽略监听器异常 */
-  }
-}
-
-/** 通知「说话状态」变化：只走轻量通道，不触发全窗口广播。 */
-function notifySpeaking(): void {
-  try {
-    speakingListener?.()
   } catch {
     /* 忽略监听器异常 */
   }
@@ -209,7 +172,7 @@ function normName(s: string): string {
  * 之所以用它而不是 playerId：playerId 由各端各自生成、互不相同，且同一成员还会
  * 因「信令发现 / 路由表发现」两条来源而带不同 id；只有由玩家名推导的键才能跨端统一。
  */
-function voiceKey(name: string): string {
+function playerKey(name: string): string {
   return normName(name) || 'anon'
 }
 
@@ -295,12 +258,12 @@ async function syncEasyTierPeers(): Promise<void> {
 
   // 1) 新增缺失成员 / 为已有成员补齐虚拟 IP。
   //
-  // 关键：合并判定必须同时看 **虚拟 IP** 与 **voiceId（规整玩家名）**。
+  // 关键：合并判定必须同时看 **虚拟 IP** 与 **playerKey（规整玩家名）**。
   // 同一成员常常先由信令发现（`id` = playerId、name = 显示名），随后又出现在
   // 路由表里（hostname = 规整名）——若只按 name 精确比对，会把同一个人再加一遍，
   // 表现为「房员看到两个房主」。这里的 `existing` 查找覆盖两种来源。
   for (const inc of incoming) {
-    const incKey = voiceKey(inc.name)
+    const incKey = playerKey(inc.name)
     // 刚离开（在抑制窗口内）的成员不重新加入：路由表尚未收敛时会把已退出的人再列出来。
     if (isRecentlyLeft(`n:${incKey}`, now) || (inc.ip ? isRecentlyLeft(`i:${inc.ip}`, now) : false)) {
       continue
@@ -309,16 +272,16 @@ async function syncEasyTierPeers(): Promise<void> {
       (pl) =>
         (inc.ip !== undefined && pl.virtualIp === inc.ip) ||
         (pl.isSelf && pl.virtualIp === inc.ip) ||
-        voiceKey(pl.name) === incKey
+        playerKey(pl.name) === incKey
     )
     if (existing) {
       if (inc.ip && !existing.virtualIp) {
         existing.virtualIp = inc.ip
         changed = true
       }
-      // 补齐 voiceId（老成员可能是早期创建、还没写入该字段）。
-      if (!existing.voiceId) {
-        existing.voiceId = voiceKey(existing.name)
+      // 补齐 playerKey（老成员可能是早期创建、还没写入该字段）。
+      if (!existing.playerKey) {
+        existing.playerKey = playerKey(existing.name)
         changed = true
       }
       continue
@@ -327,9 +290,7 @@ async function syncEasyTierPeers(): Promise<void> {
       id: `et-${inc.key}`,
       name: inc.name,
       virtualIp: inc.ip,
-      voiceId: incKey,
-      micEnabled: false,
-      isMuted: false,
+      playerKey: incKey,
       joinedAt: new Date().toISOString(),
       isSelf: false,
       viaEasyTier: true
@@ -346,15 +307,15 @@ async function syncEasyTierPeers(): Promise<void> {
   })
   if (state.players.length !== before) changed = true
 
-  // 3) 兜底去重：按 voiceId 合并重复条目。
+  // 3) 兜底去重：按 playerKey 合并重复条目。
   //
   // 万一成员先以「信令发现」和「路由表发现」两条独立路径同时进入，仍可能留下两条
-  // voiceId 相同的记录。这里做一次最终合并：保留信息更全的一条（优先有虚拟 IP 的、
+  // playerKey 相同的记录。这里做一次最终合并：保留信息更全的一条（优先有虚拟 IP 的、
   // 非 viaEasyTier 的），从而彻底消除「两个房主 / 同一个人的两条记录」。
   const merged = new Map<string, LobbyPlayer>()
   for (const pl of state.players) {
     if (pl.isSelf) continue
-    const key = pl.voiceId || voiceKey(pl.name)
+    const key = pl.playerKey || playerKey(pl.name)
     const prev = merged.get(key)
     if (!prev) {
       merged.set(key, pl)
@@ -446,9 +407,7 @@ function selfPlayer(
     virtualIp,
     virtualDomain: playerVirtualDomain(name, lobbyName, useDomain),
     useDomain,
-    voiceId: voiceKey(name),
-    micEnabled: false,
-    isMuted: false,
+    playerKey: playerKey(name),
     joinedAt: new Date().toISOString(),
     isSelf: true
   }
@@ -691,26 +650,6 @@ export function sendChatMessage(content: string): void {
   pushMessage(msg)
 }
 
-/* ------------------------------------------------------------------ */
-/* 语音：说话状态                                                        */
-/* ------------------------------------------------------------------ */
-// 音频传输已改走 EasyTier UDP 端口转发（见 voice-relay.ts），不再有 WebRTC 信令。
-
-/**
- * 上报本机的说话状态（渲染层音量检测得到）并广播。
- *
- * 本机在成员列表里直接更新，无需等回报；他人则通过 voice-state 报文驱动。
- */
-export function setLocalSpeaking(speaking: boolean): void {
-  const self = state.players.find((p) => p.isSelf)
-  if (!self) return
-  if (self.speaking === speaking) return
-  self.speaking = speaking
-  signaling.broadcastVoiceState(state.micEnabled, speaking)
-  // 只刷新 HUD 浮层：说话状态不影响成员列表 / 大厅信息，无需全窗口广播。
-  notifySpeaking()
-}
-
 /**
  * 创建或加入大厅。
  * @param isHost 创建者为房主。
@@ -771,7 +710,7 @@ export async function joinLobby(params: JoinParams, isHost: boolean): Promise<Lo
           //
           // 该成员可能已由 EasyTier 路由表先一步发现（`et-*` 条目）。此时必须**合并**
           // 而不是再 push 一条，否则同一个人会出现两条记录（房员看房主就变成两个房主）。
-          const key = voiceKey(peer.playerName)
+          const key = playerKey(peer.playerName)
           // 该成员（重新）出现：清掉「刚离开」抑制，避免正常重连被误挡。
           recentlyLeft.delete(`n:${key}`)
           if (peer.virtualIp) recentlyLeft.delete(`i:${peer.virtualIp}`)
@@ -779,14 +718,14 @@ export async function joinLobby(params: JoinParams, isHost: boolean): Promise<Lo
             (p) =>
               p.id === peer.playerId ||
               (peer.virtualIp && p.virtualIp === peer.virtualIp) ||
-              voiceKey(p.name) === key
+              playerKey(p.name) === key
           )
           if (existing) {
             // 用信令来源补齐信息（信令的 playerName 是原始显示名，更准确）。
             existing.id = peer.playerId
             existing.name = peer.playerName
             if (peer.virtualIp) existing.virtualIp = peer.virtualIp
-            existing.voiceId = key
+            existing.playerKey = key
             existing.viaEasyTier = false
             if (!existing.virtualDomain) {
               existing.virtualDomain = playerVirtualDomain(peer.playerName, lobby.name, lobby.useDomain)
@@ -799,16 +738,12 @@ export async function joinLobby(params: JoinParams, isHost: boolean): Promise<Lo
               // 虚拟域名按「同一大厅规则」由玩家名现算，保证各端一致。
               virtualDomain: playerVirtualDomain(peer.playerName, lobby.name, lobby.useDomain),
               useDomain: lobby.useDomain,
-              voiceId: key,
-              micEnabled: false,
-              isMuted: false,
+              playerKey: key,
               joinedAt: new Date().toISOString(),
               isSelf: false
             })
           }
           notify()
-          // 回一次自己的状态，让对方也能同步我的麦克风。
-          signaling.broadcastStatus(state.micEnabled)
         },
         onPeerUpdated: (peer) => {
           // 虚拟 IP 后到（例如先收到心跳、后发现报文）：补齐并刷新。
@@ -823,7 +758,7 @@ export async function joinLobby(params: JoinParams, isHost: boolean): Promise<Lo
         },
         onPlayerLeft: (peer) => {
           // 记录「刚离开」，挡住路由表收敛期间把此人重新加回来造成的列表闪烁。
-          const nameKey = peer.playerName ? voiceKey(peer.playerName) : ''
+          const nameKey = peer.playerName ? playerKey(peer.playerName) : ''
           const at = Date.now()
           if (nameKey) recentlyLeft.set(`n:${nameKey}`, at)
           if (peer.virtualIp) recentlyLeft.set(`i:${peer.virtualIp}`, at)
@@ -836,30 +771,9 @@ export async function joinLobby(params: JoinParams, isHost: boolean): Promise<Lo
               p.isSelf ||
               (p.id !== peer.playerId &&
                 !(peer.virtualIp && p.virtualIp === peer.virtualIp) &&
-                !(nameKey && voiceKey(p.name) === nameKey))
+                !(nameKey && playerKey(p.name) === nameKey))
           )
           if (state.players.length !== before) notify()
-        },
-        onStatusUpdate: (playerId, micEnabled) => {
-          const p = state.players.find((x) => x.id === playerId)
-          if (p) {
-            p.micEnabled = micEnabled
-            notify()
-          }
-        },
-        onVoiceState: (playerId, micEnabled, speaking) => {
-          const p = state.players.find((x) => x.id === playerId)
-          if (!p) return
-          const micChanged = p.micEnabled !== micEnabled
-          const speakingChanged = p.speaking !== speaking
-          if (!micChanged && !speakingChanged) return
-          p.micEnabled = micEnabled
-          p.speaking = speaking
-          // 仅「说话」变化时只刷 HUD 浮层；麦克风开关变化才走全量刷新
-          // （成员列表要更新麦克风标记）。这条区分很关键：说话状态在交谈中
-          // 每秒可能切换多次，走全量通道会造成持续卡顿。
-          if (micChanged) notify()
-          else notifySpeaking()
         },
         onChat: (msg) => {
           // 消息收发：他人发来的消息落库并推给各界面。
@@ -915,14 +829,11 @@ export async function leaveLobby(): Promise<void> {
     stopWorldScanning()
     // 停信令：它会广播 player-left，让同大厅成员立即移除自己。
     await signaling.stop()
-    // 停语音中继：关闭 UDP 套接字并清空转发登记（转发随后随组网一起清空）。
-    stopVoiceRelay()
     await stopEasytier()
   } finally {
     state.lobby = null
     state.session = null
     state.players = []
-    state.micEnabled = false
     state.appState = 'idle'
     messages = []
     recentlyLeft.clear()
@@ -962,41 +873,7 @@ export function getHudPlayers(): MpHudPlayer[] {
   return state.players.map((p) => ({
     id: p.id,
     name: p.name,
-    speaking: p.speaking === true,
-    micEnabled: p.micEnabled,
-    isMuted: p.isMuted,
     isSelf: p.isSelf,
     virtualIp: p.virtualIp
   }))
-}
-
-export function setMicEnabled(enabled: boolean): void {
-  state.micEnabled = enabled
-  const self = state.players.find((p) => p.isSelf)
-  if (self) self.micEnabled = enabled
-  if (!enabled && self) self.speaking = false
-  // 广播给同大厅成员，让对方的成员列表同步麦克风（与说话）状态。
-  signaling.broadcastVoiceState(enabled, self?.speaking ?? false)
-  notify()
-}
-
-export function getMicEnabled(): boolean {
-  return state.micEnabled
-}
-
-export function setGlobalMuted(muted: boolean): void {
-  state.globalMuted = muted
-}
-
-export function isGlobalMuted(): boolean {
-  return state.globalMuted
-}
-
-export function setPlayerMuted(playerId: string, muted: boolean): void {
-  const p = state.players.find((x) => x.id === playerId)
-  if (p) p.isMuted = muted
-}
-
-export function isPlayerMuted(playerId: string): boolean {
-  return state.players.find((p) => p.id === playerId)?.isMuted ?? false
 }

@@ -4,7 +4,6 @@ import type { MpMiniState } from '@shared/types'
 import { useApp } from '../store'
 import { Button, Icon } from './ui'
 import { MultiplayerChat } from './MultiplayerChat'
-import { VoiceControls } from './VoiceControls'
 
 /** 悬浮窗宽度（固定）。 */
 const WIN_WIDTH = 300
@@ -35,22 +34,8 @@ export function MiniWindow(): JSX.Element {
   const [copiedIp, setCopiedIp] = useState<string | null>(null)
   /** 退出大厅进行中：置灰按钮，避免连点重复调用。 */
   const [leaving, setLeaving] = useState(false)
-  /** 麦克风开关状态（主进程持有，这里镜像展示）。 */
-  const [micEnabled, setMicEnabled] = useState(false)
   /** 内容区 DOM 引用：用于按实际内容高度自适应窗口高度。 */
   const bodyRef = useRef<HTMLDivElement | null>(null)
-
-  useEffect(() => {
-    let alive = true
-    void window.api.mp.getMicEnabled().then((v) => {
-      if (alive) setMicEnabled(v)
-    })
-    const off = window.api.mp.onMicChanged((v) => setMicEnabled(v))
-    return () => {
-      alive = false
-      off()
-    }
-  }, [])
 
   useEffect(() => {
     let alive = true
@@ -183,14 +168,6 @@ export function MiniWindow(): JSX.Element {
         </div>
         <button
           className="no-drag opacity-70 transition-opacity hover:opacity-100"
-          title={micEnabled ? t('mp.voice.micOn') : t('mp.voice.micOff')}
-          style={{ color: micEnabled ? 'var(--fill-success, #5fd39a)' : undefined }}
-          onClick={() => void window.api.mp.setMicEnabled(!micEnabled)}
-        >
-          <Icon name="mic" size={15} />
-        </button>
-        <button
-          className="no-drag opacity-70 transition-opacity hover:opacity-100"
           title={collapsed ? t('mp.mini.expand') : t('mp.mini.collapse')}
           onClick={() => setCollapsed((v) => !v)}
         >
@@ -318,19 +295,6 @@ export function MiniWindow(): JSX.Element {
                 {/* 聊天：悬浮窗内也能收发（消息流与主界面共用同一份） */}
                 <div className="shrink-0 px-3 pb-2 [&_.headline]:text-[12px] [&_.max-h-64]:max-h-32">
                   <MultiplayerChat />
-                </div>
-
-                {/* 语音与浮层：麦克风 / 全局静音 / 变声器 / HUD 浮层 / 消息弹幕。
-                    与主界面同一套共享状态，游戏时无需切回主窗口即可调节。
-                    位置按设计置于「退出大厅」上方。 */}
-                <div className="shrink-0 px-3 pb-2">
-                  <div className="glass-soft rounded-xl p-2.5">
-                    <div className="mb-2 flex items-center gap-1.5">
-                      <Icon name="mic" size={13} style={{ color: 'var(--fill-primary)' }} />
-                      <span className="text-[12px] font-semibold">{t('mp.voice.title')}</span>
-                    </div>
-                    <VoiceControls compact />
-                  </div>
                 </div>
 
                 {/* 退出大厅 */}

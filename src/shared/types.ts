@@ -676,12 +676,6 @@ export interface LauncherSettings {
   multiplayerDndStart: number
   /** 联机 · 免打扰结束（自 0 点起的分钟数）。 */
   multiplayerDndEnd: number
-  /** 联机 · 全局快捷键：麦克风开关。 */
-  multiplayerMicHotkey: string
-  /** 联机 · 全局快捷键：全局听筒开关。 */
-  multiplayerGlobalMuteHotkey: string
-  /** 联机 · 全局快捷键：临时开麦（按住说话）。 */
-  multiplayerPushToTalkHotkey: string
   /** 联机 · 全局快捷键：唤出主窗口。 */
   multiplayerSummonHotkey: string
   /** 联机 · 消息弹幕开关。 */
@@ -698,12 +692,6 @@ export interface LauncherSettings {
   multiplayerHudEnabled: boolean
   /** 联机 · HUD 浮层透明度（0–1）。 */
   multiplayerHudOpacity: number
-  /** 联机 · 默认变声器音色。 */
-  multiplayerVoiceChanger: string
-  /** 联机 · 偏好的麦克风设备 id（空 = 跟随系统默认设备）。 */
-  multiplayerMicDeviceId: string
-  /** 联机 · 偏好的扬声器（输出）设备 id（空 = 跟随系统默认设备）。 */
-  multiplayerSpeakerDeviceId: string
   /** 联机 · 界面主题偏好（跟随系统 / 亮色 / 暗色）。 */
   multiplayerTheme: 'system' | 'light' | 'dark'
   /** 联机 · 联机时长与统计的本地数据。 */
@@ -2017,20 +2005,8 @@ export interface MpPlayer {
   virtualIp?: string
   virtualDomain?: string
   useDomain?: boolean
-  /**
-   * 语音 / 身份唯一键（规整玩家名，各端一致）。
-   *
-   * 渲染层的语音引擎用它来寻址：`syncPeers` 传成员 voiceId，信令 `from`/`to`
-   * 也用它。不能用 `id` —— 同一成员可能带两个不同的 id（信令 / 路由表来源），
-   * 会导致语音连接永远对不上、以及成员列表重复。
-   */
-  voiceId?: string
-  micEnabled: boolean
-  isMuted: boolean
   joinedAt: string
   isSelf: boolean
-  /** 该成员当前是否正在说话（本机通过音量检测、他人通过语音状态报文）。 */
-  speaking?: boolean
 }
 
 /** 一条大厅聊天消息（消息收发统一走这个结构）。 */
@@ -2050,9 +2026,6 @@ export interface MpChatMessage {
 export interface MpHudPlayer {
   id: string
   name: string
-  speaking: boolean
-  micEnabled: boolean
-  isMuted: boolean
   isSelf: boolean
   virtualIp?: string
 }
@@ -2113,14 +2086,6 @@ export interface MpApi {
   getAppState: () => Promise<MpAppState>
   getLobby: () => Promise<MpLobby | null>
   getPlayers: () => Promise<MpPlayer[]>
-  setMicEnabled: (enabled: boolean) => Promise<void>
-  getMicEnabled: () => Promise<boolean>
-  setGlobalMuted: (muted: boolean) => Promise<void>
-  getGlobalMuted: () => Promise<boolean>
-  /** 全局静音状态变化（语音引擎据此静音所有远端播放）。 */
-  onGlobalMutedChanged: (cb: (muted: boolean) => void) => () => void
-  mutePlayer: (playerId: string, muted: boolean) => Promise<void>
-  isPlayerMuted: (playerId: string) => Promise<boolean>
   parseVirtualIp: (text: string) => Promise<string | null>
   openExternal: (url: string) => Promise<void>
   /** 局域网桥：扫描并（自动）把大厅内的 MC 世界注入本机局域网列表。 */
@@ -2138,25 +2103,6 @@ export interface MpApi {
   getMessages: () => Promise<MpChatMessage[]>
   /** 收到新消息（含自己发出的回显）。 */
   onChat: (cb: (msg: MpChatMessage) => void) => () => void
-  // ---- 语音 ----
-  /** 本机是否正在说话（由渲染层音量检测上报，驱动 HUD / 成员列表的说话指示）。 */
-  setSpeaking: (speaking: boolean) => Promise<void>
-  /** 上报语音引擎错误（麦克风被拒 / 设备占用等），用于在界面上给出可操作的提示。 */
-  reportVoiceError: (message: string) => Promise<void>
-  /** 订阅语音引擎错误提示。 */
-  onVoiceError: (cb: (message: string) => void) => () => void
-  // ---- 语音音频中继（经 EasyTier UDP 端口转发）----
-  /**
-   * 同步成员列表：主进程为每个成员建立 / 回收一条「本机端口 → 其虚拟IP:语音端口」的 UDP 转发。
-   * 语音音频因此不再依赖 WebRTC 的直连能力，跨网络也能互通。
-   */
-  voiceRelaySync: (peers: Array<{ id: string; virtualIp: string }>) => Promise<void>
-  /** 停止语音中继（退出大厅时调用）。 */
-  voiceRelayStop: () => Promise<void>
-  /** 发送一帧已编码音频给指定成员（peerId 为语音标识 voiceId）。 */
-  sendVoiceAudio: (peerId: string, data: Uint8Array) => Promise<void>
-  /** 订阅「收到某成员的音频帧」。 */
-  onVoiceAudio: (cb: (payload: { from: string; data: Uint8Array }) => void) => () => void
   // ---- 浮层窗口 ----
   /** 打开 / 关闭 HUD 浮层（游戏内成员状态，透明穿透）。 */
   openHudWindow: () => Promise<void>
@@ -2186,7 +2132,6 @@ export interface MpApi {
   onLobbyChanged: (cb: () => void) => () => void
   /** 当前窗口是否为主界面（悬浮窗据此决定退出大厅后是否自行关闭）。 */
   hasMainWindow: () => Promise<boolean>
-  onMicChanged: (cb: (enabled: boolean) => void) => () => void
 }
 
 /** 悬浮窗所需的大厅快照。 */

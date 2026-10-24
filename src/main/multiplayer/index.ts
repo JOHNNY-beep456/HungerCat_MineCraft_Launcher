@@ -7,23 +7,14 @@ import {
   forceStop,
   getAppState,
   getLobby,
-  getMicEnabled,
   getPlayers,
-  isGlobalMuted,
-  isPlayerMuted,
   joinLobby,
   leaveLobby,
-  setGlobalMuted,
-  setMicEnabled,
-  setPlayerMuted,
   setLobbyChangeListener,
-  setSpeakingListener,
   // 消息收发
   sendChatMessage,
   getChatMessages,
   setChatListener,
-  // 语音：说话状态（音频本身走下面的 UDP 中继）
-  setLocalSpeaking,
   // 局域网桥（让 Minecraft 真正连得上）
   refreshLanWorlds,
   getLanWorlds,
@@ -34,13 +25,6 @@ import {
   getLanBroadcastCount,
   type JoinParams
 } from './lobby'
-// 语音音频中继（经 EasyTier UDP 端口转发，替代依赖直连的 WebRTC）。
-import {
-  setVoiceRelayListener,
-  syncVoiceRelay,
-  sendVoiceAudio,
-  stopVoiceRelay
-} from './voice-relay'
 
 /**
  * 联机板块的主进程入口。
@@ -52,16 +36,8 @@ import {
  * 避免本模块直接依赖 `main/index.ts` 造成循环引用。
  */
 export interface MpHostHooks {
-  /** 大厅状态变化（成员增减 / 麦克风开关）时刷新悬浮窗与 HUD。 */
+  /** 大厅状态变化（成员增减）时刷新悬浮窗与 HUD。 */
   onLobbyChanged?: () => void
-  /**
-   * 仅「说话状态」变化时的轻量通知（只刷新 HUD 浮层）。
-   *
-   * 与 onLobbyChanged 分开的原因：说话开/关在交谈中每秒可切换多次，若走全量
-   * 刷新（全窗口广播 + 重建悬浮窗快照 + 同步浮层窗口）会造成明显卡顿。
-   * 未提供时退化为调用 onLobbyChanged（保持兼容）。
-   */
-  onSpeakingChanged?: () => void
   /** 打开 / 关闭 HUD 浮层。 */
   openHudWindow?: () => void
   closeHudWindow?: () => void
@@ -72,22 +48,14 @@ export interface MpHostHooks {
   syncOverlays?: () => void
   /** 把一条新消息广播给所有渲染层（主界面 / 悬浮窗）。 */
   broadcastChat?: (msg: MpChatMessage) => void
-  /** 把一帧收到的语音音频（来自某成员的 UDP 中继）推给渲染层播放。 */
-  broadcastVoiceAudio?: (peerId: string, data: Buffer) => void
 }
 
 export function registerMultiplayerIpc(hooks: MpHostHooks = {}): void {
-  // 大厅状态变化（含 P2P 发现的成员加入/离开、麦克风开关）时通知主进程刷新悬浮窗与 HUD。
+  // 大厅状态变化（含 P2P 发现的成员加入/离开）时通知主进程刷新悬浮窗与 HUD。
   setLobbyChangeListener(hooks.onLobbyChanged ?? null)
-  // 说话状态单独走轻量通道，只刷新 HUD 浮层；未注入时退化为全量刷新。
-  setSpeakingListener(hooks.onSpeakingChanged ?? hooks.onLobbyChanged ?? null)
 
   // 消息收发：新消息 → 广播给渲染层（悬浮窗/主界面据此提示音 + 弹幕）。
   setChatListener((msg) => hooks.broadcastChat?.(msg))
-  // 语音音频中继：把收到的 UDP 音频帧推给渲染层解码播放。
-  setVoiceRelayListener((peerId: string, data: Buffer) =>
-    hooks.broadcastVoiceAudio?.(peerId, data)
-  )
 
   // ---- 资源自检 ----
   ipcMain.handle('mp:binariesStatus', () => checkBinaries())
@@ -112,43 +80,7 @@ export function registerMultiplayerIpc(hooks: MpHostHooks = {}): void {
   })
   ipcMain.handle('mp:getMessages', () => getChatMessages())
 
-  // ---- 语音 ----
-  ipcMain.handle('mp:setSpeaking', (_e, speaking: boolean) => {
-    setLocalSpeaking(speaking)
-  })
-  // 语音引擎把失败原因上报到这里，再广播给界面显示。
-  // 否则「麦克风被拒 / 设备被占用」这类错误只进控制台，用户只看到「语音没反应」。
-  ipcMain.handle('mp:reportVoiceError', (_e, message: string) => {
-    broadcast('mp:voiceError', String(message ?? '').slice(0, 300))
-  })
-  // ---- 语音音频中继（经 EasyTier UDP 端口转发）----
-  // 同步成员 → 建立/回收每个成员的 UDP 转发；渲染层每次成员变化都会调。
-  ipcMain.handle(
-    'mp:voiceRelaySync',
-    (_e, peers: Array<{ id: string; virtualIp: string }>) => syncVoiceRelay(peers ?? [])
-  )
-  ipcMain.handle('mp:voiceRelayStop', () => stopVoiceRelay())
-  // 渲染层编码好的一帧音频 → 主进程 UDP 发出（不广播，仅发给目标成员）。
-  ipcMain.handle('mp:voiceAudio', (_e, peerId: string, data: Uint8Array) => {
-    sendVoiceAudio(peerId, Buffer.from(data))
-  })
-
-  // ---- 麦克风 / 静音 ----
-  ipcMain.handle('mp:setMicEnabled', (_e, enabled: boolean) => {
-    setMicEnabled(enabled)
-    broadcast('mp:micChanged', enabled)
-  })
-  ipcMain.handle('mp:getMicEnabled', () => getMicEnabled())
-  ipcMain.handle('mp:setGlobalMuted', (_e, muted: boolean) => {
-    setGlobalMuted(muted)
-    // 广播给渲染层：语音引擎据此静音 / 恢复所有远端播放。
-    broadcast('mp:globalMutedChanged', muted)
-  })
-  ipcMain.handle('mp:getGlobalMuted', () => isGlobalMuted())
-  ipcMain.handle('mp:mutePlayer', (_e, playerId: string, muted: boolean) => {
-    setPlayerMuted(playerId, muted)
-  })
-  ipcMain.handle('mp:isPlayerMuted', (_e, playerId: string) => isPlayerMuted(playerId))
+  // ---- 语音已移除：麦克风 / 说话状态 / 音频中继相关的 IPC 一并删除 ----
 
   // ---- 工具：解析虚拟 IP（供诊断 / 手动排查）----
   ipcMain.handle('mp:parseVirtualIp', (_e, text: string) => parseVirtualIp(text))

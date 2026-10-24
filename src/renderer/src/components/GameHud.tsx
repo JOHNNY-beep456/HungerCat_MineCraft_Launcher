@@ -52,29 +52,12 @@ export function GameHud(): JSX.Element | null {
         <div className="space-y-1">
           {state.players.map((p) => (
             <div key={p.id} className="flex items-center gap-2">
-              {/* 说话指示：说话时绿点发光并轻微放大 */}
-              <span
-                style={{
-                  width: 8,
-                  height: 8,
-                  borderRadius: 999,
-                  background: p.speaking ? '#5fd39a' : 'rgba(255,255,255,0.22)',
-                  boxShadow: p.speaking ? '0 0 8px rgba(95,211,154,0.9)' : 'none',
-                  transform: p.speaking ? 'scale(1.25)' : 'scale(1)',
-                  transition: 'all 120ms ease-out',
-                  flexShrink: 0
-                }}
-              />
               <span
                 className="truncate text-[12px]"
-                style={{ color: p.speaking ? '#eafff6' : 'rgba(255,255,255,0.86)', flex: 1 }}
+                style={{ color: 'rgba(255,255,255,0.86)', flex: 1 }}
               >
                 {p.name}
                 {p.isSelf ? '（我）' : ''}
-              </span>
-              {/* 麦克风 / 静音状态 */}
-              <span className="text-[10px]" style={{ color: p.isMuted ? '#ff7b7b' : 'rgba(255,255,255,0.5)' }}>
-                {p.isMuted ? '已静音' : p.micEnabled ? '🎙' : '—'}
               </span>
             </div>
           ))}

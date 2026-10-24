@@ -1115,9 +1115,6 @@ app.whenReady().then(() => {
   // 这里只挂 IPC，不产生额外启动开销。
   registerMultiplayerIpc({
     onLobbyChanged: broadcastLobbyChanged,
-    // 说话状态：只刷新 HUD 浮层。交谈中该状态每秒可切换多次，
-    // 若走 broadcastLobbyChanged（全窗口广播 + 同步浮层窗口）会造成持续卡顿。
-    onSpeakingChanged: pushHudState,
     openHudWindow: createHudWindow,
     closeHudWindow,
     openDanmakuWindow: createDanmakuWindow,
@@ -1130,10 +1127,7 @@ app.whenReady().then(() => {
     broadcastChat: (msg) => {
       broadcastToRenderers('mp:chat', msg)
       pushDanmaku(msg)
-    },
-    // 语音音频：收到某成员的 UDP 音频帧后推给渲染层解码播放。
-    broadcastVoiceAudio: (peerId, data) =>
-      broadcastToRenderers('mp:voiceAudio', { from: peerId, data: new Uint8Array(data) })
+    }
   })
   // 联机悬浮窗：创建 / 关闭 / 读取快照。
   registerMultiplayerWindowHandlers(ipcContext)

@@ -24,32 +24,14 @@ const NODE_ADDRESS_RE = /^(tcp|udp|ws|wss|txt):\/\/.+$/
 export const DEFAULT_EASYTier = 'udp://us01.225284.xyz:11010'
 export const DEFAULT_SIGNALING = 'wss://mctier.pmhs.top/signaling'
 
-type HotkeyKey =
-  | 'multiplayerMicHotkey'
-  | 'multiplayerGlobalMuteHotkey'
-  | 'multiplayerPushToTalkHotkey'
-  | 'multiplayerSummonHotkey'
+type HotkeyKey = 'multiplayerSummonHotkey'
 
 const DEFAULT_HOTKEYS: Record<HotkeyKey, string> = {
-  multiplayerMicHotkey: 'Ctrl+M',
-  multiplayerGlobalMuteHotkey: 'Ctrl+T',
-  multiplayerPushToTalkHotkey: 'F2',
   multiplayerSummonHotkey: 'Ctrl+Alt+M'
 }
 
 const HOTKEY_ITEMS: Array<{ key: HotkeyKey; label: string; desc: string }> = [
-  { key: 'multiplayerMicHotkey', label: 'mp.set.hotkeyMic', desc: 'mp.set.hotkeyMicDesc' },
-  { key: 'multiplayerGlobalMuteHotkey', label: 'mp.set.hotkeyMute', desc: 'mp.set.hotkeyMuteDesc' },
-  { key: 'multiplayerPushToTalkHotkey', label: 'mp.set.hotkeyPTT', desc: 'mp.set.hotkeyPTTDesc' },
   { key: 'multiplayerSummonHotkey', label: 'mp.set.hotkeySummon', desc: 'mp.set.hotkeySummonDesc' }
-]
-
-const VOICE_OPTIONS = [
-  { value: 'off', label: 'mp.set.voiceOff' },
-  { value: 'loli', label: 'mp.set.voiceLoli' },
-  { value: 'uncle', label: 'mp.set.voiceUncle' },
-  { value: 'cute', label: 'mp.set.voiceCute' },
-  { value: 'deep', label: 'mp.set.voiceDeep' }
 ]
 
 const minutesToHHMM = (m: number): string =>
@@ -113,12 +95,9 @@ export function MultiplayerSettings({ onBack }: { onBack: () => void }): JSX.Ele
 
   const hotkeys = useMemo<Record<HotkeyKey, string>>(
     () => ({
-      multiplayerMicHotkey: s.multiplayerMicHotkey || '',
-      multiplayerGlobalMuteHotkey: s.multiplayerGlobalMuteHotkey || '',
-      multiplayerPushToTalkHotkey: s.multiplayerPushToTalkHotkey || '',
       multiplayerSummonHotkey: s.multiplayerSummonHotkey || ''
     }),
-    [s.multiplayerMicHotkey, s.multiplayerGlobalMuteHotkey, s.multiplayerPushToTalkHotkey, s.multiplayerSummonHotkey]
+    [s.multiplayerSummonHotkey]
   )
 
   useEffect(() => {
@@ -139,14 +118,6 @@ export function MultiplayerSettings({ onBack }: { onBack: () => void }): JSX.Ele
         return
       }
       const normalized = [...mods, key.length === 1 ? key.toUpperCase() : key].join('+')
-      const conflict = HOTKEY_ITEMS.find(
-        (it) => it.key !== recording && (hotkeys[it.key] || '').toLowerCase() === normalized.toLowerCase()
-      )
-      if (conflict) {
-        setHotkeyError(t('mp.set.hotkeyErrDup', { key: normalized, name: t(conflict.label) }))
-        setRecording(null)
-        return
-      }
       setHotkeyError(null)
       set(recording, normalized)
       setRecording(null)
@@ -699,25 +670,6 @@ export function MultiplayerSettings({ onBack }: { onBack: () => void }): JSX.Ele
               </motion.div>
             )}
           </AnimatePresence>
-        </Card>
-
-        {/* ============ 变声器 ============ */}
-        <Card icon="mic" color="var(--fill-primary)" title={t('mp.set.card.voice')} desc={t('mp.set.card.voiceDesc')}>
-          <div className="flex flex-wrap gap-2">
-            {VOICE_OPTIONS.map((opt) => (
-              <button
-                key={opt.value}
-                className="glass-soft no-drag rounded-xl px-3 py-2 text-[13px] transition-transform active:scale-[0.97]"
-                style={{
-                  borderColor: s.multiplayerVoiceChanger === opt.value ? 'var(--fill-primary)' : undefined,
-                  color: s.multiplayerVoiceChanger === opt.value ? 'var(--fill-primary)' : undefined
-                }}
-                onClick={() => set('multiplayerVoiceChanger', opt.value)}
-              >
-                {t(opt.label)}
-              </button>
-            ))}
-          </div>
         </Card>
 
         {/* ============ 联机工具 ============ */}

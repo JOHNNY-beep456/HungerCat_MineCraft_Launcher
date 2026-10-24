@@ -325,17 +325,6 @@ const api: LauncherApi = {
     getAppState: () => ipcRenderer.invoke('mp:getAppState'),
     getLobby: () => ipcRenderer.invoke('mp:getLobby'),
     getPlayers: () => ipcRenderer.invoke('mp:getPlayers'),
-    setMicEnabled: (enabled: boolean) => ipcRenderer.invoke('mp:setMicEnabled', enabled),
-    getMicEnabled: () => ipcRenderer.invoke('mp:getMicEnabled'),
-    setGlobalMuted: (muted: boolean) => ipcRenderer.invoke('mp:setGlobalMuted', muted),
-    getGlobalMuted: () => ipcRenderer.invoke('mp:getGlobalMuted'),
-    onGlobalMutedChanged: (cb) => {
-      const listener = (_e: unknown, muted: boolean): void => cb(muted)
-      ipcRenderer.on('mp:globalMutedChanged', listener)
-      return () => ipcRenderer.removeListener('mp:globalMutedChanged', listener)
-    },
-    mutePlayer: (playerId: string, muted: boolean) => ipcRenderer.invoke('mp:mutePlayer', playerId, muted),
-    isPlayerMuted: (playerId: string) => ipcRenderer.invoke('mp:isPlayerMuted', playerId),
     parseVirtualIp: (text: string) => ipcRenderer.invoke('mp:parseVirtualIp', text),
     openExternal: (url: string) => ipcRenderer.invoke('mp:openExternal', url),
     // 局域网桥：扫描 / 注入 MC 世界，解决「看得到人却连不上」。
@@ -363,11 +352,6 @@ const api: LauncherApi = {
       return () => ipcRenderer.removeListener('mp:lobbyChanged', listener)
     },
     hasMainWindow: () => ipcRenderer.invoke('mp:hasMainWindow'),
-    onMicChanged: (cb: (enabled: boolean) => void) => {
-      const listener = (_e: unknown, enabled: boolean): void => cb(enabled)
-      ipcRenderer.on('mp:micChanged', listener)
-      return () => ipcRenderer.removeListener('mp:micChanged', listener)
-    },
     // ---- 消息收发 ----
     sendChat: (content: string) => ipcRenderer.invoke('mp:sendChat', content),
     getMessages: () => ipcRenderer.invoke('mp:getMessages'),
@@ -375,31 +359,6 @@ const api: LauncherApi = {
       const listener = (_e: unknown, msg: unknown): void => cb(msg as MpChatMessage)
       ipcRenderer.on('mp:chat', listener)
       return () => ipcRenderer.removeListener('mp:chat', listener)
-    },
-    // ---- 语音 ----
-    setSpeaking: (speaking: boolean) => ipcRenderer.invoke('mp:setSpeaking', speaking),
-    /** 上报语音引擎错误（麦克风被拒 / 设备占用等），主进程再广播给界面显示。 */
-    reportVoiceError: (message: string) => ipcRenderer.invoke('mp:reportVoiceError', message),
-    onVoiceError: (cb) => {
-      const listener = (_e: unknown, message: unknown): void => cb(String(message ?? ''))
-      ipcRenderer.on('mp:voiceError', listener)
-      return () => ipcRenderer.removeListener('mp:voiceError', listener)
-    },
-    // ---- 语音音频中继（经 EasyTier UDP 端口转发）----
-    /** 同步成员：主进程为每个成员建立/回收一条到其虚拟 IP 的 UDP 转发。 */
-    voiceRelaySync: (peers: Array<{ id: string; virtualIp: string }>) =>
-      ipcRenderer.invoke('mp:voiceRelaySync', peers),
-    /** 停止中继（退出大厅）。 */
-    voiceRelayStop: () => ipcRenderer.invoke('mp:voiceRelayStop'),
-    /** 发送一帧已编码音频给指定成员。 */
-    sendVoiceAudio: (peerId: string, data: Uint8Array) =>
-      ipcRenderer.invoke('mp:voiceAudio', peerId, data),
-    /** 订阅「收到某成员的音频帧」。 */
-    onVoiceAudio: (cb: (payload: { from: string; data: Uint8Array }) => void) => {
-      const listener = (_e: unknown, payload: unknown): void =>
-        cb(payload as { from: string; data: Uint8Array })
-      ipcRenderer.on('mp:voiceAudio', listener)
-      return () => ipcRenderer.removeListener('mp:voiceAudio', listener)
     },
     // ---- 浮层窗口（HUD / 弹幕）----
     openHudWindow: () => ipcRenderer.invoke('mp:openHudWindow'),

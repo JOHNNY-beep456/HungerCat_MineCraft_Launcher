@@ -11,7 +11,6 @@ import {
   DEFAULT_SIGNALING
 } from '../components/MultiplayerSettings'
 import { MultiplayerChat } from '../components/MultiplayerChat'
-import { MultiplayerVoiceControls } from '../components/MultiplayerVoiceControls'
 
 type View = 'home' | 'settings' | 'form' | 'help'
 type FormMode = 'create' | 'join'
@@ -490,9 +489,7 @@ export function MultiplayerPage({ onExit }: { onExit?: () => void } = {}): JSX.E
                 </div>
               )}
 
-              {/* 已在大厅：语音 / 浮层控制 + 世界列表 + 聊天 + 成员列表 */}
-              {lobby && <MultiplayerVoiceControls />}
-
+              {/* 已在大厅：世界列表 + 聊天 + 成员列表 */}
               {lobby && (
                 <WorldList onCopy={(t) => void copyText(t)} copied={copied} />
               )}
