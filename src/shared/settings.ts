@@ -312,6 +312,10 @@ export const SETTINGS_DEFS: SettingsDefs = {
   hardwareChecked: { default: false },
   /** 派生字段：真实 KEY 由主进程安全存储持有，这里只反映「有没有」。 */
   uapisApiKeySet: { default: false },
+  /* 派生字段（不持久化，只随 settings:get 下发给渲染层）：
+     portable 决定「默认目录」是否置灰，gameDirAbs 是便携版相对路径解析后的绝对路径。 */
+  portable: { default: false },
+  gameDirAbs: { default: '' },
 
   /* ============ 开发者模式（内部状态，UI 由服务端授权流程自绘） ============ */
   devModeGrantedUntil: { default: 0 },

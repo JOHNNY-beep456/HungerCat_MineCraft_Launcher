@@ -424,8 +424,15 @@ export interface LauncherSettings {
    *   - `filename-first`   标题显示文件名，详情显示译名
    */
   modTitleStyle: 'translated-first' | 'filename-first'
-  /** 默认版本列表目录（原「游戏目录」）。 */
+  /** 默认版本列表目录（原「游戏目录」）。便携版固定为相对路径 `./.minecraft`。 */
   gameDir: string
+  /**
+   * 派生字段：默认目录的绝对路径（便携版把 `./.minecraft` 按启动器所在目录解析）。
+   * 只读、不持久化，渲染层做文件操作时用它。
+   */
+  gameDirAbs?: string
+  /** 派生字段：当前是否为便携版（只读、不持久化）。 */
+  portable?: boolean
   /** 额外的版本目录（不含默认目录）；可设别名，实例页与主页可切换。 */
   versionDirs: VersionDir[]
   /** 当前选中的版本目录 id；空串表示默认目录（gameDir）。 */

@@ -7,7 +7,7 @@ import type { LauncherSettings, MinecraftAccount, SystemHardwareInfo, VersionDir
 import { defaultSettings } from '@shared/settings'
 import { hasUapisKey, setUapisKey } from './secret'
 import { setSourceStrategies } from './mirror'
-import { isPortable, portableGameDir } from './portable'
+import { isPortable, PORTABLE_GAME_DIR, resolvePortablePath } from './portable'
 
 /** Offline-mode UUID, derived deterministically from the player name (MD5). */
 function offlineUuid(name: string): string {
@@ -211,11 +211,11 @@ export function detectHardware(): SystemHardwareInfo {
 export function getDefaultSettings(): LauncherSettings {
   // 默认值来自共享注册表（@shared/settings），与渲染层兜底对象同源。
   // 这里只覆盖「依赖运行时」的一项：默认版本目录。
-  //   便携版 → <exe 目录>/.minecraft（存档、版本、mods 跟着走）
+  //   便携版 → 相对启动器目录的 ./.minecraft（设置里也只存这串相对路径）
   //   安装版 → 系统「文档」目录下的固定子目录
   return {
     ...defaultSettings(),
-    gameDir: isPortable ? portableGameDir() : join(app.getPath('documents'), 'HungerCatMC')
+    gameDir: isPortable ? PORTABLE_GAME_DIR : join(app.getPath('documents'), 'HungerCatMC')
   }
 }
 
@@ -261,8 +261,14 @@ export const settings = {
       writeJson('settings.json', raw)
     }
     const s = { ...getDefaultSettings(), ...raw }
+    // 便携版的默认版本目录始终是相对路径：早期版本首次启动就把它写成了
+    // <当时的 exe 目录>/.minecraft，换目录/换机器就失效，这里统一纠正。
+    if (isPortable) s.gameDir = PORTABLE_GAME_DIR
     // 派生状态：KEY 是否已保存以主进程的加密存储为准（该字段本身不持久化）。
     s.uapisApiKeySet = hasUapisKey()
+    // 派生字段（不持久化）：渲染层据此把「默认目录」置灰，并拿到可直接使用的绝对路径。
+    s.portable = isPortable
+    s.gameDirAbs = resolvePortablePath(s.gameDir)
     // 旧版本有独立的「原毛玻璃」实验项（'glass'），现已取消并成为默认观感，
     // 读到旧值时归一为 'off'，避免落到一个已不存在的皮肤上。
     if ((s.experimental as string) === 'glass') s.experimental = 'off'
@@ -307,8 +313,11 @@ export const settings = {
   },
   set(partial: Partial<LauncherSettings>): LauncherSettings {
     const next = { ...this.get(), ...partial }
-    // 派生字段不落盘：免得 settings.json 里的值与真实存储不一致。
+    // 派生字段不落盘：免得 settings.json 里的值与真实存储 / 运行环境不一致。
     delete (next as Partial<LauncherSettings>).uapisApiKeySet
+    delete (next as Partial<LauncherSettings>).portable
+    delete (next as Partial<LauncherSettings>).gameDirAbs
+    if (isPortable) next.gameDir = PORTABLE_GAME_DIR
     // 内存缓存先行：渲染层立刻拿到新值（乐观更新），落盘在后台异步完成，
     // 不再让「切换版本 / 切换版本目录」此类高频写入同步阻塞主进程事件循环。
     cachedSettings = { ...next, uapisApiKeySet: hasUapisKey() }
@@ -325,7 +334,8 @@ export const settings = {
 /** 汇总全部版本目录：默认目录（gameDir）恒在首位，别名固定为「默认」。 */
 export function allVersionDirs(s: LauncherSettings): VersionDir[] {
   return [
-    { id: 'default', alias: '默认', path: s.gameDir, isDefault: true },
+    // 设置里默认目录可能是相对的（便携版 ./.minecraft），对外一律给绝对路径
+    { id: 'default', alias: '默认', path: resolvePortablePath(s.gameDir), isDefault: true },
     ...(s.versionDirs ?? []).map((d) => ({ id: d.id, alias: d.alias ?? '', path: d.path }))
   ]
 }

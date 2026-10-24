@@ -90,7 +90,7 @@ export function collectDiagnostics(): Diagnostics {
       node: process.versions.node ?? '',
       locale: app.getLocale(),
       mode: s.mode,
-      gameDir: s.gameDir,
+      gameDir: s.gameDirAbs ?? s.gameDir,
       selectedVersionId: s.selectedVersionId,
       multiplayer: s.enableMultiplayer === true
     },

@@ -619,7 +619,8 @@ export function useApp(): AppState {
 /** 汇总全部版本目录：默认目录（gameDir）恒在首位，别名固定为「默认」（与主进程语义一致）。 */
 export function allVersionDirs(s: LauncherSettings): VersionDir[] {
   return [
-    { id: 'default', alias: '默认', path: s.gameDir, isDefault: true },
+    // 便携版的 gameDir 是相对写法（./.minecraft），这里统一用解析后的绝对路径
+    { id: 'default', alias: '默认', path: s.gameDirAbs ?? s.gameDir, isDefault: true },
     ...(s.versionDirs ?? [])
   ]
 }

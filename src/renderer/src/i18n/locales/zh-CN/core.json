@@ -286,6 +286,7 @@
   "settings.dev.remainingHM": "剩余 {h} 小时 {m} 分钟",
   "settings.dev.remainingM": "剩余 {m} 分钟",
   "settings.game.change": "更改",
+  "settings.game.portableLocked": "便携版固定使用启动器所在目录下的 .minecraft",
   "settings.game.size.maximized": "最大化",
   "settings.game.size.fullscreen": "全屏",
   "settings.game.desktopFullscreenNotice": "当前处于桌面模式：MC 窗口尺寸已强制为「全屏」。",

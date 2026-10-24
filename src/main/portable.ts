@@ -1,6 +1,6 @@
 import { app } from 'electron'
 import { accessSync, constants, mkdirSync } from 'fs'
-import { basename, join } from 'path'
+import { basename, isAbsolute, join } from 'path'
 
 /**
  * 便携版判定与数据目录。
@@ -25,9 +25,19 @@ export function portableDataDir(): string {
   return join(portableDir, 'HCMCL')
 }
 
-/** 便携版的游戏目录：<exe 目录>/.minecraft */
-export function portableGameDir(): string {
-  return join(portableDir, '.minecraft')
+/**
+ * 便携版默认版本目录在设置里的**写法**：永远是相对路径。
+ *
+ * 早期版本在首次启动时把它解析成绝对路径写进 settings.json，结果是：
+ * 换个目录 / 换个盘符启动，旧路径就失效；界面里也显示一长串绝对路径。
+ * 现在设置里只存这一串相对写法，用的时候再按启动器所在目录解析。
+ */
+export const PORTABLE_GAME_DIR = './.minecraft'
+
+/** 相对路径按启动器所在目录解析；已是绝对路径或非便携版时原样返回。 */
+export function resolvePortablePath(p: string): string {
+  if (!p || !portableDir || isAbsolute(p)) return p
+  return join(portableDir, p)
 }
 
 /**

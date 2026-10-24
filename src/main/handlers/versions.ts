@@ -89,7 +89,8 @@ export function registerVersionsHandlers(ctx: IpcContext): void {
     const s = settings.get()
     const path = (input?.path ?? '').trim()
     if (!path) return allVersionDirs(s)
-    if (path === s.gameDir || s.versionDirs.some((d) => d.path === path)) return allVersionDirs(s)
+    // 与已有目录（含默认目录的绝对路径）重复就直接忽略
+    if (allVersionDirs(s).some((d) => d.path === path)) return allVersionDirs(s)
     const id = `dir-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
     settings.set({
       versionDirs: [...s.versionDirs, { id, alias: (input.alias ?? '').trim(), path }]

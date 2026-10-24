@@ -286,6 +286,7 @@
   "settings.dev.remainingHM": "{h}h {m}m left",
   "settings.dev.remainingM": "{m}m left",
   "settings.game.change": "Change",
+  "settings.game.portableLocked": "Portable builds always use .minecraft next to the launcher",
   "settings.game.size.maximized": "Maximized",
   "settings.game.size.fullscreen": "Fullscreen",
   "settings.game.desktopFullscreenNotice": "Desktop mode is active: the MC window size is forced to \"Fullscreen\".",

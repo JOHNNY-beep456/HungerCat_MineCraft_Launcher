@@ -560,13 +560,25 @@ function HardwareAccelerationRow(): JSX.Element {
 
 function GameDirRow(): JSX.Element {
   const { settings, updateSettings, t } = useApp()
+  // 便携版的默认目录跟着启动器走，不允许改：置灰 + 显示相对写法
+  const locked = settings.portable === true
   return (
     <Row label={t('settings.row.gameDir')}>
       <div className="flex items-center gap-2">
-        <span className="caption max-w-[200px] selectable truncate">{settings.gameDir}</span>
+        <div className="flex min-w-0 flex-col items-end">
+          <span className="caption max-w-[200px] selectable truncate">
+            {locked ? './.minecraft' : settings.gameDir}
+          </span>
+          {locked && (
+            <span className="caption text-[var(--text-secondary)]">
+              {t('settings.game.portableLocked')}
+            </span>
+          )}
+        </div>
         <Button
           size="sm"
           icon="folder"
+          disabled={locked}
           onClick={async () => {
             const dir = await window.api.shell.chooseDirectory()
             if (dir) void updateSettings({ gameDir: dir })

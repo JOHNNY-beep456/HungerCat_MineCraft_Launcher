@@ -15,6 +15,7 @@ import {
   type WebContents
 } from 'electron'
 import { join, resolve } from 'path'
+import { accessSync, constants as fsConstants, mkdirSync } from 'fs'
 import type { ChildProcessWithoutNullStreams } from 'child_process'
 import type {
   DebugLogEntry,
@@ -25,6 +26,7 @@ import type {
   MpHudState
 } from '@shared/types'
 import { settings, activeGameDir, allVersionDirs, flushWrites } from './store'
+import { isPortable, PORTABLE_GAME_DIR, resolvePortablePath } from './portable'
 import { applyHardwareAcceleration, hardwareAccelerationBooted } from './hardware-accel'
 import { initLogger, subscribeLogs } from './logger'
 import { startNetworkWorker, stopNetworkWorker } from './broker'
@@ -1062,8 +1064,35 @@ process.on('uncaughtException', (err) => {
   console.error('[主进程-未捕获异常]', err.stack ?? err)
 })
 
+/**
+ * 便携版默认目录（启动器旁边的 .minecraft）可读写检查。
+ *
+ * 只提示、不阻塞启动：放在只读介质 / Program Files 里时，用户需要立刻知道
+ * 「存档和版本写不进去」，而不是等到装版本时才看到一屏 EPERM。
+ */
+function checkPortableGameDir(): void {
+  if (!isPortable) return
+  const dir = resolvePortablePath(PORTABLE_GAME_DIR)
+  let reason = ''
+  try {
+    mkdirSync(dir, { recursive: true })
+    accessSync(dir, fsConstants.R_OK | fsConstants.W_OK)
+  } catch (err) {
+    reason = err instanceof Error ? err.message : String(err)
+  }
+  if (!reason) return
+  void dialog.showMessageBox({
+    type: 'warning',
+    title: '便携版目录不可用',
+    message: '无法读写启动器目录下的 .minecraft',
+    detail: `${dir}\n\n${reason}\n\n请把启动器放到可写的位置（用户目录或 U 盘）后重新运行。`,
+    buttons: ['知道了']
+  })
+}
+
 app.whenReady().then(() => {
   initLogger()
+  checkPortableGameDir()
   // 启动器是自绘界面（含标题栏、菜单跳转全在渲染层），不需要 Electron 的默认应用菜单。
   // Windows 下它本来就被隐藏，但 Linux 会把默认菜单栏画进窗口内部 —— 那会出现
   // 「自绘标题栏下面多一条 File/Edit/View」的错位，所以这里直接去掉。
