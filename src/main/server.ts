@@ -1,13 +1,14 @@
 // 远程服务端 JSON 请求（about/agreement/update）已迁至网络进程（server:api）；
 // 更新文件网络下载走 streamDownload（broker 代理网络进程）。runUpdate/spawn 仍为本进程编排。
-import { existsSync, promises as fsp, chmodSync } from 'fs'
+import { existsSync, promises as fsp, chmodSync, writeFileSync } from 'fs'
 import { createHash } from 'crypto'
+import { app } from 'electron'
 import { dirname, join } from 'path'
 import { spawn } from 'child_process'
 import type { AboutGroup, AgreementContent, Announcement, DownloadProgress, UpdateInfo } from '@shared/types'
 import { netRequest } from './broker'
 import { streamDownload } from './stream-download'
-import { isPortable, portableBinaryPath } from './portable'
+import { isPortable, macAppBundlePath, portableBinaryPath } from './portable'
 import { resolveUpdateForIdentity } from './update-resolve'
 
 /**
@@ -68,7 +69,8 @@ export async function fetchAnnouncements(): Promise<Announcement[]> {
 /** 获取服务端发布的最新版本信息（按 平台+架构 与 便携/安装 身份解析出实际下载地址）。 */
 export async function fetchUpdateInfo(): Promise<UpdateInfo> {
   const info = await apiGet<UpdateInfo>('update', { target: releaseTarget() })
-  return resolveUpdateForIdentity(info, isPortable)
+  // mac 的更新是「zip 就地替换 .app」，所以要拿便携版那份（zip）；取不到会回退到 dmg。
+  return resolveUpdateForIdentity(info, isPortable || !!macAppBundlePath())
 }
 
 /**
@@ -160,6 +162,10 @@ function filenameFrom(info: UpdateInfo): string {
  * 替换手边这个文件；安装版仍放在游戏目录下的 updates/，由安装程序接管。
  */
 export function updateTargetDir(gameDir: string): string {
+  // macOS：新 zip 先落在启动器数据目录，替换脚本再搬到 .app 原处。
+  // 不直接下到 .app 旁边的原因：/Applications 对普通用户不一定可写，
+  // 放这里能保证下载本身不会因为权限失败。
+  if (macAppBundlePath()) return join(app.getPath('userData'), 'updates')
   const bin = portableBinaryPath()
   return bin ? dirname(bin) : join(gameDir, 'updates')
 }
@@ -317,18 +323,47 @@ function shQuote(p: string): string {
  * 为什么必须借外部进程：Windows 上正在运行的 exe 不能删除/覆盖，Linux 的 AppImage
  * 挂载点也一样。这里起一个脱离的脚本等本进程结束再动手，然后由调用方退出应用。
  *
+ * 旧版本删不掉的两个真实原因，这里都堵上了：
+ *   1. 便携版 exe 是自解压器，它释放出内层 exe 后**一直持有旧 exe 的映像**直到自己退出，
+ *      所以删除要按文件是否解锁来重试（最多 30 秒），而不是只等本进程结束；
+ *   2. 「联机中关窗」的确认框可能把 app.quit() 挡下来，进程一直不退，脚本就一直等。
+ *      调用方会在 3 秒后强制退出（见 handlers/network.ts）。
+ * 万一仍然删不掉（杀软扫描、目录被占用），先落盘的 .pending-delete 标记会让新版本
+ * 下次启动时补删（见 portable.ts 的 cleanupPendingPortableDelete）。
+ *
  * @returns 是否已安排好自替换（false 表示当前不是便携版，调用方走普通 runUpdate）
  */
 export function replacePortableUpdate(newPath: string): boolean {
+  // macOS：更新包是 .zip（整个 .app 归档）。等本进程退出后就地替换 .app 再重新打开。
+  const bundle = macAppBundlePath()
+  if (bundle && /\.zip$/i.test(newPath)) return scheduleMacAppReplace(bundle, newPath)
+
   const oldPath = portableBinaryPath()
   if (!oldPath) return false
+  const dir = dirname(oldPath)
+  // 先把「待删除」标记落盘：即使下面的外部脚本没机会执行（被杀软拦、系统策略、
+  // 进程被强杀），新版本下次启动也会把旧 exe 补删掉，不会永久留下两个文件。
+  try {
+    writeFileSync(join(dir, '.pending-delete'), oldPath, 'utf8')
+  } catch {
+    /* 目录只读等情况：交给外部脚本尽力而为 */
+  }
   try {
     if (process.platform === 'win32') {
       const script = [
-        `Wait-Process -Id ${process.pid} -ErrorAction SilentlyContinue`,
-        // 进程刚退出时文件可能还被占用，重试最多 6 秒
-        `for ($i = 0; $i -lt 20 -and (Test-Path -LiteralPath ${psQuote(oldPath)}); $i++) { Start-Sleep -Milliseconds 300; Remove-Item -LiteralPath ${psQuote(oldPath)} -Force -ErrorAction SilentlyContinue }`,
-        `Start-Process -FilePath ${psQuote(newPath)}`
+        `$old = ${psQuote(oldPath)}`,
+        `$new = ${psQuote(newPath)}`,
+        `$dir = ${psQuote(dir)}`,
+        // 先等本进程退出。注意不能用 Wait-Process -Timeout：Windows PowerShell 5.1
+        // 没有这个参数，会直接报错（6+ 才有），所以用轮询。
+        `$deadline = (Get-Date).AddSeconds(30)`,
+        `while ((Get-Date) -lt $deadline -and (Get-Process -Id ${process.pid} -ErrorAction SilentlyContinue)) { Start-Sleep -Milliseconds 300 }`,
+        // 再等旧 exe 解锁：外层便携启动器要等它自己退出才释放映像，杀软也可能还在扫，
+        // 每 300ms 试一次，最多 30 秒。
+        `for ($i = 0; $i -lt 100 -and (Test-Path -LiteralPath $old); $i++) { ` +
+          `Remove-Item -LiteralPath $old -Force -ErrorAction SilentlyContinue; ` +
+          `if (Test-Path -LiteralPath $old) { Start-Sleep -Milliseconds 300 } }`,
+        `Start-Process -FilePath $new -WorkingDirectory $dir`
       ].join('; ')
       spawn('powershell.exe', ['-NoProfile', '-WindowStyle', 'Hidden', '-Command', script], {
         detached: true,
@@ -348,4 +383,34 @@ export function replacePortableUpdate(newPath: string): boolean {
     /* 安排失败就退回普通运行方式 */
   }
   return false
+}
+
+/**
+ * macOS 就地更新：等本进程退出 → 解压新 zip → 换掉旧 .app → 重新打开。
+ *
+ * 用 `ditto -x -k` 解压（保留权限与扩展属性，zip 是 electron-builder 打的 .app 归档）。
+ * 换包分两步：先把旧包改名占位，再把新包放到原位；两步任意一步失败都还原旧包，
+ * 不会出现「旧包已删、新包没放上」导致启动器消失的情况。
+ */
+function scheduleMacAppReplace(bundle: string, zipPath: string): boolean {
+  try {
+    const backup = `${bundle}.old`
+    const script =
+      `while kill -0 ${process.pid} 2>/dev/null; do sleep 0.3; done; ` +
+      `tmp=$(mktemp -d) || exit 0; ` +
+      `ditto -x -k ${shQuote(zipPath)} "$tmp" || { rm -rf "$tmp"; exit 0; }; ` +
+      `newapp=$(/usr/bin/find "$tmp" -maxdepth 2 -name '*.app' -print -quit); ` +
+      `[ -n "$newapp" ] || { rm -rf "$tmp"; exit 0; }; ` +
+      `rm -rf ${shQuote(backup)}; ` +
+      `if ! mv ${shQuote(bundle)} ${shQuote(backup)}; then ` +
+      `rm -rf "$tmp"; open ${shQuote(bundle)}; exit 0; fi; ` +
+      `if mv "$newapp" ${shQuote(bundle)}; then ` +
+      `rm -rf ${shQuote(backup)}; else mv ${shQuote(backup)} ${shQuote(bundle)}; fi; ` +
+      `rm -rf "$tmp"; rm -f ${shQuote(zipPath)}; ` +
+      `open ${shQuote(bundle)}`
+    spawn('/bin/sh', ['-c', script], { detached: true, stdio: 'ignore' }).unref()
+    return true
+  } catch {
+    return false
+  }
 }

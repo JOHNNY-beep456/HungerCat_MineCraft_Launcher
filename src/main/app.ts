@@ -26,7 +26,7 @@ import type {
   MpHudState
 } from '@shared/types'
 import { settings, activeGameDir, allVersionDirs, flushWrites } from './store'
-import { isPortable, PORTABLE_GAME_DIR, resolvePortablePath } from './portable'
+import { isPortable, cleanupPendingPortableDelete, PORTABLE_GAME_DIR, resolvePortablePath } from './portable'
 import { applyHardwareAcceleration, hardwareAccelerationBooted } from './hardware-accel'
 import { initLogger, subscribeLogs } from './logger'
 import { startNetworkWorker, stopNetworkWorker } from './broker'
@@ -1093,6 +1093,8 @@ function checkPortableGameDir(): void {
 app.whenReady().then(() => {
   initLogger()
   checkPortableGameDir()
+  // 上次自更新时旧版本 exe 若被占用没删掉，这里补一刀
+  cleanupPendingPortableDelete()
   // 启动器是自绘界面（含标题栏、菜单跳转全在渲染层），不需要 Electron 的默认应用菜单。
   // Windows 下它本来就被隐藏，但 Linux 会把默认菜单栏画进窗口内部 —— 那会出现
   // 「自绘标题栏下面多一条 File/Edit/View」的错位，所以这里直接去掉。

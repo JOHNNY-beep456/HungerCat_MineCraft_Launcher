@@ -50,9 +50,9 @@ export function UpdateSection(): JSX.Element {
     }
   }
 
-  /** 判断更新应执行的动作：exe 链接 → 下载并运行；有文件名 → 下载；否则 → 浏览器打开链接。 */
+  /** 判断更新应执行的动作：可运行的文件（exe / zip / dmg / AppImage）→ 下载并运行；有文件名 → 下载；否则 → 浏览器打开链接。 */
   const updateAction = (info: UpdateInfo): 'downloadAndRun' | 'download' | 'openLink' => {
-    if (/\.exe(\?|#|$)/i.test(info.url)) return 'downloadAndRun'
+    if (/\.(exe|zip|dmg|appimage)(\?|#|$)/i.test(info.url)) return 'downloadAndRun'
     if (info.filename && info.filename.trim() !== '') return 'download'
     return 'openLink'
   }

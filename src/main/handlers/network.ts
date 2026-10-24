@@ -141,7 +141,12 @@ export function registerNetworkHandlers(ctx: IpcContext): void {
         })
     // 便携版：删掉旧文件并自动打开新版（等本进程退出后由外部脚本完成），随后退出应用
     if (replacePortableUpdate(path)) {
-      setTimeout(() => app.quit(), 300)
+      // 3 秒后仍在运行（例如「联机中关窗被拦截」把 quit 挡下了）就强制退出：
+      // 自替换脚本一直在等我们结束，不退出的话旧版本永远不会被删、新版也起不来。
+      setTimeout(() => {
+        app.quit()
+        setTimeout(() => app.exit(0), 2500)
+      }, 300)
     } else {
       runUpdate(path)
     }

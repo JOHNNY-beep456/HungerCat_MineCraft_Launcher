@@ -1,6 +1,6 @@
 import { app } from 'electron'
-import { accessSync, constants, mkdirSync } from 'fs'
-import { basename, isAbsolute, join } from 'path'
+import { accessSync, constants, existsSync, mkdirSync, readFileSync, unlinkSync } from 'fs'
+import { basename, dirname, isAbsolute, join } from 'path'
 
 /**
  * 便携版判定与数据目录。
@@ -40,6 +40,38 @@ export function resolvePortablePath(p: string): string {
   return join(portableDir, p)
 }
 
+/** 自更新时旧 exe 没删掉，由外部脚本留下的标记文件名。 */
+const PENDING_DELETE = '.pending-delete'
+
+/**
+ * 补删上次自更新时没删掉的旧版本 exe。
+ *
+ * 正常情况下外部脚本会当场删掉；只有在旧文件被占用 / 杀软扫描时才留下标记。
+ * 每次启动便携版顺手清一次，避免永久留下「新旧两个 exe」。
+ */
+export function cleanupPendingPortableDelete(): void {
+  if (!portableDir) return
+  const marker = join(portableDir, PENDING_DELETE)
+  let target = ''
+  try {
+    target = readFileSync(marker, 'utf8').replace(/^\uFEFF/, '').trim()
+  } catch {
+    return
+  }
+  if (target && existsSync(target)) {
+    try {
+      unlinkSync(target)
+    } catch {
+      return // 仍被占用，下次再试
+    }
+  }
+  try {
+    unlinkSync(marker)
+  } catch {
+    /* 标记删不掉不影响使用 */
+  }
+}
+
 /**
  * 便携版可执行文件本身的路径；安装版返回空串。
  *
@@ -55,6 +87,23 @@ export function portableBinaryPath(): string {
   if (portableDir) return join(portableDir, basename(process.execPath))
   const appImage = (process.env.APPIMAGE ?? '').trim()
   return appImage
+}
+
+/**
+ * macOS 上当前运行的 `.app` 包路径；开发态 / 非 mac / 不在包内时返回空串。
+ *
+ * mac 的「便携版更新」就是：下载新 zip → 替换掉这个 .app → 重新打开，
+ * 所以更新流程需要它的位置（下载到同目录、替换同一个包）。
+ */
+export function macAppBundlePath(): string {
+  if (process.platform !== 'darwin' || !app.isPackaged) return ''
+  // <...>/Foo.app/Contents/MacOS/Foo  →  <...>/Foo.app
+  const macosDir = dirname(process.execPath)
+  if (basename(macosDir) !== 'MacOS') return ''
+  const contents = dirname(macosDir)
+  if (basename(contents) !== 'Contents') return ''
+  const bundle = dirname(contents)
+  return bundle.endsWith('.app') ? bundle : ''
 }
 
 /**

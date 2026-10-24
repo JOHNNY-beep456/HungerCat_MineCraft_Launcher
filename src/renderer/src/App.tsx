@@ -67,13 +67,13 @@ function Shell(): JSX.Element {
     setUpdError('')
   }, [launcherUpdateNotice])
 
-  /** 在弹窗内直接下载并安装：exe → 下载并运行安装程序；有文件名 → 下载；否则 → 浏览器打开链接。 */
+  /** 在弹窗内直接下载并安装：可运行的文件（exe / zip / dmg / AppImage）→ 下载并运行；有文件名 → 下载；否则 → 浏览器打开链接。 */
   const installUpdate = async (): Promise<void> => {
     const info = launcherUpdateNotice
     if (!info) return
-    const isExe = /\.exe(\?|#|$)/i.test(info.url)
+    const runnable = /\.(exe|zip|dmg|appimage)(\?|#|$)/i.test(info.url)
     const hasFile = !!(info.filename && info.filename.trim())
-    if (!isExe && !hasFile) {
+    if (!runnable && !hasFile) {
       try {
         await window.api.shell.openExternal(info.url)
         dismissLauncherUpdateNotice()
@@ -87,7 +87,7 @@ function Shell(): JSX.Element {
     setUpdPercent(0)
     setUpdError('')
     try {
-      if (isExe) await window.api.update.downloadAndRun(info)
+      if (runnable) await window.api.update.downloadAndRun(info)
       else await window.api.update.download(info)
       setUpdPhase('done')
     } catch (err) {
