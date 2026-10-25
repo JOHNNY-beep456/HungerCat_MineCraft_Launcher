@@ -958,6 +958,19 @@ textarea.input {
   [data-skin='mac']:not([data-mode='minimal']) .glass-soft {
     backdrop-filter: blur(24px) saturate(170%);
   }
+  /* 深色玻璃在模糊之后再压一档亮度：烟色底片负责「给字一个落点」，brightness
+     负责收敛背景的动态范围 —— 明亮壁纸（日落橙、白墙照片）先被压到中间调，再被
+     底片压一次，白字才始终落在 4.5:1 以上；深色壁纸本来就在低亮度区，几乎不受影响。
+     配合 saturate 提一档，是为了补回底片吃掉的颜色（玻璃仍要「由背后内容决定颜色」）。 */
+  [data-skin='mac'][data-theme='dark']:not([data-mode='minimal']) .glass {
+    backdrop-filter: blur(48px) saturate(190%) brightness(0.8);
+  }
+  [data-skin='mac'][data-theme='dark']:not([data-mode='minimal']) .glass-strong {
+    backdrop-filter: blur(64px) saturate(200%) brightness(0.78);
+  }
+  [data-skin='mac'][data-theme='dark']:not([data-mode='minimal']) .glass-soft {
+    backdrop-filter: blur(24px) saturate(180%) brightness(0.85);
+  }
   /* 镜面高光描边（1px）——液态玻璃最有辨识度的一道「镜边」。
      做法是「填充 → padding-box、高光渐变 → border-box」的双背景：把 1px 边框那一圈留给
      渐变来画，就能得到一条真正的 1px 渐变边（inset box-shadow 只能做纯色亮边，
@@ -971,8 +984,9 @@ textarea.input {
       linear-gradient(var(--lg-fill), var(--lg-fill)) padding-box,
       linear-gradient(
           180deg,
-          var(--lg-rim-top) 0%,
-          var(--lg-rim-side) 14%,
+          var(--lg-rim-glint) 0%,
+          var(--lg-rim-top) 3%,
+          var(--lg-rim-side) 15%,
           var(--lg-rim-low) 46%,
           var(--lg-rim-side) 78%,
           var(--lg-rim-bottom) 100%
@@ -1002,24 +1016,30 @@ textarea.input {
 [data-skin='mac']:not([data-mode='minimal']) :is(.glass, .glass-strong) {
   box-shadow:
     /* 边缘透镜（lensing）：Liquid Glass 的辨识度不在「糊」，而在边缘把光**折弯**——
-       1px 镜边之内紧贴一圈极淡暗环，是玻璃厚度造成的内缘暗化。缺了它，亮边就只是
-       一根描边，面板会读成「描了边的白板」而不是一块玻璃。 */
-    inset 0 0 0 1px rgba(15, 23, 42, 0.07),
-    inset 0 1px 1px rgba(255, 255, 255, 0.62),
-    inset 1.5px 0 2px -1px rgba(255, 255, 255, 0.3),
-    inset -1.5px 0 2px -1px rgba(255, 255, 255, 0.12),
-    inset 0 -1px 1px rgba(255, 255, 255, 0.45),
+       1px 镜边之内紧贴一圈暗线 + 一圈向外柔化的暗环，是玻璃厚度造成的内缘暗化。
+       这一对是面板「立体」的支点，也是白色镜边在浅色背景上唯一还能被看见的原因
+       （纯白镜边压在明亮壁纸上是隐形的，必须靠内侧这道暗线把轮廓描出来）。 */
+    inset 0 0 0 1px rgba(15, 23, 42, 0.16),
+    inset 0 0 12px -2px rgba(15, 23, 42, 0.1),
+    /* 顶缘聚光 + 左右侧光衰减：光从上方掠过，越靠边越弱 */
+    inset 0 1px 1px rgba(255, 255, 255, 0.7),
+    inset 1.5px 0 2px -1px rgba(255, 255, 255, 0.34),
+    inset -1.5px 0 2px -1px rgba(255, 255, 255, 0.14),
+    /* 底部内侧反光：远端唇口把光弹回来，与顶部内影一起构成「浅浅的碟面」 */
+    inset 0 -1px 1px rgba(255, 255, 255, 0.5),
     inset 0 12px 20px -14px rgba(15, 23, 42, 0.14),
     inset 0 -14px 22px -18px rgba(255, 255, 255, 0.34),
     var(--glass-shadow);
 }
 [data-skin='mac'][data-theme='dark']:not([data-mode='minimal']) :is(.glass, .glass-strong) {
   box-shadow:
-    inset 0 0 0 1px rgba(0, 0, 0, 0.24),
-    inset 0 1px 1px rgba(255, 255, 255, 0.4),
-    inset 1.5px 0 2px -1px rgba(255, 255, 255, 0.16),
-    inset -1.5px 0 2px -1px rgba(255, 255, 255, 0.06),
-    inset 0 -1px 1px rgba(255, 255, 255, 0.14),
+    /* 深色下玻璃本当更暗：内缘暗线要足够重，才压得住明亮的烟雾底片边缘 */
+    inset 0 0 0 1px rgba(0, 0, 0, 0.4),
+    inset 0 0 14px -2px rgba(0, 0, 0, 0.34),
+    inset 0 1px 1px rgba(255, 255, 255, 0.42),
+    inset 1.5px 0 2px -1px rgba(255, 255, 255, 0.17),
+    inset -1.5px 0 2px -1px rgba(255, 255, 255, 0.07),
+    inset 0 -1px 1px rgba(255, 255, 255, 0.16),
     inset 0 12px 20px -14px rgba(0, 0, 0, 0.5),
     inset 0 -14px 22px -18px rgba(255, 255, 255, 0.1),
     var(--glass-shadow);
@@ -1028,21 +1048,22 @@ textarea.input {
    投影更深，用来把浮层与内容层的卡片区分开。小件（.glass-soft）保持最薄。 */
 [data-skin='mac']:not([data-mode='minimal']) .glass-strong {
   box-shadow:
-    inset 0 0 0 1px rgba(15, 23, 42, 0.1),
-    inset 0 0 0 2px rgba(255, 255, 255, 0.12),
-    inset 0 1px 1px rgba(255, 255, 255, 0.72),
-    inset 1.5px 0 3px -1px rgba(255, 255, 255, 0.34),
+    inset 0 0 0 1px rgba(15, 23, 42, 0.2),
+    inset 0 0 16px -2px rgba(15, 23, 42, 0.12),
+    inset 0 1px 1px rgba(255, 255, 255, 0.78),
+    inset 1.5px 0 3px -1px rgba(255, 255, 255, 0.36),
     inset -1.5px 0 3px -1px rgba(255, 255, 255, 0.14),
-    inset 0 -1px 1px rgba(255, 255, 255, 0.5),
+    inset 0 -1px 1px rgba(255, 255, 255, 0.52),
     inset 0 18px 30px -18px rgba(15, 23, 42, 0.2),
     inset 0 -20px 32px -22px rgba(255, 255, 255, 0.38),
     var(--glass-shadow);
 }
 [data-skin='mac'][data-theme='dark']:not([data-mode='minimal']) .glass-strong {
   box-shadow:
-    inset 0 0 0 1px rgba(0, 0, 0, 0.3),
+    inset 0 0 0 1px rgba(0, 0, 0, 0.46),
+    inset 0 0 18px -2px rgba(0, 0, 0, 0.4),
     inset 0 0 0 2px rgba(255, 255, 255, 0.07),
-    inset 0 1px 1px rgba(255, 255, 255, 0.45),
+    inset 0 1px 1px rgba(255, 255, 255, 0.46),
     inset 1.5px 0 3px -1px rgba(255, 255, 255, 0.18),
     inset -1.5px 0 3px -1px rgba(255, 255, 255, 0.07),
     inset 0 -1px 1px rgba(255, 255, 255, 0.16),
@@ -1059,7 +1080,11 @@ textarea.input {
   z-index: -1;
   border-radius: inherit;
   pointer-events: none;
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.26) 0%, rgba(255, 255, 255, 0) 26%);
+  /* 左上角一枚椭圆镜面聚光（光源在左上方、掉进玻璃表面），再叠一道贴顶的水膜光。
+     角上的聚光比「整条顶边一样亮」更像真实反光：它是局部的高亮，会随面板尺寸拉伸。 */
+  background:
+    radial-gradient(140% 96% at 14% -18%, rgba(255, 255, 255, 0.5) 0%, rgba(255, 255, 255, 0) 52%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.26) 0%, rgba(255, 255, 255, 0) 26%);
   opacity: 0.55;
 }
 /* 中间微微凹陷（::after）：中心一层极淡的暗部（环境光遮蔽）向四周淡出，让
@@ -1074,7 +1099,7 @@ textarea.input {
   pointer-events: none;
   background:
     radial-gradient(78% 68% at 50% 44%, rgba(15, 23, 42, 0.12) 0%, rgba(15, 23, 42, 0) 74%),
-    radial-gradient(120% 76% at 50% 120%, rgba(255, 255, 255, 0.28) 0%, rgba(255, 255, 255, 0) 60%);
+    radial-gradient(120% 76% at 50% 120%, rgba(255, 255, 255, 0.34) 0%, rgba(255, 255, 255, 0) 62%);
   opacity: 0.85;
 }
 [data-skin='mac'][data-theme='dark']:not([data-mode='minimal']) :is(.glass, .glass-strong)::after {
@@ -1094,6 +1119,23 @@ textarea.input {
     inset 0 1px 1.5px rgba(255, 255, 255, 0.2),
     inset 0 -1px 1.5px -0.25px rgba(255, 255, 255, 0.08);
 }
+/* 面板内的小行（.glass-soft）：改成嵌在面板上的「凹槽」——
+   浅色半透明不叠浅色半透明（Apple 的材质规则：可读性会塌），
+   所以嵌在大面板里的这一档换一份填充与内影：顶部压一道内影、底缘留一条反光。 */
+[data-skin='mac']:not([data-mode='minimal']) :is(.glass, .glass-strong) .glass-soft {
+  --lg-fill: var(--lg-inset-fill);
+  box-shadow: var(--lg-inset-shadow);
+}
+/* 凹槽不挂「水膜」顶光：那是凸起表面的语言，加回去又会读成一块浮起来的白片 */
+[data-skin='mac']:not([data-mode='minimal']) :is(.glass, .glass-strong) .glass-soft::before {
+  background: linear-gradient(180deg, rgba(15, 23, 42, 0.06) 0%, rgba(255, 255, 255, 0) 52%);
+  opacity: 0.5;
+}
+[data-skin='mac'][data-theme='dark']:not([data-mode='minimal']) :is(.glass, .glass-strong) .glass-soft::before {
+  background: linear-gradient(180deg, rgba(0, 0, 0, 0.22) 0%, rgba(255, 255, 255, 0) 52%);
+  opacity: 0.6;
+}
+
 [data-skin='mac']:not([data-mode='minimal']) .glass-soft::before {
   content: '';
   position: absolute;
@@ -1103,6 +1145,21 @@ textarea.input {
   pointer-events: none;
   background: linear-gradient(180deg, rgba(255, 255, 255, 0.35) 0%, rgba(255, 255, 255, 0) 60%);
   opacity: 0.4;
+}
+
+/* 文字光晕：玻璃面板里的所有文字都带一圈极淡的同向光晕（亮主题白晕 / 深色黑晕），
+   靠 --lg-text-halo 在令牌段分档，随明暗自动反向。
+   为什么不是给面板加底色：底色会连背景一起糊掉、把玻璃变成塑料；光晕只作用在字形
+   周围 1~4px，既把字的局部对比拉起来，又不改变「颜色由背后内容决定」的原则。
+   text-shadow 会继承给面板内的所有后代（按钮 / 芯片 / 图标文字一起受益）。 */
+[data-skin='mac']:not([data-mode='minimal']) :is(.glass, .glass-strong, .glass-soft) {
+  text-shadow: var(--lg-text-halo);
+}
+/* 主按钮 / 危险按钮自带实色底，白字不需要光晕，加回去反而在字缘起毛边 */
+[data-skin='mac']:not([data-mode='minimal'])
+  :is(.glass, .glass-strong, .glass-soft)
+  :is(.btn-primary, .btn-danger) {
+  text-shadow: none;
 }
 
 /* 分段控件改胶囊形：iOS 的液态玻璃分段（Segmented）是「胶囊槽 + 胶囊选中块」，
@@ -1533,14 +1590,24 @@ textarea.input {
    水的反光 + 中间微微凹陷的碟面来表达（见上方皮肤段），不叠加普通模式的
    受光渐变（--surface-shade 关掉）。 */
 [data-skin='mac'] {
-  --text-primary: rgba(0, 0, 0, 0.9);
-  --text-secondary: rgba(60, 60, 67, 0.6);
-  --text-tertiary: rgba(60, 60, 67, 0.32);
+  /* 文字色比默认档更「实」一档：玻璃只负责把背景揉匀，不负责给字兜底，
+     所以对比度必须从文字本身与下面那层薄底片里来（0.6/0.32 在明亮壁纸上
+     会把次级 / 三级文字洗没，实测 12px 说明文字在照片壁纸上几乎读不出来）。 */
+  --text-primary: rgba(0, 0, 0, 0.92);
+  --text-secondary: rgba(60, 60, 67, 0.68);
+  --text-tertiary: rgba(60, 60, 67, 0.46);
 
-  /* 镜边渐变（见上方皮肤段的双背景写法）四档取样：
-     顶部聚光最亮 → 左右侧光快速衰减 → 中段几乎只剩底色 → 底部一道反向反光。
-     这样才像「光扫过一块有厚度的玻璃」，而不是四边同亮的一条白框。 */
-  --lg-rim-top: rgba(255, 255, 255, 0.98);
+  /* 文字外一圈极淡的同向光晕（亮主题用白晕）：玻璃上方的字没有实底，
+     光晕是唯一能随内容走的局部对比增强，比整体抬高面板不透明度更贴近
+     Liquid Glass「背景决定颜色」的原则。 */
+  --lg-text-halo: 0 1px 1px rgba(255, 255, 255, 0.62), 0 0 3px rgba(255, 255, 255, 0.4);
+
+  /* 镜边渐变（见上方皮肤段的双背景写法）取样点：
+     顶部一道锐利的聚光（glint）→ 顶缘 → 左右侧光快速衰减 → 中段几乎只剩底色 →
+     底部一道反向反光。光是点光源，落到玻璃上缘是一条锐利高光，缺了最亮的那一小段
+     就会糊成一条均匀白边，读不出「光扫过一块有厚度的玻璃」。 */
+  --lg-rim-glint: rgba(255, 255, 255, 1);
+  --lg-rim-top: rgba(255, 255, 255, 0.86);
   --lg-rim-side: rgba(255, 255, 255, 0.34);
   --lg-rim-low: rgba(255, 255, 255, 0.08);
   --lg-rim-bottom: rgba(255, 255, 255, 0.72);
@@ -1554,10 +1621,20 @@ textarea.input {
   --lg-trough-ring: rgba(255, 255, 255, 0.34);
   --lg-bead-fill: rgba(255, 255, 255, 0.014);
 
-  /* 玻璃体：纯透明——只留极薄一层，让背景完全透出 */
-  --glass-bg: rgba(255, 255, 255, 0.06);
-  --glass-bg-strong: rgba(255, 255, 255, 0.09);
-  --glass-bg-soft: rgba(255, 255, 255, 0.04);
+  /* 面板内的小行（版本目录 / 内存条 / 设置行）：做成「凹槽」而不是第二层浅玻璃。
+     浅色半透明叠浅色半透明会让可读性塌掉（Apple 的材质规则），所以嵌在大面板里的
+     .glass-soft 改挖深一点、顶部压一道内影、底缘留一条反光，读成面板上的浅槽。 */
+  --lg-inset-fill: rgba(15, 23, 42, 0.055);
+  --lg-inset-shadow:
+    inset 0 1px 2px rgba(15, 23, 42, 0.14),
+    inset 0 -1px 1px rgba(255, 255, 255, 0.45);
+
+  /* 玻璃体：仍近乎纯透明，只把底片从 0.06 抬到 0.10 —— 亮主题下深色文字需要的
+     是「更亮一点的底」，白色底片正好；再高就会在彩色背景上读成奶白板。
+     深色壁纸的兜底交给 --wallpaper-scrim（见 :root），不靠这里堆白。 */
+  --glass-bg: rgba(255, 255, 255, 0.1);
+  --glass-bg-strong: rgba(255, 255, 255, 0.14);
+  --glass-bg-soft: rgba(255, 255, 255, 0.07);
   /* 基础描边压到极淡：真正的边缘由「水的反光」（inset 高光）定义，避免双层亮边 */
   --glass-border: rgba(255, 255, 255, 0.28);
   --glass-highlight: rgba(255, 255, 255, 0.98);
@@ -1576,25 +1653,41 @@ textarea.input {
 }
 
 [data-skin='mac'][data-theme='dark'] {
-  --text-primary: rgba(245, 245, 247, 0.95);
-  --text-secondary: rgba(235, 235, 245, 0.62);
-  --text-tertiary: rgba(235, 235, 245, 0.36);
+  --text-primary: rgba(248, 248, 250, 0.97);
+  --text-secondary: rgba(238, 238, 247, 0.74);
+  --text-tertiary: rgba(238, 238, 247, 0.52);
+
+  /* 深色下光晕反向：黑晕把白字从明亮区域里「抠」出来。
+     这是深色玻璃能扛住明亮壁纸的最后一道保险。 */
+  --lg-text-halo: 0 1px 2px rgba(0, 0, 0, 0.5), 0 0 4px rgba(0, 0, 0, 0.32);
 
   /* 深色下镜边暗一档：亮边依旧是「白」，但强度压低，否则会盖过内容 */
-  --lg-rim-top: rgba(255, 255, 255, 0.52);
+  --lg-rim-glint: rgba(255, 255, 255, 0.62);
+  --lg-rim-top: rgba(255, 255, 255, 0.44);
   --lg-rim-side: rgba(255, 255, 255, 0.15);
   --lg-rim-low: rgba(255, 255, 255, 0.05);
   --lg-rim-bottom: rgba(255, 255, 255, 0.24);
 
-  --lg-trough-fill: rgba(255, 255, 255, 0.05);
-  --lg-trough-ring: rgba(255, 255, 255, 0.14);
-  --lg-bead-fill: rgba(255, 255, 255, 0.0075);
+  /* 沟是「凹」、珠是「凸」：深色下沟压暗、珠略亮，两者的明暗关系才立得住；
+     继续用 near-zero 白填充会让选中的珠子在明亮背景上直接消失。 */
+  --lg-trough-fill: rgba(6, 8, 14, 0.34);
+  --lg-trough-ring: rgba(255, 255, 255, 0.18);
+  --lg-bead-fill: rgba(255, 255, 255, 0.1);
 
-  /* 纯透明：深色下也只留极薄一层提亮，不做深色实底 */
-  --glass-bg: rgba(255, 255, 255, 0.045);
-  --glass-bg-strong: rgba(255, 255, 255, 0.06);
-  --glass-bg-soft: rgba(255, 255, 255, 0.03);
-  --glass-border: rgba(255, 255, 255, 0.14);
+  --lg-inset-fill: rgba(0, 0, 0, 0.24);
+  --lg-inset-shadow:
+    inset 0 1px 3px rgba(0, 0, 0, 0.45),
+    inset 0 -1px 1px rgba(255, 255, 255, 0.08);
+
+  /* 深色玻璃必须「变暗」而不是「提亮」。
+     原来的 white 0.045 只是给背景加一层白雾：背景一亮（日落橙、照片壁纸），
+     白字就贴在浅底上，实测对比度掉到 3:1 上下。真实的深色玻璃是一层烟色底片，
+     把任何背景都压到同一个亮度区间里，文字才有稳定的落点。
+     0.46 仍然透得过去一半以上的背景，不至于变成实心面板。 */
+  --glass-bg: rgba(10, 12, 20, 0.46);
+  --glass-bg-strong: rgba(12, 14, 24, 0.56);
+  --glass-bg-soft: rgba(10, 12, 20, 0.38);
+  --glass-border: rgba(255, 255, 255, 0.16);
   --glass-highlight: rgba(255, 255, 255, 0.4);
   --glass-shadow: 0 30px 76px -28px rgba(0, 0, 0, 0.72);
   --surface-shade: none;
@@ -1617,10 +1710,13 @@ textarea.input {
    悬浮投影。做法是直接在各元素上覆盖 --glass-shadow 令牌（不改 box-shadow 规则），
    并在 .glass-strong 上显式写回大投影，避免其嵌套在 .glass 内时被外层值带偏。 */
 [data-skin='mac'] .glass {
-  --glass-shadow: 0 12px 28px -14px rgba(15, 23, 42, 0.45);
+  /* 紧贴下缘的接触阴影 + 收敛的环境投影。
+     只有大半径柔影时，卡片看起来是「浮在背景上的一张纸」；补一道 2px 的接触暗带，
+     它才真正落在桌面上 —— 这是立体感里最便宜也最有效的一层。 */
+  --glass-shadow: 0 1px 2px rgba(15, 23, 42, 0.14), 0 12px 28px -14px rgba(15, 23, 42, 0.45);
 }
 [data-skin='mac'][data-theme='dark'] .glass {
-  --glass-shadow: 0 12px 28px -14px rgba(0, 0, 0, 0.62);
+  --glass-shadow: 0 1px 2px rgba(0, 0, 0, 0.45), 0 12px 28px -14px rgba(0, 0, 0, 0.62);
 }
 [data-skin='glass'] .glass {
   --glass-shadow: 0 12px 28px -14px rgba(15, 23, 42, 0.38);
@@ -1629,10 +1725,10 @@ textarea.input {
   --glass-shadow: 0 12px 28px -14px rgba(0, 0, 0, 0.6);
 }
 [data-skin='mac'] .glass-strong {
-  --glass-shadow: 0 30px 76px -28px rgba(15, 23, 42, 0.5);
+  --glass-shadow: 0 2px 6px -2px rgba(15, 23, 42, 0.18), 0 30px 76px -28px rgba(15, 23, 42, 0.5);
 }
 [data-skin='mac'][data-theme='dark'] .glass-strong {
-  --glass-shadow: 0 30px 76px -28px rgba(0, 0, 0, 0.72);
+  --glass-shadow: 0 2px 8px -2px rgba(0, 0, 0, 0.5), 0 30px 76px -28px rgba(0, 0, 0, 0.72);
 }
 [data-skin='glass'] .glass-strong {
   --glass-shadow: 0 24px 60px -24px rgba(15, 23, 42, 0.35);

@@ -106,6 +106,7 @@ function usage(exitCode = 0) {
     '  --platform <win|linux|mac|all>  要打包的目标平台（默认当前平台；build-all.cmd 默认 all）',
     '  --arch <list|all>           目标架构，逗号分隔（x64,ia32,arm64 / x64,arm64,armv7l）',
     '                              默认只构建 x64；--arch all 构建该平台全部架构',
+    '                              （build-all.cmd 不带参数 = --platform all --arch all）',
     '  --skip-native               跳过 Rust 原生下载内核',
     '  --skip-easytier             跳过 EasyTier 内核构建（仅 Windows）',
     '  --skip-install              复用已有 node_modules',
@@ -624,32 +625,89 @@ if (targets.includes('linux') && IS_WIN_HOST) {
   else warn('未检测到可用的 WSL 发行版，退回在 Windows 上直接打包 Linux（通常因符号链接 / fpm 失败）。')
 }
 
-for (const platform of targets) {
-  step(`=== Packaging: ${PLATFORM_LABEL[platform]} ===`)
+const errText = (err) => (err instanceof Error ? err.message : String(err))
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+
+/**
+ * 清掉上一轮 NSIS 打包残留的卸载器。
+ *
+ * electron-builder 打 NSIS 安装器的流程是「先编一个临时安装器 → 执行它，让它写出
+ * __uninstaller-nsis-<name>.exe → 再把它嵌进最终安装器」。这一段跑的是**刚编出来的
+ * 安装器**：上一轮留下的同名卸载器还在被扫描 / 句柄没放时，WriteUninstaller 写不进去，
+ * 安装器就带着错误码（实测 exit code 2）退出，整个架构的 setup 包就没了。
+ * 实测就是这一条：清掉残留后 x64 / ia32 / arm64 三个安装器全部一次成功。
+ * 每次调用 electron-builder 前先删干净。
+ */
+function cleanStaleNsisUninstaller() {
+  const dir = join(ROOT, 'release')
   try {
-    if (platform === 'linux' && IS_WIN_HOST && useWsl) {
-      buildLinuxInWsl()
-    } else {
-      if (platform !== hostPlatform) {
-        warn(
-          `正在 ${process.platform} 上打包 ${PLATFORM_LABEL[platform]}：` +
-            (platform === 'linux'
-              ? 'AppImage 需要符号链接权限（开发者模式/管理员），deb 与 rpm 需要 fpm / rpmbuild。建议在 Linux 上构建。'
-              : '需要 wine 支持。建议在 Windows 上构建。')
-        )
-      }
-      // 一次只给 electron-builder 传一个架构：多架构一起传时，portable / nsis 会额外
-      // 产出一个把三个架构打包在一起的「合并包」（实测 211MB，而单架构包只有 72MB）。
-      for (const arch of archsFor(platform)) {
-        const flag = platform === 'win' ? '--win' : platform === 'mac' ? '--mac' : '--linux'
-        npx(['electron-builder', flag, ARCH_FLAG[arch]])
+    for (const name of readdirSync(dir)) {
+      if (name.startsWith('__uninstaller-nsis-') && name.endsWith('.exe')) {
+        rmSync(join(dir, name), { force: true })
       }
     }
-    step(`${PLATFORM_LABEL[platform]} 打包完成。`)
-  } catch (err) {
-    failures.push(`${PLATFORM_LABEL[platform]}: ${err instanceof Error ? err.message : String(err)}`)
-    process.stderr.write(`[build] ERROR: ${PLATFORM_LABEL[platform]} 打包失败\n`)
+  } catch {
+    // release/ 还不存在（首次构建）：无需清理
   }
+}
+
+for (const platform of targets) {
+  step(`=== Packaging: ${PLATFORM_LABEL[platform]} ===`)
+  // WSL 那一趟内部已经是「逐架构串起来 + 失败即停」，整趟作为一个整体记录。
+  if (platform === 'linux' && IS_WIN_HOST && useWsl) {
+    try {
+      buildLinuxInWsl()
+      step(`${PLATFORM_LABEL[platform]} 打包完成。`)
+    } catch (err) {
+      failures.push(`${PLATFORM_LABEL[platform]}: ${errText(err)}`)
+      process.stderr.write(`[build] ERROR: ${PLATFORM_LABEL[platform]} 打包失败\n`)
+    }
+    continue
+  }
+
+  if (platform !== hostPlatform) {
+    warn(
+      `正在 ${process.platform} 上打包 ${PLATFORM_LABEL[platform]}：` +
+        (platform === 'linux'
+          ? 'AppImage 需要符号链接权限（开发者模式/管理员），deb 与 rpm 需要 fpm / rpmbuild。建议在 Linux 上构建。'
+          : '需要 wine 支持。建议在 Windows 上构建。')
+    )
+  }
+  const flag = platform === 'win' ? '--win' : platform === 'mac' ? '--mac' : '--linux'
+  const archList = archsFor(platform)
+  let done = 0
+  // 一次只给 electron-builder 传一个架构：多架构一起传时，portable / nsis 会额外
+  // 产出一个把三个架构打包在一起的「合并包」（实测 211MB，而单架构包只有 72MB）。
+  // 每个架构**单独** catch：一个架构失败不应该连带跳过后面的架构 ——
+  // 一架失败只损失那一架，其余照旧出包，最后在「失败项」里逐条列出。
+  for (const arch of archList) {
+    const args = ['electron-builder', flag, ARCH_FLAG[arch]]
+    // 兜底重试一次：清理残留卸载器已经解决了实测到的那次失败，但这一步毕竟要
+    // **执行一个刚写出来的程序**（杀软 / 索引服务随时可能插手），失败一次就丢掉整个
+    // 架构太亏。隔 10 秒重来一次，代价只有 10 秒。
+    for (let attempt = 1; ; attempt++) {
+      try {
+        if (platform === 'win') cleanStaleNsisUninstaller()
+        npx(args)
+        done += 1
+        break
+      } catch (err) {
+        if (attempt === 1) {
+          warn(
+            `${PLATFORM_LABEL[platform]} ${arch} 打包失败（${errText(err)}），10 秒后重试一次`
+          )
+          await sleep(10000)
+          continue
+        }
+        failures.push(`${PLATFORM_LABEL[platform]} ${arch}: ${errText(err)}`)
+        process.stderr.write(
+          `[build] ERROR: ${PLATFORM_LABEL[platform]} ${arch} 打包失败（继续下一个架构）\n`
+        )
+        break
+      }
+    }
+  }
+  if (done > 0) step(`${PLATFORM_LABEL[platform]} 打包完成（${done}/${archList.length} 个架构）。`)
 }
 
 // ---- 汇总（扫描整个 release/，因此能同时看到其它平台的旧产物）------------
