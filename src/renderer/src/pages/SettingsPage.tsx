@@ -8,6 +8,7 @@ import { JavaSection } from './settings/JavaSection'
 import { DownloadSection } from './settings/DownloadSection'
 import { CommunitySection } from './settings/CommunitySection'
 import { NoticeSection } from './settings/NoticeSection'
+import { AiSection } from './settings/AiSection'
 import { UpdateSection } from './settings/UpdateSection'
 
 /**
@@ -34,6 +35,7 @@ export function SettingsPage(): JSX.Element {
         <DownloadSection />
         <CommunitySection />
         <NoticeSection />
+        <AiSection />
         <UpdateSection />
       </div>
     </div>

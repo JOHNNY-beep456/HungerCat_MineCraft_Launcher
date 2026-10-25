@@ -6,6 +6,7 @@ import {
   BrowserWindow,
   ipcMain,
   dialog,
+  globalShortcut,
   nativeTheme,
   screen,
   session,
@@ -60,6 +61,11 @@ import { registerDebugHandlers } from './handlers/debug'
 import { registerWindowHandlers } from './handlers/window'
 import { registerFilesHandlers } from './handlers/files'
 import { registerMultiplayerWindowHandlers } from './handlers/multiplayer'
+import { registerAiHandlers } from './handlers/ai'
+import { createAiService, type AiService } from './ai/service'
+import { closeAiBall, syncAiBall, aiBallWindow } from './ai/ball'
+import { createNeteaseLyricsService, type NeteaseLyricsService } from './netease/service'
+import { isSmtcSupported } from './netease/smtc'
 import type { IpcContext } from './handlers/context'
 
 let mainWindow: BrowserWindow | null = null
@@ -71,6 +77,23 @@ let devWindow: BrowserWindow | null = null
 let miniWindow: BrowserWindow | null = null
 let authSession: DeviceCodeSession | null = null
 let gameProcess: ChildProcessWithoutNullStreams | null = null
+/**
+ * AI 助手服务：对话编排、工具授权与浮层状态都在这一个实例里。
+ *
+ * 允许为 null —— 它要到 app ready 之后的 `registerIpc()` 才创建，而
+ * `syncOverlayWindows()` 这类函数在类型层面无法证明自己一定晚于创建。
+ */
+let aiService: AiService | null = null
+/**
+ * 网易云歌词浮层服务（实验性）：轮询系统媒体会话 + 取歌词 + 逐句同步。
+ *
+ * 与 `aiService` 一样在 `registerIpc()` 里创建；允许为 null 是因为
+ * `syncOverlayWindows()` 等函数无法在类型层面证明自己一定晚于它创建。
+ */
+let lyricsService: NeteaseLyricsService | null = null
+
+/** AI 语音热键（Electron accelerator 写法）。 */
+const AI_VOICE_ACCELERATOR = 'Control+Alt+V'
 /** 全部下载任务的取消控制器，按 taskId 区分（版本安装 / Java / 资源下载共用）。 */
 const downloadAborts = new Map<string, AbortController>()
 /**
@@ -622,10 +645,18 @@ function iconPathForWindows(): string {
 function createOverlayWindow(kind: 'hud' | 'danmaku'): BrowserWindow {
   const workArea = screen.getPrimaryDisplay().workArea
   const isHud = kind === 'hud'
+  /**
+   * 开了歌词浮层时把 HUD 窗口放宽 / 放高一点：歌词是整句中文，360px 宽的卡片
+   * 一行放不下几句、换行也多；而三行歌词 + 歌名至少要 400px 才不至于挤成一团。
+   * 其它两种内容（大厅成员 / AI 回复）对尺寸不敏感，跟着一起放大没有副作用。
+   */
+  const lyricsWide = isHud && settings.get().neteaseLyricsHudEnabled === true
+  const hudWidth = lyricsWide ? 460 : 360
+  const hudHeight = lyricsWide ? 420 : 300
   const win = new BrowserWindow({
-    width: isHud ? 360 : workArea.width,
-    height: isHud ? 300 : workArea.height,
-    x: isHud ? workArea.x + workArea.width - 380 : workArea.x,
+    width: isHud ? hudWidth : workArea.width,
+    height: isHud ? hudHeight : workArea.height,
+    x: isHud ? workArea.x + workArea.width - (hudWidth + 20) : workArea.x,
     y: isHud ? workArea.y + 20 : workArea.y,
     show: false,
     frame: false,
@@ -699,14 +730,58 @@ function closeDanmakuWindow(): void {
   if (danmakuWindow && !danmakuWindow.isDestroyed()) danmakuWindow.close()
 }
 
-/** 按设置同步两个浮层窗口的存续（进入大厅且开关开启时创建，否则关闭）。 */
+/**
+ * 按设置同步两个浮层窗口的存续（进入大厅且开关开启时创建，否则关闭）。
+ *
+ * AI 浮层（`aiHudEnabled` + 游戏运行中）与联机 HUD 复用**同一个窗口**：
+ * 两个独立的透明置顶窗口会互相遮挡、也各自消耗一个渲染进程，而它们在游戏里
+ * 本来就是叠在同一块区域上的两块信息。谁需要就创建，两个都不需要才关闭。
+ */
 function syncOverlayWindows(): void {
   const s = settings.get()
   const inLobby = !!getMultiplayerLobby()
-  if (inLobby && s.multiplayerHudEnabled) createHudWindow()
-  else closeHudWindow()
+  const mpHud = inLobby && s.multiplayerHudEnabled
+  const aiHud = aiService?.hudState().enabled ?? false
+  /**
+   * 网易云歌词浮层：只要实验开关开着就常驻。
+   *
+   * 与 AI 浮层不同，它的展示时机不依赖「游戏是否在跑」——歌词浮层本身就是
+   * 「桌面上想边听边看词」的用法，而且检测播放器与是否开着游戏毫无关系。
+   * 没有曲目时窗口里什么都不画（`GameHud` 自己返回 null），不会挡住桌面。
+   */
+  const lyricsHud = isSmtcSupported() && s.neteaseLyricsHudEnabled === true
+  // 轮询 / 取歌词的启停跟着同一个条件走，避免「窗口关了就没人停轮询」。
+  lyricsService?.sync()
+  if (mpHud || aiHud || lyricsHud) {
+    createHudWindow()
+    resizeHudForLyrics(lyricsHud)
+  } else closeHudWindow()
   if (inLobby && s.multiplayerDanmakuEnabled) createDanmakuWindow()
   else closeDanmakuWindow()
+  pushHudState()
+}
+
+/**
+ * 按「歌词浮层开没开」把 HUD 窗口调到对应尺寸。
+ *
+ * 窗口尺寸是在创建那一刻定下的；而用户完全可能先开着「联机 HUD」进游戏、
+ * 再回设置里打开歌词开关 —— 那时窗口已经存在，不在这里补一次，歌词卡片就会
+ * 挤在 360px 的窄窗里（三行中文几乎放不下）。
+ */
+function resizeHudForLyrics(wide: boolean): void {
+  const win = hudWindow
+  if (!win || win.isDestroyed()) return
+  const targetW = wide ? 460 : 360
+  const targetH = wide ? 420 : 300
+  const [w, h] = win.getSize()
+  if (w === targetW && h === targetH) return
+  const { workArea } = screen.getPrimaryDisplay()
+  win.setBounds({
+    x: workArea.x + workArea.width - (targetW + 20),
+    y: workArea.y + 20,
+    width: targetW,
+    height: targetH
+  })
 }
 
 /** 向 HUD 浮层推送最新成员状态。 */
@@ -719,6 +794,10 @@ function pushHudState(): void {
     players: getMultiplayerHudPlayers()
   }
   hudWindow.webContents.send('mp:hudState', payload)
+  // AI 浮层与联机 HUD 同窗，快照一起推，免得窗口刚建好时 AI 那块是空的。
+  hudWindow.webContents.send('ai:hudState', aiService?.hudState() ?? null)
+  // 歌词同理：窗口可能是「开关刚打开」时才建的，补推一次才不会有空白等待。
+  if (lyricsService) hudWindow.webContents.send('music:lyricsState', lyricsService.current())
 }
 
 /** 把一条聊天消息推给弹幕窗口（按弹幕设置渲染）。 */
@@ -741,6 +820,50 @@ function pushDanmaku(msg: MpChatMessage): void {
 function broadcastToRenderers(channel: string, payload: unknown): void {
   for (const win of BrowserWindow.getAllWindows()) {
     if (!win.isDestroyed()) win.webContents.send(channel, payload)
+  }
+}
+
+/**
+ * AI 语音热键：Ctrl+Alt+V，按一下开始说话、再按一下结束并发送。
+ *
+ * 为什么需要热键：游戏内浮层是**鼠标穿透**窗口（`setIgnoreMouseEvents(true)`），
+ * 拿不到点击；用户在全屏游戏里也不该为了问一句话去切窗口。所以由主进程注册
+ * 全局快捷键，按下时把事件转给「当下能录音的那扇窗」：
+ *   游戏内浮层（正在游戏） > 悬浮球（桌面） > 无（不做任何事）。
+ *
+ * 只在「AI 已开启 + 语音聊天已开启」时响应：热键常驻注册（开销可忽略），
+ * 但要不要理会它按设置当场判断，这样改设置不必重注册、也不会出现
+ * 「快捷键被别处抢注」的时序问题。
+ */
+function handleAiVoiceHotkey(): void {
+  const s = settings.get()
+  if (!s.aiEnabled || !s.aiVoiceEnabled) return
+  const target =
+    hudWindow && !hudWindow.isDestroyed() ? hudWindow : aiBallWindow()
+  if (!target) return
+  target.webContents.send('ai:voiceToggle')
+}
+
+/**
+ * 按设置同步 AI 全局快捷键。
+ *
+ * 只在「AI 已开启 且 语音已开启」时占用 `Ctrl+Alt+V`。之前是无条件注册：
+ * 于是从没开过 AI 的用户也会被抢走这个组合键（其它软件里按了没反应），
+ * 属于明显的侵入性副作用。关掉开关时主动注销，把键还回去。
+ */
+function syncAiShortcuts(): void {
+  const s = settings.get()
+  const want = s.aiEnabled && s.aiVoiceEnabled
+  if (!want) {
+    if (globalShortcut.isRegistered(AI_VOICE_ACCELERATOR)) globalShortcut.unregister(AI_VOICE_ACCELERATOR)
+    return
+  }
+  if (globalShortcut.isRegistered(AI_VOICE_ACCELERATOR)) return
+  try {
+    const ok = globalShortcut.register(AI_VOICE_ACCELERATOR, handleAiVoiceHotkey)
+    if (!ok) console.warn(`[AI] 语音热键 ${AI_VOICE_ACCELERATOR} 注册失败（可能被其他程序占用）`)
+  } catch (err) {
+    console.warn('[AI] 语音热键注册异常', err)
   }
 }
 
@@ -994,7 +1117,25 @@ const ipcContext: IpcContext = {
   createDevWindow,
   closeDevWindow,
   closeNativeDevTools,
-  broadcastDevMode
+  broadcastDevMode,
+  // AI 工具「启动实例」不自己跑一遍启动流程，而是请主界面按用户点按钮的那条路走。
+  requestLaunch: (versionId) => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('ai:launchRequest', versionId)
+      // 主窗口在后台时把它拉到前面：用户要求「帮我启动游戏」，看不见反应会以为没生效。
+      if (mainWindow.isMinimized()) mainWindow.restore()
+      mainWindow.show()
+    }
+  },
+  // 设置里改「游戏内浮层」开关后立刻让它生效：否则玩家在游戏里打开开关，
+  // 得等下一次启动才会出现浮层。
+  syncOverlays: () => {
+    syncOverlayWindows()
+  },
+  // 语音热键按开关动态占用 / 归还，避免没用 AI 的用户被抢走组合键。
+  syncAiShortcuts: () => {
+    syncAiShortcuts()
+  }
 }
 
 function registerIpc(): void {
@@ -1018,6 +1159,45 @@ function registerIpc(): void {
   registerDebugHandlers(ipcContext)
   registerWindowHandlers(ipcContext)
   registerFilesHandlers(ipcContext)
+
+  // AI 助手：服务实例在 IPC 注册时创建（它要广播事件给所有窗口），
+  // 处理器只负责参数检查与转发。
+  aiService = createAiService({
+    ctx: ipcContext,
+    /**
+     * AI 事件的路由。
+     *
+     * 工具确认（`ai:toolRequest`）要出现在**用户正看着的那扇窗**：悬浮球存在时
+     * 只发给它，否则才广播（主窗口有一份同样的确认 UI）。都广播会让两处同时弹框。
+     * 浮层状态则是纯广播——只有 HUD 窗口订阅它，其余窗口收到也不做任何事。
+     */
+    broadcast: (channel, payload) => {
+      if (channel === 'ai:toolRequest') {
+        const ball = aiBallWindow()
+        if (ball) {
+          ball.webContents.send(channel, payload)
+          return
+        }
+      }
+      broadcastToRenderers(channel, payload)
+    }
+  })
+  registerAiHandlers(ipcContext, aiService)
+
+  /**
+   * 网易云歌词浮层（实验性）。
+   *
+   * 服务本身自己管理「要不要跑」（`sync()` 读设置），这里只给它一条出口：
+   * 算出的歌词快照直接推给 HUD 窗口 —— 只有这扇窗订阅它。
+   */
+  lyricsService = createNeteaseLyricsService({
+    push: (state) => {
+      if (hudWindow && !hudWindow.isDestroyed()) {
+        hudWindow.webContents.send('music:lyricsState', state)
+      }
+    }
+  })
+  ipcMain.handle('music:lyricsState', () => lyricsService?.current() ?? null)
 
   // 硬件加速是进程级开关（Chromium 只允许在 app ready 之前决定是否启用），
   // 改完必须重启才生效：这里把「本次启动实际用的值」暴露给设置页，
@@ -1118,7 +1298,17 @@ app.whenReady().then(() => {
   registerMultiplayerIpc({
     onLobbyChanged: broadcastLobbyChanged,
     openHudWindow: createHudWindow,
-    closeHudWindow,
+    /**
+     * 渲染层说的「关闭 HUD」只代表**联机那块**不再需要这扇窗。
+     *
+     * 这扇窗同时承载 AI 浮层与网易云歌词浮层（见 syncOverlayWindows）。
+     * 渲染层在「不在大厅」时会无条件调一次 closeHudWindow()（启动时就会发生一次），
+     * 直接 close 会把刚按设置建好的歌词浮层当场拆掉 —— 表现为「开关开了却什么都看不到」。
+     * 所以这里改成「按当前设置重算存续」：谁还需要它，它就留着。
+     */
+    closeHudWindow: () => {
+      syncOverlayWindows()
+    },
     openDanmakuWindow: createDanmakuWindow,
     closeDanmakuWindow,
     syncOverlays: () => {
@@ -1137,6 +1327,12 @@ app.whenReady().then(() => {
   // 自动拉起，因此这里改为在窗口 ready-to-show 之后再建立（见 createWindow），
   // 避免 utilityProcess 冷启动与 Chromium 抢资源、拖慢首屏。
   createWindow()
+  // AI 悬浮球：按设置恢复（位置由 aiBallX / aiBallY 持久化，见 ai/ball.ts）。
+  syncAiBall()
+  // 网易云歌词浮层：开着的用户启动即恢复轮询与浮层窗口（没开则什么也不做）。
+  syncOverlayWindows()
+  // AI 语音热键：游戏内 / 桌面都能一键说话（浮层是鼠标穿透的，只能靠热键）。
+  syncAiShortcuts()
   // 用户在系统里切换明暗模式时，同步窗口底色（主题为「跟随系统」时才实际变化）。
   nativeTheme.on('updated', applyWindowBackground)
   // 开发模式：注册状态广播 + 到期兜底检查（到期自动关闭并回收开发者工具窗口）。
@@ -1167,4 +1363,11 @@ app.on('will-quit', () => {
   // 联机板块：退出启动器时停掉 EasyTier 与虚拟网卡，避免残留虚拟网卡影响下次启动。
   void forceStopMultiplayer()
   closeMiniWindow()
+  // 悬浮球是独立窗口，主窗口关掉不会带走它。
+  closeAiBall()
+  // 歌词采样是常驻 PowerShell 子进程，必须显式收掉，否则会残留到下次启动。
+  lyricsService?.dispose()
+  lyricsService = null
+  // 全局快捷键必须显式释放，否则重启后可能被上一次的注册占着。
+  globalShortcut.unregisterAll()
 })

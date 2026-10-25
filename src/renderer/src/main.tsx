@@ -77,6 +77,11 @@ async function mount(): Promise<void> {
     // 联机板块：消息弹幕浮层（透明穿透，滚动显示聊天消息）。
     const { DanmakuOverlay } = await import('./components/DanmakuOverlay')
     root.render(<DanmakuOverlay />)
+  } else if (windowKind === 'ai-ball') {
+    // AI 助手：桌面悬浮球（可拖动的小窗，点开展开成聊天面板）。
+    // 刻意不挂 AppProvider：它要能独立于主窗口瞬间出现，不该背上账号 / 主页 / 更新检查的启动开销。
+    const { AiBall } = await import('./components/AiBall')
+    root.render(<AiBall />)
   } else {
     const { default: App } = await import('./App')
     root.render(

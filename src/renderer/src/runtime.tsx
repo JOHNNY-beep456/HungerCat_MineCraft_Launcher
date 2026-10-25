@@ -10,7 +10,41 @@ import {
 } from 'react'
 import type { DownloadProgress, LaunchEvent, LaunchOptions, LaunchState, ModpackProbe } from '@shared/types'
 import { diagnoseLaunch, type LaunchReport } from './launch-diagnosis'
-import { useApp } from './store'
+import { activeGameDir, useApp } from './store'
+
+/**
+ * 在本地诊断报告之上，按设置追加 AI 分析。
+ *
+ * 设计要点：
+ *   · **只补不改**——本地规则（`diagnoseLaunch`）命中的结论与建议始终保留，
+ *     AI 的补充另起一段，即使 AI 说错也不会覆盖掉可靠的离线结论；
+ *   · 全链路静默失败——未配置 / 断网 / 用户关了开关时，报告照常可用；
+ *   · 不阻塞界面——调用方先渲染本地报告，本函数在后台把结果 patch 进去。
+ *
+ * @param local 本地规则生成的报告
+ * @param patch 把补充内容合并回报告的回调（只在拿到非空分析时调用）
+ */
+async function appendAiAnalysis(local: LaunchReport, patch: (next: Partial<LaunchReport>) => void): Promise<void> {
+  try {
+    const s = await window.api.settings.get()
+    if (!s.aiEnabled || !s.aiAutoAnalyzeErrors) return
+    const payload = [
+      `结论：${local.summary}`,
+      local.advice ? `已有建议：${local.advice}` : '',
+      `关键错误：${local.detail}`,
+      '',
+      '【完整错误 / 日志】',
+      local.raw.slice(0, 4000)
+    ]
+      .filter(Boolean)
+      .join('\n')
+    const r = await window.api.ai.analyzeError(payload)
+    if (!r.ok || !r.text.trim()) return
+    patch({ advice: `${local.advice ? `${local.advice}\n\n` : ''}【AI 分析】\n${r.text.trim()}` })
+  } catch {
+    // AI 不可用（未配置 / 断网）时静默跳过：本地报告已经可用。
+  }
+}
 
 interface RuntimeState {
   download: DownloadProgress | null
@@ -84,7 +118,7 @@ const RuntimeActionsContext = createContext<RuntimeActions | null>(null)
 
 export function RuntimeProvider({ children }: { children: ReactNode }): JSX.Element {
   // 启动游戏后自动跳转到「启动游戏」页：由这里发起全局导航请求，最外层 Shell 消费。
-  const { requestNavigate } = useApp()
+  const { requestNavigate, settings, selectedAccount } = useApp()
   const [downloads, setDownloads] = useState<DownloadProgress[]>([])
   const [launchState, setLaunchState] = useState<LaunchState | null>(null)
   const [launchLog, setLaunchLog] = useState<string[]>([])
@@ -159,6 +193,8 @@ export function RuntimeProvider({ children }: { children: ReactNode }): JSX.Elem
       if (e.state === 'exited' || e.state === 'error') {
         setBusy(false)
         setLaunchPid(null)
+        // 游戏退出后 AI 浮层不再需要，收起（有大厅时仍由联机 HUD 驱动）。
+        void window.api.ai.setHudActive(false)
         // 启动失败 / 非正常退出：先非侵入式提示「错误分析中…」，再按关键词分析日志
         // 生成可读报告；未能识别时报告里仍保留原始错误内容，直接输出给用户。
         if (e.state === 'error' || (e.exitCode !== undefined && e.exitCode !== 0)) {
@@ -170,7 +206,9 @@ export function RuntimeProvider({ children }: { children: ReactNode }): JSX.Elem
           // 延后到下一帧再计算：同步计算会与提示同一帧提交，用户看不到「分析中」。
           analyzeTimerRef.current = setTimeout(() => {
             analyzeTimerRef.current = null
-            setLaunchReport(diagnoseLaunch(logs, error, exitCode))
+            const local = diagnoseLaunch(logs, error, exitCode)
+            setLaunchReport(local)
+            void appendAiAnalysis(local, (patch) => setLaunchReport((prev) => (prev ? { ...prev, ...patch } : prev)))
             setAnalyzingReport(false)
           }, 0)
         }
@@ -194,6 +232,12 @@ export function RuntimeProvider({ children }: { children: ReactNode }): JSX.Elem
       if (!msg.includes('下载已取消')) {
         setLaunchState('error')
         setLaunchLog([msg])
+        // 安装失败与启动失败走同一条分析链路：本地规则先给结论，AI 再补充。
+        const local = diagnoseLaunch([msg], msg, undefined)
+        setLaunchReport(local)
+        void appendAiAnalysis(local, (patch) =>
+          setLaunchReport((prev) => (prev ? { ...prev, ...patch } : prev))
+        )
       }
     } finally {
       setBusy(false)
@@ -228,6 +272,8 @@ export function RuntimeProvider({ children }: { children: ReactNode }): JSX.Elem
       try {
         const { pid } = await window.api.launch.start(opts)
         setLaunchPid(pid || null)
+        // 进游戏了：让 AI 浮层可以显示（有大厅时联机 HUD 也在这扇窗里）。
+        void window.api.ai.setHudActive(true)
       } catch (err) {
         setLaunchState('error')
         setLaunchLog([err instanceof Error ? err.message : String(err)])
@@ -257,6 +303,25 @@ export function RuntimeProvider({ children }: { children: ReactNode }): JSX.Elem
     },
     [doLaunch]
   )
+
+  /**
+   * AI 工具「启动实例」的落点。
+   *
+   * 主进程不自己跑启动流程（账号刷新 / Java 选择 / 进度事件都在渲染层），
+   * 只发一条 `ai:launchRequest`，这里按「用户点启动」完全一样的路径发起，
+   * 于是 AI 启动与手动启动的行为、界面反馈天然一致。
+   */
+  useEffect(() => {
+    return window.api.ai.onLaunchRequest((versionId) => {
+      if (!selectedAccount) return
+      void launch({
+        versionId,
+        accountId: selectedAccount.id,
+        gameDir: activeGameDir(settings),
+        memoryMb: settings.memoryMb
+      })
+    })
+  }, [launch, selectedAccount, settings])
 
   const installJavaAndLaunch = useCallback(async () => {
     const prompt = javaPrompt

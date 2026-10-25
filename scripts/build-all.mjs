@@ -558,9 +558,17 @@ if (opts.skipNative) {
       run('node', args)
     } catch (err) {
       if (arch === hostArch()) throw err
+      // 交叉架构缺工具链是常态（典型：Windows 上编 ARM64 需要「MSVC ARM64 生成工具」
+      // + LLVM/clang —— ring 的汇编必须走 clang）。只降级这一架，别拖垮整次构建，
+      // 并把「装什么」直接写进提示，省得下次再去猜。
+      const hint =
+        key === 'win32-arm64'
+          ? '\n[build]        需要 Visual Studio 勾选「MSVC v143 - ARM64 生成工具」并安装 LLVM(clang)；' +
+            '\n[build]        两者齐备后重跑即可，缺任一项该架构只能用 TS 下载器（功能相同，下载略慢）。'
+          : ''
       warn(
         `原生内核 ${key} 编译失败，该架构将回退 TS 下载器：` +
-          `${err instanceof Error ? err.message : String(err)}`
+          `${err instanceof Error ? err.message : String(err)}${hint}`
       )
     }
   }
@@ -751,5 +759,13 @@ if (failures.length > 0) {
   process.stderr.write('[build] 失败项：\n')
   for (const f of failures) process.stderr.write(`  - ${f}\n`)
   process.exit(1)
+}
+// 权限位修复：统一收敛归档产物里不该出现的执行位，避免下游解包后
+// 出现「资源文件可执行」这类告警。它不改变包内容，失败也不影响产物本身。
+try {
+  step('修复产物完整性（权限位）')
+  run('node', ['scripts/fix-artifact-integrity.mjs'])
+} catch {
+  warn('产物完整性修复失败（不影响产物本身，可手动执行 npm run fix:integrity）')
 }
 step('All done.')

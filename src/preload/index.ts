@@ -32,7 +32,10 @@ import type {
   MpMiniState,
   MpChatMessage,
   MpHudState,
-  MpDanmaku
+  MpDanmaku,
+  AiHudState,
+  AiToolRequest,
+  NeteaseLyricsState
 } from '@shared/types'
 
 function subscribe<T>(channel: string): (cb: (payload: T) => void) => () => void {
@@ -282,6 +285,32 @@ const api: LauncherApi = {
     downloadAndRun: (info: UpdateInfo) => ipcRenderer.invoke('update:downloadAndRun', info),
     onProgress: subscribe<DownloadProgress>('update:progress')
   },
+  ai: {
+    chat: (text: string, context?: string) => ipcRenderer.invoke('ai:chat', text, context),
+    cancel: () => ipcRenderer.invoke('ai:cancel'),
+    decideTool: (id: string, approved: boolean) => ipcRenderer.invoke('ai:decideTool', id, approved),
+    onToolRequest: subscribe<AiToolRequest>('ai:toolRequest'),
+    analyzeError: (text: string) => ipcRenderer.invoke('ai:analyzeError', text),
+    test: () => ipcRenderer.invoke('ai:test'),
+    setKey: (key: string) => ipcRenderer.invoke('ai:setKey', key),
+    clearKey: () => ipcRenderer.invoke('ai:clearKey'),
+    tools: () => ipcRenderer.invoke('ai:tools'),
+    reset: () => ipcRenderer.invoke('ai:reset'),
+    transcribe: (audio: Uint8Array, mime: string) => ipcRenderer.invoke('ai:transcribe', audio, mime),
+    ball: {
+      sync: () => ipcRenderer.invoke('ai:ball:sync'),
+      expand: (open: boolean) => ipcRenderer.invoke('ai:ball:expand', open),
+      move: (x: number, y: number, persist: boolean) => ipcRenderer.invoke('ai:ball:move', x, y, persist),
+      position: () => ipcRenderer.invoke('ai:ball:position')
+    },
+    onHudState: subscribe<AiHudState>('ai:hudState'),
+    onBallExpanded: subscribe<boolean>('ai:ballExpanded'),
+    hudState: () => ipcRenderer.invoke('ai:hudState'),
+    onVoiceToggle: subscribe<void>('ai:voiceToggle'),
+    onLaunchRequest: subscribe<string>('ai:launchRequest'),
+    setHudActive: (active: boolean) => ipcRenderer.invoke('ai:setHudActive', active),
+    setHudStatus: (status: AiHudState['status']) => ipcRenderer.invoke('ai:setHudStatus', status)
+  },
   translate: {
     texts: (texts: string[], target: string) => ipcRenderer.invoke('translate:texts', texts, target),
     setKey: (key: string) => ipcRenderer.invoke('translate:setKey', key),
@@ -377,6 +406,11 @@ const api: LauncherApi = {
       return () => ipcRenderer.removeListener('mp:danmaku', listener)
     },
     danmakuConfig: () => ipcRenderer.invoke('mp:danmakuConfig')
+  },
+  // 网易云歌词浮层（实验性）：只有 HUD 窗口订阅，其它窗口拿到也不显示任何东西。
+  music: {
+    onLyricsState: subscribe<NeteaseLyricsState>('music:lyricsState'),
+    lyricsState: () => ipcRenderer.invoke('music:lyricsState')
   }
 }
 

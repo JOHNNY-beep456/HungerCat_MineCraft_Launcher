@@ -169,6 +169,17 @@ export const SETTINGS_DEFS: SettingsDefs = {
   enableMultiplayer: { default: false, ui: { section: 'experimental', control: 'custom' } },
   /* 进程级开关，必须在 app ready 之前读；自定义行里带「需重启」提示与重启按钮。 */
   hardwareAcceleration: { default: false, ui: { section: 'experimental', control: 'custom' } },
+  /* 网易云歌词浮层：默认关闭；开 / 关只影响 HUD 那块内容与后台轮询，不改动播放器。 */
+  neteaseLyricsHudEnabled: {
+    default: false,
+    ui: {
+      section: 'experimental',
+      control: 'switch',
+      labelKey: 'settings.row.neteaseLyrics',
+      hintKey: 'settings.exp.neteaseLyrics.desc',
+      disableWhen: ['local']
+    }
+  },
 
   /* ============ 游戏（板块 id：game） ============ */
   gameDir: { default: '', ui: { section: 'game', control: 'custom' } },
@@ -295,6 +306,33 @@ export const SETTINGS_DEFS: SettingsDefs = {
     default: true,
     ui: { section: 'update', control: 'switch', labelKey: 'settings.row.autoCheckHomepage' }
   },
+
+  /* ============ AI 助手（板块 id：ai） ============ */
+  /* 这里只登记默认值，不带 `ui`：AI 板块整块由 `pages/settings/AiSection.tsx` 手工绘制。
+     原因是这一块的每一行都彼此联动——换接口格式要改默认地址与占位提示、密钥要
+     「先测通再落盘」、工具权限是一张随工具清单变化的表——用 `control: 'custom'`
+     逐行注册反而要在注册表与渲染层之间来回跳，不如集中在一个组件里读起来清楚。 */
+  aiEnabled: { default: false },
+  aiFormat: { default: 'openai' },
+  aiBaseUrl: { default: 'https://api.openai.com/v1' },
+  /* 派生字段：真实密钥在主进程安全存储里，这里只反映「有没有」。 */
+  aiApiKeySet: { default: false },
+  aiHeaders: { default: '' },
+  aiModel: { default: 'gpt-4o-mini' },
+  aiHistoryTurns: { default: 10 },
+  aiVoiceEnabled: { default: false },
+  /* 语音识别模型（OpenAI 兼容接口的 model 字段），不单列一行。 */
+  aiVoiceModel: { default: 'whisper-1' },
+  aiBallEnabled: { default: false },
+  /* 悬浮球位置：-1 = 从未拖动过，按「右下角」现算。 */
+  aiBallX: { default: -1 },
+  aiBallY: { default: -1 },
+  aiHudEnabled: { default: false },
+  aiHudOpacity: { default: 0.85 },
+  aiAutoAnalyzeErrors: { default: true },
+  aiToolsEnabled: { default: false },
+  /* 每个工具的授权策略（工具名 → allow / ask / deny）。 */
+  aiToolPolicy: { default: {} },
 
   /* ============ 以下为无独立设置行的字段（默认值仍在此登记） ============ */
   memoryMb: { default: 4096 },

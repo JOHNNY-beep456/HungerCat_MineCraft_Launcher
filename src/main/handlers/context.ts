@@ -55,4 +55,28 @@ export interface IpcContext {
   closeDevWindow(): void
   closeNativeDevTools(): void
   broadcastDevMode(): void
+
+  // ---- AI 助手 ----
+  /**
+   * 请求主窗口用「用户点启动」那条完整链路启动一个实例。
+   *
+   * 启动涉及账号刷新、Java 选择、进度事件与渲染层状态机，主进程侧重复实现一遍
+   * 只会产生两套行为；因此 AI 工具只负责「请主界面去启动」，由渲染层走原路径。
+   */
+  requestLaunch(versionId: string): void
+
+  /**
+   * 按当前设置重新同步浮层窗口（联机 HUD / 弹幕 / AI 浮层）。
+   *
+   * 设置页改「游戏内浮层」这类开关时调用：浮层的存续条件是「设置开着 + 现场需要」，
+   * 只在启动 / 进大厅时算一次的话，玩家在游戏里打开开关会看不到任何变化。
+   */
+  syncOverlays(): void
+
+  /**
+   * 按设置重新占用 / 归还 AI 语音全局快捷键。
+   *
+   * 热键是全局抢注的：没开 AI 的用户不该被占走 `Ctrl+Alt+V`。
+   */
+  syncAiShortcuts(): void
 }

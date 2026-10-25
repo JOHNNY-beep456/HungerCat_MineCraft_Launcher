@@ -3,6 +3,7 @@ import { app, ipcMain, screen } from 'electron'
 import { freemem, totalmem } from 'os'
 import type { LauncherSettings } from '@shared/types'
 import { settings, detectHardware } from '../store'
+import { syncAiBall } from '../ai/ball'
 import { clearWallpaper, pickWallpaper, wallpaperData } from '../wallpaper'
 import type { IpcContext } from './context'
 
@@ -25,6 +26,30 @@ export function registerSettingsHandlers(ctx: IpcContext): void {
     // Debug 模式只控制「是否记录启动日志」，不再自动弹出日志窗口（需要时到设置里手动打开）。
     // 注意：这里不再因填写调试密钥而自动采集 / 上传日志 —— 收集必须经用户在设置页
     // 明确同意后才由 debug:submit 触发，避免「提交反馈即开始收集」。
+    //
+    // AI 开关变化后立刻同步悬浮球窗口：设置页与悬浮球自带的「×」都只是改这个开关，
+    // 窗口的创建 / 销毁统一由 syncAiBall() 负责，否则关掉开关后球会一直留在屏幕上。
+    if (partial.aiEnabled !== undefined || partial.aiBallEnabled !== undefined) {
+      syncAiBall()
+    }
+    // 语音热键是全局抢注的：开关一变就重新占用 / 归还。
+    if (partial.aiEnabled !== undefined || partial.aiVoiceEnabled !== undefined) {
+      ctx.syncAiShortcuts()
+    }
+    // 浮层开关同理：进游戏后打开 / 关闭「游戏内浮层」，窗口要当场跟随。
+    // 存续条件依赖「设置 + 现场（是否在大厅 / 游戏是否运行）」，只有
+    // syncOverlayWindows() 同时掌握两边，所以交给它重算一次。
+    // 歌词浮层的开关也在其中；`mode`（切到「本地」会停掉联网歌词）同样要重算。
+    if (
+      partial.aiHudEnabled !== undefined ||
+      partial.aiEnabled !== undefined ||
+      partial.multiplayerHudEnabled !== undefined ||
+      partial.multiplayerDanmakuEnabled !== undefined ||
+      partial.neteaseLyricsHudEnabled !== undefined ||
+      partial.mode !== undefined
+    ) {
+      ctx.syncOverlays()
+    }
     return next
   })
   ipcMain.handle('app:version', () => app.getVersion())

@@ -1,0 +1,4 @@
+{
+  "settings.row.neteaseLyrics": "網易雲音樂歌詞浮層",
+  "settings.exp.neteaseLyrics.desc": "在 HUD 浮層上逐句顯示網易雲音樂正在播放的歌詞。僅 Windows 有效，需要網易雲音樂客戶端（3.x 及以上）正在播放；歌詞經網易雲介面即時取得，需連網。"
+}

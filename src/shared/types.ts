@@ -700,6 +700,197 @@ export interface LauncherSettings {
   multiplayerJoinCount: number
   /** 联机 · 作为房主次数。 */
   multiplayerHostCount: number
+
+  /* ==================== AI 助手 ==================== */
+
+  /**
+   * AI 助手总开关。
+   *
+   * 关闭时下面所有 AI 相关能力均不生效（悬浮球、游戏内浮层、报错分析、工具调用），
+   * 但配置值原样保留，重新打开即可继续用。
+   */
+  aiEnabled: boolean
+  /** 接口格式（决定请求体与路径怎么拼），见 `AiApiFormat`。 */
+  aiFormat: AiApiFormat
+  /** API 地址（只填到版本根，如 `https://api.openai.com/v1`；路径由主进程按格式拼接）。 */
+  aiBaseUrl: string
+  /**
+   * 派生字段：API 密钥**是否已保存**。
+   *
+   * 真实密钥只存在于主进程的安全存储（safeStorage 加密落盘），既不随设置下发到
+   * 渲染层、也不写进 settings.json，因此界面只能显示「已设置 / 未设置」。
+   */
+  aiApiKeySet: boolean
+  /** 自定义请求头（JSON 对象文本，可选；留空则不附加）。 */
+  aiHeaders: string
+  /** 模型 ID，如 `gpt-4o-mini` / `claude-3-5-sonnet-latest` / `qwen2.5:7b`。 */
+  aiModel: string
+  /** 悬浮球开关：开启后桌面右下角出现可拖动的圆形助手入口。 */
+  aiBallEnabled: boolean
+  /** 悬浮球横坐标（屏幕逻辑像素）；-1 表示尚未拖动过，按「右下角」现算。 */
+  aiBallX: number
+  /** 悬浮球纵坐标；-1 同上。 */
+  aiBallY: number
+  /** 进入游戏（启动实例）后自动显示 AI 浮层，并与「联机」HUD 合并同一块浮层。 */
+  aiHudEnabled: boolean
+  /** AI 浮层透明度（0–1）。 */
+  aiHudOpacity: number
+  /** 语音聊天：麦克风语音输入 + 回复语音播报。 */
+  aiVoiceEnabled: boolean
+  /** 语音识别模型 ID（OpenAI 兼容接口的 `model` 字段，默认 `whisper-1`）。 */
+  aiVoiceModel: string
+  /** 启动失败 / 安装报错时，自动把错误交给 AI 分析并给出处理建议。 */
+  aiAutoAnalyzeErrors: boolean
+  /** 是否允许 AI 调用启动器工具（MCP）。关闭时模型仍可聊天，但工具一律拒绝。 */
+  aiToolsEnabled: boolean
+  /**
+   * 每个工具的授权策略（键 = 工具名）。
+   *
+   * 缺省值按工具自带的 `risk` 推导：`safe` 默认放行、`dangerous` 默认每次询问。
+   * 用户可在此表里改为「总是允许 / 总是拒绝」。
+   */
+  aiToolPolicy: Record<string, AiToolPolicy>
+  /** 带进对话的历史轮数上限（1–50）。 */
+  aiHistoryTurns: number
+
+  /* ==================== 网易云音乐歌词（实验性） ==================== */
+
+  /**
+   * 实验性（默认关闭）：在 HUD 浮层上显示网易云音乐「正在播放」歌曲的歌词。
+   *
+   * 数据链路：Windows 媒体会话（SMTC）取当前曲目 → 按「歌名 + 歌手 + 时长」匹配
+   * 网易云歌词接口 → 解析 LRC 并按播放进度逐句高亮。
+   *
+   * 因此它有三条前置条件，都会在开关下方说明：
+   *   · 需要网易云音乐客户端（3.x 起把播放状态注册进系统媒体控件）正在播放；
+   *   · 取歌词要联网（「本地」模式下不显示）；
+   *   · 只有 Windows 有 SMTC，其它平台即使开启也不会显示任何内容。
+   */
+  neteaseLyricsHudEnabled: boolean
+}
+
+/* ------------------------------------------------------------------ */
+/* AI 助手                                                              */
+/* ------------------------------------------------------------------ */
+
+/**
+ * AI 接口格式。
+ *
+ * - `openai`     OpenAI Chat Completions（`/chat/completions`，最常见的兼容网关都走这套）
+ * - `anthropic`  Claude Messages（`/v1/messages`）
+ * - `gemini`     Google Generative Language（`:generateContent`）
+ * - `ollama`     本地 Ollama（`/api/chat`，无需密钥）
+ * - `custom`     完全自定义端点（按 OpenAI 的请求体发送，路径用 `aiBaseUrl` 原样）
+ */
+export type AiApiFormat = 'openai' | 'anthropic' | 'gemini' | 'ollama' | 'custom'
+
+/** 单个工具的授权策略：直接放行 / 每次询问 / 禁止。 */
+export type AiToolPolicy = 'allow' | 'ask' | 'deny'
+
+/** 工具的「危险等级」：safe 无需确认，dangerous 默认每次询问。 */
+export type AiToolRisk = 'safe' | 'dangerous'
+
+/** 一个可被 AI 调用的启动器工具（MCP 风格的 name / description / inputSchema）。 */
+export interface AiToolSpec {
+  name: string
+  /** 给模型看的说明。 */
+  description: string
+  /** JSON Schema（MCP 同款写法）。 */
+  inputSchema: Record<string, unknown>
+  risk: AiToolRisk
+  /** 给用户看的标题（确认框里显示）。 */
+  title: string
+}
+
+/** 等待用户确认的一次工具调用。 */
+export interface AiToolRequest {
+  /** 本次调用的唯一 id，用户决定后原样回传。 */
+  id: string
+  name: string
+  title: string
+  risk: AiToolRisk
+  /** 调用参数（原样展示给用户核对）。 */
+  args: Record<string, unknown>
+  /** 一句话描述「将要做什么」，供确认框正文使用。 */
+  summary: string
+}
+
+/** 对话消息（仅保留三种角色，工具结果以 user 文本回灌，兼容各家接口）。 */
+export interface AiChatMessage {
+  role: 'system' | 'user' | 'assistant'
+  content: string
+}
+
+/** 一次对话的结果。 */
+export interface AiChatResult {
+  ok: boolean
+  /** 助手回复正文（Markdown）。失败时为空串。 */
+  text: string
+  /** 失败原因（可直接展示）。 */
+  error?: string
+  /** 本轮实际执行过的工具名（用于界面提示「做了什么」）。 */
+  usedTools: string[]
+}
+
+/** 报错自动分析的结果。 */
+export interface AiErrorAnalysis {
+  ok: boolean
+  text: string
+  error?: string
+}
+
+/**
+ * 网易云歌词浮层的快照（主进程按播放进度逐句算出，推给 HUD 窗口）。
+ *
+ * 只送「上一句 / 当前句 / 下一句」三行而不是整份歌词：HUD 窗口常驻置顶、
+ * 每隔几百毫秒就可能刷新一次，整份 LRC（几十到几百行）传输和重渲染都不划算，
+ * 而浮层上也最多展示三行。
+ */
+export interface NeteaseLyricsState {
+  /** 是否应当显示歌词卡片（实验开关 + Windows + 已连上正在播放的网易云）。 */
+  enabled: boolean
+  /**
+   * 当前展示状态：
+   *   off     开关没开 / 非 Windows（整块不显示）
+   *   idle    开着但网易云没有正在播放的歌曲
+   *   loading 已识别到曲目，正在取歌词
+   *   sync    已拿到歌词，正在逐句同步
+   *   nolyric 歌曲识别到了，但该曲目没有可用歌词（纯音乐 / 无版权）
+   *   error   取歌词失败（网络 / 接口异常）
+   */
+  status: 'off' | 'idle' | 'loading' | 'sync' | 'nolyric' | 'error'
+  /** 曲名 / 歌手（识别到但无歌词时也用于回显）。 */
+  title: string
+  artist: string
+  /** 三行歌词：上一句（可能为空串）。 */
+  prev: string
+  /** 当前句（空串 = 前奏 / 间奏）。 */
+  current: string
+  /** 下一句（可能为空串）。 */
+  next: string
+  /** 失败 / 无歌词时给玩家的一句话原因（可直接展示）。 */
+  message?: string
+}
+
+/** 网易云歌词浮层的渲染层接口。 */
+export interface NeteaseLyricsApi {
+  /** 订阅歌词快照（HUD 窗口用）。 */
+  onLyricsState: (cb: (state: NeteaseLyricsState) => void) => () => void
+  /** 窗口刚建好时主动拉一次当前快照（订阅可能晚于主进程那次推送）。 */
+  lyricsState: () => Promise<NeteaseLyricsState>
+}
+
+/** AI 浮层（游戏内 HUD）的快照。 */
+export interface AiHudState {
+  /** 是否应当显示（总开关 + 进游戏 + 浮层开关共同决定）。 */
+  enabled: boolean
+  opacity: number
+  /** 当前状态：idle 待命 / thinking 思考中 / speaking 播报中 / listening 收音中。 */
+  status: 'idle' | 'thinking' | 'speaking' | 'listening'
+  /** 最近一条助手回复（用于浮层字幕）。 */
+  text: string
+  /** 最近一条用户输入（用于浮层回显）。 */
+  lastUser: string
 }
 
 /* ------------------------------------------------------------------ */
@@ -1868,6 +2059,90 @@ export interface LauncherApi {
     downloadAndRun: (info: UpdateInfo) => Promise<string>
     onProgress: (cb: (p: DownloadProgress) => void) => () => void
   }
+  /* ---------------------------------------------------------------- */
+  /* AI 助手                                                           */
+  /* ---------------------------------------------------------------- */
+  ai: {
+    /**
+     * 一轮对话：把用户输入交给模型；模型若要求调用启动器工具，
+     * 主进程按权限表决定「直接执行 / 弹确认 / 拒绝」，执行结果回灌后继续对话。
+     *
+     * `context` 是渲染层附带的现场信息（当前页面、选中实例、最近日志等），
+     * 会拼进 system prompt，让回答更贴合「现在在干什么」。
+     */
+    chat: (text: string, context?: string) => Promise<AiChatResult>
+    /** 取消当前进行中的对话（网络请求 + 等待确认）。 */
+    cancel: () => Promise<void>
+    /** 用户对一次工具调用的裁决（确认框「允许 / 拒绝」）。 */
+    decideTool: (id: string, approved: boolean) => Promise<void>
+    /** 订阅「需要用户确认的工具调用」事件（主窗口弹框）。 */
+    onToolRequest: (cb: (req: AiToolRequest) => void) => () => void
+    /** 报错自动分析：把错误文本 + 环境信息交给模型，返回可直接展示的处置建议。 */
+    analyzeError: (text: string) => Promise<AiErrorAnalysis>
+    /** 连通性测试：用一条极短的 prompt 真发一次请求。 */
+    test: () => Promise<{ ok: boolean; message: string }>
+    /** 保存 API 密钥（先测通再落盘，加密存储）。 */
+    setKey: (key: string) => Promise<{ ok: boolean; message: string }>
+    /** 删除已保存的 API 密钥。 */
+    clearKey: () => Promise<{ ok: boolean; message: string }>
+    /** 列出全部可被模型调用的启动器工具（设置页权限表用）。 */
+    tools: () => Promise<AiToolSpec[]>
+    /** 清空本轮对话历史（悬浮球「新对话」）。 */
+    reset: () => Promise<void>
+    /**
+     * 语音转文字：把一段录音（webm/ogg）交给 OpenAI 兼容的转写接口。
+     * 未配置 / 格式不支持时返回 `ok:false`，由界面回落到「仅文字」。
+     */
+    transcribe: (audio: Uint8Array, mime: string) => Promise<{ ok: boolean; text: string; error?: string }>
+    /** 悬浮球控制（主进程持有窗口，设置页与托盘都能触发）。 */
+    ball: {
+      /** 按当前设置显示 / 隐藏（幂等）。 */
+      sync: () => Promise<void>
+      /** 手动展开 / 收起聊天面板。 */
+      expand: (open: boolean) => Promise<void>
+      /**
+       * 悬浮球拖动时上报新位置（逻辑像素），主进程负责夹进屏幕并持久化。
+       *
+       * 返回**实际应用**的位置（贴边时会与请求值不同），渲染层用它校正位置缓存。
+       * 窗口不存在时返回 null。
+       */
+      move: (x: number, y: number, persist: boolean) => Promise<{ x: number; y: number } | null>
+      /** 读取当前窗口位置（拖动开始时算增量用）。 */
+      position: () => Promise<{ x: number; y: number }>
+    }
+    /** 订阅 AI 浮层状态（游戏内 HUD 用）。 */
+    onHudState: (cb: (s: AiHudState) => void) => () => void
+    /**
+     * 订阅悬浮球展开 / 收起的**结果**。
+     *
+     * 窗口尺寸由主进程调整，渲染层据此切换「圆球 ↔ 面板」两种形态；没有这个通知，
+     * 主进程把窗口放大后，里面画着的还会是收起态的圆球（两者尺寸对不上）。
+     */
+    onBallExpanded: (cb: (open: boolean) => void) => () => void
+    /** 主动拉一次浮层快照（窗口刚建好时订阅可能晚于主进程那次推送）。 */
+    hudState: () => Promise<AiHudState>
+    /**
+     * 订阅「AI 请求启动某个实例」。
+     *
+     * 主进程的工具 `launcher_launch_version` 不在主进程里启动游戏，而是发这条事件，
+     * 由主界面按「用户点启动」的完整链路（Java 检查、账号刷新、进度、失败报告）执行。
+     */
+    onLaunchRequest: (cb: (versionId: string) => void) => () => void
+    /**
+     * 订阅「语音热键被按下」。
+     *
+     * 游戏内 HUD 是鼠标穿透窗口，拿不到点击，所以语音入口只能是热键：
+     * 主进程注册全局快捷键，按下时把它转给当下**能录音的那个窗口**
+     * （优先游戏内浮层，其次悬浮球）。
+     */
+    onVoiceToggle: (cb: () => void) => () => void
+    /**
+     * 浮层交互：把「进游戏了 / 退出了」告诉主进程，由它决定浮层显隐；
+     * 同时把当前对话状态（思考中 / 播报中）同步过去。
+     */
+    setHudActive: (active: boolean) => Promise<void>
+    setHudStatus: (status: AiHudState['status']) => Promise<void>
+  }
   translate: {
     /**
      * 经在线翻译接口批量翻译文本，返回 [原文, 译文] 对。
@@ -1965,6 +2240,8 @@ export interface LauncherApi {
   }
   /** 联机板块（界面与后端移植自 MCTier）。 */
   mp: MpApi
+  /** 网易云音乐歌词浮层（实验性，HUD 窗口用）。 */
+  music: NeteaseLyricsApi
 }
 
 /* ------------------------------------------------------------------ */

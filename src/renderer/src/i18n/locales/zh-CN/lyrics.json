@@ -1,0 +1,4 @@
+{
+  "settings.row.neteaseLyrics": "网易云音乐歌词浮层",
+  "settings.exp.neteaseLyrics.desc": "在 HUD 浮层上逐句显示网易云音乐正在播放的歌词。仅 Windows 有效，需要网易云音乐客户端（3.x 及以上）正在播放；歌词经网易云接口实时获取，需联网。"
+}

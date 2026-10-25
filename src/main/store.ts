@@ -5,7 +5,7 @@ import { cpus, totalmem } from 'os'
 import { join } from 'path'
 import type { LauncherSettings, MinecraftAccount, SystemHardwareInfo, VersionDir } from '@shared/types'
 import { defaultSettings } from '@shared/settings'
-import { hasUapisKey, setUapisKey } from './secret'
+import { hasAiKey, hasUapisKey, setUapisKey } from './secret'
 import { setSourceStrategies } from './mirror'
 import { isPortable, PORTABLE_GAME_DIR, resolvePortablePath } from './portable'
 
@@ -266,6 +266,8 @@ export const settings = {
     if (isPortable) s.gameDir = PORTABLE_GAME_DIR
     // 派生状态：KEY 是否已保存以主进程的加密存储为准（该字段本身不持久化）。
     s.uapisApiKeySet = hasUapisKey()
+    // 同上：AI 助手的密钥只存在于主进程安全存储，界面只能看到「有没有」。
+    s.aiApiKeySet = hasAiKey()
     // 派生字段（不持久化）：渲染层据此把「默认目录」置灰，并拿到可直接使用的绝对路径。
     s.portable = isPortable
     s.gameDirAbs = resolvePortablePath(s.gameDir)
@@ -315,12 +317,13 @@ export const settings = {
     const next = { ...this.get(), ...partial }
     // 派生字段不落盘：免得 settings.json 里的值与真实存储 / 运行环境不一致。
     delete (next as Partial<LauncherSettings>).uapisApiKeySet
+    delete (next as Partial<LauncherSettings>).aiApiKeySet
     delete (next as Partial<LauncherSettings>).portable
     delete (next as Partial<LauncherSettings>).gameDirAbs
     if (isPortable) next.gameDir = PORTABLE_GAME_DIR
     // 内存缓存先行：渲染层立刻拿到新值（乐观更新），落盘在后台异步完成，
     // 不再让「切换版本 / 切换版本目录」此类高频写入同步阻塞主进程事件循环。
-    cachedSettings = { ...next, uapisApiKeySet: hasUapisKey() }
+    cachedSettings = { ...next, uapisApiKeySet: hasUapisKey(), aiApiKeySet: hasAiKey() }
     setSourceStrategies({
       download: next.downloadSource,
       versionList: next.versionListSource,

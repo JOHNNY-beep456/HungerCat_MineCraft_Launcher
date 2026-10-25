@@ -18,7 +18,8 @@ import { join } from 'node:path'
  */
 const FILES = {
   uapis: 'uapis-key.bin',
-  feedback: 'feedback-session.bin'
+  feedback: 'feedback-session.bin',
+  ai: 'ai-key.bin'
 } as const
 
 type SecretName = keyof typeof FILES
@@ -104,6 +105,33 @@ export function setUapisKey(key: string): string | null {
 /** 删除已保存的 uapis KEY。 */
 export function clearUapisKey(): void {
   dropSecret('uapis')
+}
+
+/* -------------------- AI 助手 API 密钥 -------------------- */
+
+/**
+ * AI 助手的 API 密钥。
+ *
+ * 与 uapis KEY 同等对待：只留在主进程、经 safeStorage 加密落盘，既不下发到渲染层，
+ * 也不写进 settings.json；界面只知道 `aiApiKeySet`（有没有）。
+ * Ollama 这类本地服务不需要密钥，此时本项为空串属正常状态。
+ */
+export function getAiKey(): string {
+  return readSecret('ai')
+}
+
+export function hasAiKey(): boolean {
+  return getAiKey() !== ''
+}
+
+/** 保存 AI 密钥：成功返回 null，失败返回可展示原因。 */
+export function setAiKey(key: string): string | null {
+  return writeSecret('ai', key, 'AI API 密钥')
+}
+
+/** 删除已保存的 AI 密钥。 */
+export function clearAiKey(): void {
+  dropSecret('ai')
 }
 
 /* -------------------- 反馈免登录会话 -------------------- */

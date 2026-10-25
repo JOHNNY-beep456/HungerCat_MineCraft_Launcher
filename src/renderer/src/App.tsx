@@ -15,6 +15,7 @@ import { SecurityEngineNotice } from './components/SecurityEngineNotice'
 import { CursorGlow } from './components/CursorGlow'
 import { DownloadOrb } from './components/DownloadOrb'
 import { MultiplayerSession } from './components/MultiplayerSession'
+import { AiToolPrompt } from './components/AiToolPrompt'
 import { Win10Desktop } from './components/Win10Desktop'
 import { FileManager } from './components/FileManager'
 import { Button, Icon, Markdown, ProgressBar } from './components/ui'
@@ -521,6 +522,10 @@ function Shell(): JSX.Element {
         <AnimatePresence>
           {securityAlert && <SecurityBlockedOverlay alert={securityAlert} onClose={clearSecurityAlert} />}
         </AnimatePresence>
+
+        {/* AI 工具确认：危险操作（删实例 / 删文件）执行前必须由用户点「允许」。
+            没有悬浮球时主进程会把确认发给主窗口，否则只在悬浮球里弹。 */}
+        <AiToolPrompt />
       </div>
     </MotionConfig>
   )
