@@ -659,6 +659,36 @@ function cleanStaleNsisUninstaller() {
   }
 }
 
+/**
+ * Windows 安装器的「压缩版」二次打包参数。
+ *
+ * 为什么安装器与便携版要用不同压缩率：两者对压缩的收益完全相反。
+ *   · portable.exe 每次启动都要把整个应用**解包到 %TEMP%**，解压 CPU 直接决定首屏时间
+ *     （实测 store 3.72s vs maximum 7.19s，快 48%），所以便携版不压（compression: store）；
+ *   · setup.exe 只在**安装那一次**解压，之后就是普通目录启动 —— 用户只感知体积。
+ *     因此安装器用 maximum：实测单架构 258MB → 79.9MB（-69%）。
+ *
+ * electron-builder 的 compression 只能整包设置（PlatformSpecificBuildOptions 级别的
+ * 一个值），NSIS 与 portable 两个 target 共用它，配不出「一个压一个不压」。
+ * 所以这里分两趟：
+ *   1) 第一趟只出 portable（store），顺带产出 `release/win-unpacked`；
+ *   2) 第二趟 `--prepackaged release/win-unpacked` 只出 nsis（maximum）——
+ *      复用第一趟已经打好的应用目录，不重复打包，两个产物仍是同一份代码。
+ * 注意 --prepackaged 会跳过「写应用目录」这一步，所以必须排在带目标的构建之后。
+ */
+function buildCompressedWinSetup(arch) {
+  cleanStaleNsisUninstaller()
+  return [
+    'electron-builder',
+    '--win',
+    ARCH_FLAG[arch],
+    '--prepackaged',
+    join(ROOT, 'release', 'win-unpacked'),
+    '--config.compression=maximum',
+    '--config.win.target=nsis'
+  ]
+}
+
 for (const platform of targets) {
   step(`=== Packaging: ${PLATFORM_LABEL[platform]} ===`)
   // WSL 那一趟内部已经是「逐架构串起来 + 失败即停」，整趟作为一个整体记录。
@@ -697,6 +727,7 @@ for (const platform of targets) {
       try {
         if (platform === 'win') cleanStaleNsisUninstaller()
         npx(args)
+        if (platform === 'win') npx(buildCompressedWinSetup(arch))
         done += 1
         break
       } catch (err) {

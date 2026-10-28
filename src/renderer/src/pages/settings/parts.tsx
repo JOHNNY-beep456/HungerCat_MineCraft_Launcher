@@ -23,3 +23,22 @@ export function Row({ label, children, className }: { label: string; children: R
     </div>
   )
 }
+
+/**
+ * 板块内的**子标题**：把一组相关的设置项圈成一块，与板块根级条目区分开。
+ *
+ * 用于「一个板块里装着两件不同的事」的场合（如「开发者选项」下的「开发模式」与
+ * 「调试」）：没有子标题时，这些行会直接吊在板块根上，读起来像是平级的独立配置项，
+ * 分不清哪些属于同一组。
+ *
+ * 层级靠三件事表达，而不只靠字重：上方留白（与上一组拉开）、一条细分隔线、
+ * 以及比正文更小的字号 + 更亮的字色。
+ */
+export function SubHeading({ title }: { title: string }): JSX.Element {
+  return (
+    <div className="flex items-center gap-2 pt-1">
+      <span className="text-[13px] font-semibold opacity-90">{title}</span>
+      <span className="h-px flex-1" style={{ background: 'var(--fill-secondary-hover)' }} />
+    </div>
+  )
+}

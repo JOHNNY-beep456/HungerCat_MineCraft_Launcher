@@ -23,20 +23,27 @@ extraResources:
   # 见下方 win: / linux: 各自的 extraResources。
   # 放在顶层会把两个平台的二进制同时塞进每一份包里：Linux 包里带着 20MB 用不到的
   # .exe、Windows 包里带着加载不了的 .node。
-# 压缩策略：**关闭**（compression: store；三档实测后定案）。
+# 压缩策略：**便携版不压缩，安装器压缩**（两类产物的诉求正好相反）。
 #
 # 这一项只影响「安装包 / 便携包文件本身的压缩」，与应用内的资源、asar 打包率无关，
-# 功能与界面完全不受影响。之所以关掉，是便携版启动速度实测的结论：
+# 功能与界面完全不受影响。
 #
-#   portable.exe 的真实流程是「把整个应用解包到 %TEMP% → 运行 → 删掉」，
-#   每次启动都要重付一遍解包成本。本机三档冷启动实测（各 3 次取均值）：
-#     compression: maximum（NSIS zlib）  72.2 MB   7.19 秒
-#     compression: normal                72.2 MB   7.03 秒   ← 几乎无收益
-#     compression: store                256.8 MB   3.72 秒   ← 快 48%
-#   瓶颈是解压 CPU 而不是磁盘：同内容在 NVMe 上直接复制只要 0.17 秒。
+#   · portable.exe 每次启动都要把整个应用解包到 %TEMP% 再运行，解压 CPU 直接决定
+#     首屏时间。本机三档冷启动实测（各 3 次取均值）：
+#       compression: maximum（NSIS zlib）  72.2 MB   7.19 秒
+#       compression: normal                72.2 MB   7.03 秒   ← 几乎无收益
+#       compression: store                256.8 MB   3.72 秒   ← 快 48%
+#     瓶颈是解压 CPU 而不是磁盘：同内容在 NVMe 上直接复制只要 0.17 秒。
+#     → 便携版因此固定 store（包体大，但首屏最快）。
+#   · setup.exe 只在「安装那一次」解压，之后就是普通目录启动，用户只感知体积。
+#     → 安装器用 maximum 压到约 80MB（258MB → 79.9MB，-69%）。
 #
-# 采纳 store：便携版首屏 7.19 → 3.72 秒，代价是包体 72MB → 约 257MB。
-# （也试过 portable.useZip：包体 111MB 且启动直接失败，已放弃。）
+# 但 electron-builder 的 compression 是**整包一个值**（PlatformSpecificBuildOptions
+# 级别），portable 与 nsis 两个 target 共用，配置里写不出「一个压、一个不压」。
+# 所以分成两趟，由 scripts/build-all.mjs 负责：
+#   第一趟：只出 portable（此处 store）→ 同时产出 release/win-unpacked
+#   第二趟：--prepackaged release/win-unpacked + compression=maximum，只出 nsis
+# 这里的 store 只对第一趟的 portable 生效；安装器那趟在命令行显式覆盖成 maximum。
 compression: store
 win:
   icon: build/icon.ico

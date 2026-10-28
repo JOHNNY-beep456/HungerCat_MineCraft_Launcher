@@ -27,7 +27,7 @@ export function registerSettingsHandlers(ctx: IpcContext): void {
     // 注意：这里不再因填写调试密钥而自动采集 / 上传日志 —— 收集必须经用户在设置页
     // 明确同意后才由 debug:submit 触发，避免「提交反馈即开始收集」。
     //
-    // AI 开关变化后立刻同步悬浮球窗口：设置页与悬浮球自带的「×」都只是改这个开关，
+    // AI 开关变化后立刻同步悬浮球窗口：设置页就是唯一的开关入口，
     // 窗口的创建 / 销毁统一由 syncAiBall() 负责，否则关掉开关后球会一直留在屏幕上。
     if (partial.aiEnabled !== undefined || partial.aiBallEnabled !== undefined) {
       syncAiBall()
@@ -36,16 +36,24 @@ export function registerSettingsHandlers(ctx: IpcContext): void {
     if (partial.aiEnabled !== undefined || partial.aiVoiceEnabled !== undefined) {
       ctx.syncAiShortcuts()
     }
-    // 浮层开关同理：进游戏后打开 / 关闭「游戏内浮层」，窗口要当场跟随。
+    // 关闭按钮行为改了就当场对表托盘：选「退至后台」要立刻有托盘可回，
+    // 切回「每次询问 / 直接关闭」则把多余托盘收掉。
+    if (partial.closeBehavior !== undefined) {
+      ctx.syncTray()
+    }
+    // 浮层开关同理：进游戏后打开 / 关闭 HUD 或改「显示内容」，窗口要当场跟随。
     // 存续条件依赖「设置 + 现场（是否在大厅 / 游戏是否运行）」，只有
     // syncOverlayWindows() 同时掌握两边，所以交给它重算一次。
-    // 歌词浮层的开关也在其中；`mode`（切到「本地」会停掉联网歌词）同样要重算。
+    // 歌词子选项也在其中；`mode`（切到「本地」会停掉联网歌词）同样要重算。
+    // 透明度只影响外观、不影响窗口存续，但拖动滑杆时要立刻看到效果，所以也一并重推。
     if (
-      partial.aiHudEnabled !== undefined ||
+      partial.hudEnabled !== undefined ||
+      partial.hudShowMultiplayer !== undefined ||
+      partial.hudShowAi !== undefined ||
+      partial.hudShowLyrics !== undefined ||
+      partial.hudOpacity !== undefined ||
       partial.aiEnabled !== undefined ||
-      partial.multiplayerHudEnabled !== undefined ||
       partial.multiplayerDanmakuEnabled !== undefined ||
-      partial.neteaseLyricsHudEnabled !== undefined ||
       partial.mode !== undefined
     ) {
       ctx.syncOverlays()

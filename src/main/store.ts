@@ -241,7 +241,17 @@ export function invalidateSettingsCache(): void {
 export const settings = {
   get(): LauncherSettings {
     if (cachedSettings) return cachedSettings
-    const raw = readJson<Partial<LauncherSettings> & { uapisApiKey?: unknown }>('settings.json', {})
+    const raw = readJson<
+      Partial<LauncherSettings> & {
+        uapisApiKey?: unknown
+        /** HUD 合并前的旧开关：只在迁移时读，迁移完从磁盘删掉。 */
+        aiHudEnabled?: unknown
+        aiHudOpacity?: unknown
+        multiplayerHudEnabled?: unknown
+        multiplayerHudOpacity?: unknown
+        neteaseLyricsHudEnabled?: unknown
+      }
+    >('settings.json', {})
     // 迁移：早期版本把 uapis.cn 的 API KEY 明文写在 settings.json 里。这里把它搬进
     // 系统安全存储并抹掉明文（若系统不支持安全存储，宁可丢弃也不保留明文），
     // 之后 KEY 不再落明文、也不随设置下发到渲染层。
@@ -260,6 +270,40 @@ export const settings = {
       delete (raw as { topNav?: unknown }).topNav
       writeJson('settings.json', raw)
     }
+    /*
+     * HUD：三个分散的开关（AI 浮层 / 联机 HUD / 网易云歌词）已合并成
+     * `hudEnabled` + 一组「显示内容」子选项。老配置里任意一个开关曾经开着，
+     * 就认为用户想要这块浮层，并把当时开着的那几块内容原样带过来 ——
+     * 不做这一步的话，升级后浮层会整体消失，用户只会觉得「功能被砍了」。
+     */
+    const legacyHud = raw
+    const legacyKeys = [
+      'aiHudEnabled',
+      'aiHudOpacity',
+      'multiplayerHudEnabled',
+      'multiplayerHudOpacity',
+      'neteaseLyricsHudEnabled'
+    ] as const
+    if (legacyKeys.some((k) => legacyHud[k] !== undefined)) {
+      const anyOn = legacyHud.aiHudEnabled === true || legacyHud.multiplayerHudEnabled === true
+      if (raw.hudEnabled === undefined) raw.hudEnabled = anyOn || legacyHud.neteaseLyricsHudEnabled === true
+      if (raw.hudShowAi === undefined && legacyHud.aiHudEnabled !== undefined) {
+        raw.hudShowAi = legacyHud.aiHudEnabled === true
+      }
+      if (raw.hudShowMultiplayer === undefined && legacyHud.multiplayerHudEnabled !== undefined) {
+        raw.hudShowMultiplayer = legacyHud.multiplayerHudEnabled === true
+      }
+      if (raw.hudShowLyrics === undefined && legacyHud.neteaseLyricsHudEnabled !== undefined) {
+        raw.hudShowLyrics = legacyHud.neteaseLyricsHudEnabled === true
+      }
+      // 透明度只有一个了：AI 那份优先（它是之前唯一带默认值 0.85 的一份）。
+      if (raw.hudOpacity === undefined) {
+        const opacity = typeof legacyHud.aiHudOpacity === 'number' ? legacyHud.aiHudOpacity : legacyHud.multiplayerHudOpacity
+        if (typeof opacity === 'number' && opacity >= 0.2 && opacity <= 1) raw.hudOpacity = opacity
+      }
+      for (const k of legacyKeys) delete legacyHud[k]
+      writeJson('settings.json', raw)
+    }
     const s = { ...getDefaultSettings(), ...raw }
     // 便携版的默认版本目录始终是相对路径：早期版本首次启动就把它写成了
     // <当时的 exe 目录>/.minecraft，换目录/换机器就失效，这里统一纠正。
@@ -276,6 +320,11 @@ export const settings = {
     if ((s.experimental as string) === 'glass') s.experimental = 'off'
     // 导航栏位置：非法 / 手改坏的取值回落到默认的左侧竖栏。
     if (!['top', 'bottom', 'left', 'right'].includes(s.navPosition)) s.navPosition = 'left'
+    // 关闭按钮行为：非三者之一（旧配置没有这一项 / 手改坏）时回落到「每次询问」。
+    // 这一项直接决定关窗是隐藏还是退出，落到非法值会让关闭按钮彻底失灵，必须兜底。
+    if (s.closeBehavior !== 'ask' && s.closeBehavior !== 'tray' && s.closeBehavior !== 'quit') {
+      s.closeBehavior = 'ask'
+    }
     // 「Material Design 3 风格」曾用内部值 'google'（早期命名），读到旧值时归一为 'material'。
     if ((s.experimental as string) === 'google') s.experimental = 'material'
     // M3 风格类型：非三者之一（旧值 / 手改坏）时回退到默认的 Material You。

@@ -639,39 +639,6 @@ export function MultiplayerSettings({ onBack }: { onBack: () => void }): JSX.Ele
           </AnimatePresence>
         </Card>
 
-        {/* ============ 游戏内 HUD ============ */}
-        <Card icon="wifi" color="var(--fill-primary)" title={t('mp.set.card.hud')} desc={t('mp.set.card.hudDesc')}>
-          <Toggle
-            label={t('mp.set.hudEnabled')}
-            desc={t('mp.set.hudEnabledDesc')}
-            checked={s.multiplayerHudEnabled}
-            onChange={(v) => set('multiplayerHudEnabled', v)}
-          />
-          <AnimatePresence initial={false}>
-            {s.multiplayerHudEnabled && (
-              <motion.div
-                initial={{ opacity: 0, height: 0 }}
-                animate={{ opacity: 1, height: 'auto' }}
-                exit={{ opacity: 0, height: 0 }}
-                transition={{ duration: 0.25 }}
-                style={{ overflow: 'hidden' }}
-              >
-                <div className="mt-2 pl-1">
-                  <SliderRow
-                    label={t('mp.set.hudOpacity')}
-                    value={`${Math.round(s.multiplayerHudOpacity * 100)}%`}
-                    min={0.2}
-                    max={1}
-                    step={0.05}
-                    current={s.multiplayerHudOpacity}
-                    onChange={(v) => set('multiplayerHudOpacity', v)}
-                  />
-                </div>
-              </motion.div>
-            )}
-          </AnimatePresence>
-        </Card>
-
         {/* ============ 联机工具 ============ */}
         <Card icon="link" color="var(--fill-primary)" title={t('mp.set.card.tools')} desc={t('mp.set.card.toolsDesc')}>
           <div className="flex flex-wrap items-end gap-2">

@@ -19,7 +19,8 @@ rem  Usage:
 rem    build-all.cmd                     build EVERYTHING (no args = --platform all
 rem                                      --arch all):
 rem                                        Windows x64 / ia32 / arm64
-rem                                          portable.exe + setup.exe
+rem                                          portable.exe (uncompressed: fastest start)
+rem                                          setup.exe    (maximum compression)
 rem                                        Linux   x64 / arm64 / armv7l (inside WSL)
 rem                                          AppImage + .deb + .rpm
 rem                                      macOS is NOT included: a dmg only exists on a
@@ -45,9 +46,19 @@ rem  the remaining arches still produce artifacts and every failure is listed
 rem  again in the summary at the end.
 rem
 rem  Output: release\HCMCL<version>-win-<arch>-portable.exe
-rem          release\HCMCL<version>-win-<arch>-setup.exe
+rem          release\HCMCL<version>-win-<arch>-setup.exe   (about 80MB; portable stays ~257MB)
 rem          release\HCMCL<version>-<arch>.AppImage / *.deb / *.rpm
 rem          release\HCMCL<version>-mac-<arch>.dmg / .zip   (macOS only)
+rem
+rem  Compression: the two Windows artifacts want opposite things, so they are
+rem  packaged in two passes (see buildCompressedWinSetup in scripts/build-all.mjs):
+rem    portable.exe  - every launch unpacks the whole app to %TEMP%, so the
+rem                    decompression CPU decides the first-paint time. Measured:
+rem                    store 3.72s vs maximum 7.19s.  -> stays UNCOMPRESSED.
+rem    setup.exe     - unpacks only once during install, so users only feel the
+rem                    download size. 258MB -> 79.9MB with maximum compression.
+rem  electron-builder has a single compression value shared by all targets, so a
+rem  second pass runs with --prepackaged + --config.compression=maximum for nsis.
 rem
 rem  macOS: not buildable on Windows at all (dmg needs hdiutil, signing needs
 rem  codesign). Two ways to get it:

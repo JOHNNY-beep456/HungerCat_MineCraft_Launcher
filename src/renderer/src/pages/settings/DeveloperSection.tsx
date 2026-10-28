@@ -3,9 +3,16 @@ import type { DevModeStatus } from '@shared/types'
 import { useApp } from '../../store'
 import { Button, Segmented, Switch } from '../../components/ui'
 import { type TFunction } from '../../i18n'
-import { Row, Section } from './parts'
+import { AutoFields } from './AutoSection'
+import { Row, Section, SubHeading } from './parts'
 
-/** 「开发模式」板块：邮箱验证码授权、开关与主页安全防护档位。 */
+/**
+ * 「开发者选项」板块：开发模式（邮箱验证码授权、开关、主页安全防护档位）
+ * + Debug 模式 + 调试密钥。
+ *
+ * 前一半是手工绘制的授权流程；后两项是普通设置字段，交给 `AutoFields` 按注册表
+ * 顺序渲染（它们原属「游戏」板块，按改版要求并到这里）。
+ */
 export function DeveloperSection(): JSX.Element {
   const { t } = useApp()
   const [dev, setDev] = useState<DevModeStatus | null>(null)
@@ -104,6 +111,13 @@ export function DeveloperSection(): JSX.Element {
 
   return (
     <Section title={t('settings.section.devMode')} icon="info">
+      {/*
+       * 「开发模式」子标题：邮箱验证码授权 / 开关 / 主页安全防护档位都属于开发模式
+       * 这一件事，用子标题把它们圈进来。此前这些行直接铺在「开发者选项」板块下，
+       * 读起来像是板块级配置项，和下面的 Debug 混在一起分不清层级。
+       */}
+      <SubHeading title={t('settings.dev.subtitle')} />
+
       {!dev?.granted ? (
         <>
           <p className="caption">
@@ -202,6 +216,13 @@ export function DeveloperSection(): JSX.Element {
       {devNotice && !devError && (
         <div className="glass-soft rounded-xl p-3 text-[13px] opacity-80">{devNotice}</div>
       )}
+
+      {/* Debug 模式与调试密钥：原属「游戏」板块，现并入「开发者选项」。
+          它们是普通设置字段（注册表 section: 'dev'），由 AutoFields 按声明顺序渲染。
+          同样配一个子标题，和上面的「开发模式」形成平级的两块，而不是让 Debug 两项
+          直接吊在板块根上、看起来像开发模式的附属项。 */}
+      <SubHeading title={t('settings.dev.debugSubtitle')} />
+      <AutoFields section="dev" />
     </Section>
   )
 }

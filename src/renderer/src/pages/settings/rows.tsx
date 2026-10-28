@@ -5,12 +5,12 @@
  * 具体控件。这样「板块的顺序与存在性」仍由注册表决定，只有交互复杂的一行才需要写组件。
  * 组件键与 `LauncherSettings` 字段名一一对应（见文件末尾的 `CUSTOM_ROWS`）。
  */
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, type CSSProperties } from 'react'
 import { AnimatePresence, motion } from 'motion/react'
 import { createPortal } from 'react-dom'
 import type { JavaRuntime, LauncherSettings } from '@shared/types'
 import { useApp } from '../../store'
-import { Button, Icon, Segmented, Select, Switch } from '../../components/ui'
+import { Button, Checkbox, Icon, Segmented, Select, Switch } from '../../components/ui'
 import { dataUrlToBlobUrl } from '../../wallpaper'
 import { LOCALES } from '../../i18n'
 import { Row } from './parts'
@@ -223,6 +223,254 @@ function ModeRow(): JSX.Element {
           ]}
         />
       </Row>
+    </>
+  )
+}
+
+/* ================================================================== */
+/* 游戏内 HUD 浮层（原先分散在「AI 助手」「联机」「实验性功能」三处）        */
+/* ================================================================== */
+
+/**
+ * 浮层预览：在「假游戏画面」上叠一块 HUD 卡片，按当前透明度渲染。
+ *
+ * 为什么要预览：透明度是 0.2–1.0 的连续值，光看百分比数字根本判断不出「游戏里
+ * 到底看不看得清」—— 0.5 放在亮色草地上可能刚好，放在暗色洞穴里就糊成一片。
+ * 这里给一张渐变底图（模拟明暗不同的场景），把真实 HUD 的卡片配色
+ * （rgba(18,18,24,0.72) + 圆角 + 模糊）按同一份透明度叠上去，拖动滑杆即时反映。
+ *
+ * 预览里列出的内容跟随「显示内容」的勾选状态：勾了什么就画什么，全不勾时给一句
+ * 提示，避免用户以为预览坏了。
+ */
+function HudPreview({
+  opacity,
+  showMultiplayer,
+  showAi,
+  showLyrics
+}: {
+  opacity: number
+  showMultiplayer: boolean
+  showAi: boolean
+  showLyrics: boolean
+}): JSX.Element {
+  const { t } = useApp()
+  /** HUD 卡片的真实底色（与 components/GameHud.tsx 保持一致）。 */
+  const cardStyle: CSSProperties = {
+    background: 'rgba(18, 18, 24, 0.72)',
+    backdropFilter: 'blur(10px)',
+    border: '1px solid rgba(255,255,255,0.10)',
+    boxShadow: '0 8px 28px rgba(0,0,0,0.35)'
+  }
+  const none = !showMultiplayer && !showAi && !showLyrics
+  return (
+    <div className="pl-3">
+      <p className="caption mb-1.5">{t('settings.hud.previewTitle')}</p>
+      {/* 背景：模拟一张游戏画面（左上亮、右下暗），让透明度的观感更接近实机。 */}
+      <div
+        className="relative overflow-hidden rounded-xl"
+        style={{
+          height: 132,
+          background:
+            'linear-gradient(135deg, #6b8e5a 0%, #4a6b3f 35%, #2a3d52 70%, #14181f 100%)'
+        }}
+      >
+        {/* 一点「草地纹理」，避免纯色渐变看起来不像游戏 */}
+        <div
+          className="absolute inset-0 opacity-30"
+          style={{
+            backgroundImage:
+              'repeating-linear-gradient(0deg, rgba(255,255,255,0.06) 0 1px, transparent 1px 7px), repeating-linear-gradient(90deg, rgba(0,0,0,0.10) 0 1px, transparent 1px 9px)'
+          }}
+        />
+        {/* HUD 浮层本体：整体乘以透明度，与实机的 opacity 行为一致。 */}
+        <div className="absolute inset-0 p-2" style={{ opacity }}>
+          <div className="space-y-1">
+            {showMultiplayer && (
+              <div className="rounded-2xl p-2" style={cardStyle}>
+                <div className="flex items-center gap-1.5">
+                  <span className="text-[10px] font-semibold" style={{ color: '#8fd', letterSpacing: 0.3 }}>
+                    MCTier · 大厅状态
+                  </span>
+                  <span className="text-[9px]" style={{ color: 'rgba(255,255,255,0.45)' }}>
+                    2 人
+                  </span>
+                </div>
+                <div className="mt-0.5 space-y-0.5">
+                  <div className="text-[10px]" style={{ color: 'rgba(255,255,255,0.86)' }}>
+                    Steve（我）
+                  </div>
+                  <div className="text-[10px]" style={{ color: 'rgba(255,255,255,0.86)' }}>
+                    Alex
+                  </div>
+                </div>
+              </div>
+            )}
+            {showAi && (
+              <div className="rounded-2xl p-2" style={cardStyle}>
+                <div className="flex items-center gap-1.5">
+                  <span className="text-[10px] font-semibold" style={{ color: '#c8b6ff', letterSpacing: 0.3 }}>
+                    AI 助手
+                  </span>
+                  <span className="text-[9px]" style={{ color: 'rgba(255,255,255,0.45)' }}>
+                    待命
+                  </span>
+                </div>
+                <div className="mt-0.5 text-[10px]" style={{ color: 'rgba(255,255,255,0.9)' }}>
+                  需要我帮你看看启动报错吗？
+                </div>
+              </div>
+            )}
+            {showLyrics && (
+              <div className="rounded-2xl p-2" style={cardStyle}>
+                <div className="flex items-baseline gap-1.5">
+                  <span className="text-[10px] font-semibold" style={{ color: '#ff8fa3', letterSpacing: 0.3 }}>
+                    网易云音乐
+                  </span>
+                  <span className="truncate text-[9px]" style={{ color: 'rgba(255,255,255,0.5)' }}>
+                    起风了 · 买辣椒也用券
+                  </span>
+                </div>
+                <div className="mt-0.5 space-y-0.5 text-center">
+                  <div className="truncate text-[9px]" style={{ color: 'rgba(255,255,255,0.42)' }}>
+                    我曾难自拔于世界之大
+                  </div>
+                  <div className="truncate text-[11px] font-semibold" style={{ color: '#fff' }}>
+                    也沉溺于其中梦话
+                  </div>
+                  <div className="truncate text-[9px]" style={{ color: 'rgba(255,255,255,0.55)' }}>
+                    不得真假 不做挣扎
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+        {none && (
+          <div className="absolute inset-0 flex items-center justify-center">
+            <span className="caption" style={{ color: 'rgba(255,255,255,0.65)' }}>
+              {t('settings.hud.previewEmpty')}
+            </span>
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+/** 浮层透明度：0.2–1.0 的滑杆 + 百分比读数。 */
+function HudOpacityRow({
+  label,
+  value,
+  onChange
+}: {
+  label: string
+  value: number
+  onChange: (v: number) => void
+}): JSX.Element {
+  return (
+    <Row label={label}>
+      <div className="flex items-center gap-3">
+        <input
+          type="range"
+          min={0.2}
+          max={1}
+          step={0.05}
+          value={value}
+          onChange={(e) => onChange(Number(e.target.value))}
+        />
+        <span className="caption w-10 text-right">{Math.round(value * 100)}%</span>
+      </div>
+    </Row>
+  )
+}
+
+/** 「显示内容」下的一个子选项：缩进 + 勾选框 + 标签与说明。 */
+function HudContentOption({
+  label,
+  desc,
+  checked,
+  disabled,
+  onChange
+}: {
+  label: string
+  desc: string
+  checked: boolean
+  disabled: boolean
+  onChange: (v: boolean) => void
+}): JSX.Element {
+  return (
+    <div className="pl-3">
+      <div className="flex items-center justify-between gap-4">
+        <span className="text-[13px] opacity-80">{label}</span>
+        <Checkbox checked={checked} disabled={disabled} onChange={onChange} />
+      </div>
+      <p className="caption mt-0.5">{desc}</p>
+    </div>
+  )
+}
+
+/**
+ * 「HUD 显示」：一个总开关 + 「显示内容」子选项。
+ *
+ * 三块内容（联机大厅状态 / AI 助手 / 网易云歌词）共用**同一个**透明置顶穿透窗口
+ * （见主进程 `syncOverlayWindows`），之前却各有各的开关、分散在三个板块里，还互相
+ * 影响得莫名其妙：在「AI 助手」里关掉 AI 浮层，联机 HUD 仍然开着；想调「浮层透明度」
+ * 得先想清楚是哪一个透明度。现在收敛成「一块浮层 + 一个开关 + 一组显示内容」，
+ * 透明度也只有一份 —— 它们本来就应该一起调。
+ */
+export function HudDisplayRows(): JSX.Element {
+  const { settings, updateSettings, t } = useApp()
+  const on = settings.hudEnabled
+  return (
+    <>
+      <Row label={t('settings.row.hud')}>
+        <Switch checked={on} onChange={(v) => void updateSettings({ hudEnabled: v })} />
+      </Row>
+      <p className="caption -mt-1">{t('settings.hud.desc')}</p>
+
+      {on && (
+        <>
+          <p className="caption px-1" style={{ fontWeight: 600 }}>
+            {t('settings.hud.contentTitle')}
+          </p>
+
+          <HudContentOption
+            label={t('settings.row.hudShowMultiplayer')}
+            desc={t('settings.hud.showMultiplayerDesc')}
+            checked={settings.hudShowMultiplayer}
+            disabled={false}
+            onChange={(v) => void updateSettings({ hudShowMultiplayer: v })}
+          />
+          <HudContentOption
+            label={t('settings.row.hudShowAi')}
+            desc={t('settings.hud.showAiDesc')}
+            checked={settings.hudShowAi}
+            disabled={false}
+            onChange={(v) => void updateSettings({ hudShowAi: v })}
+          />
+          <HudContentOption
+            label={t('settings.row.hudShowLyrics')}
+            desc={t('settings.hud.showLyricsDesc')}
+            // 本地模式关闭了全部联网能力，歌词取不到 —— 置灰而不是偷偷失效。
+            checked={settings.hudShowLyrics}
+            disabled={settings.mode === 'local'}
+            onChange={(v) => void updateSettings({ hudShowLyrics: v })}
+          />
+
+          <HudOpacityRow
+            label={t('settings.row.hudOpacity')}
+            value={settings.hudOpacity}
+            onChange={(v) => void updateSettings({ hudOpacity: v })}
+          />
+          {/* 透明度预览：紧跟在滑杆下方，拖动时实时反映深浅与各卡片的观感。 */}
+          <HudPreview
+            opacity={settings.hudOpacity}
+            showMultiplayer={settings.hudShowMultiplayer}
+            showAi={settings.hudShowAi}
+            showLyrics={settings.hudShowLyrics}
+          />
+        </>
+      )}
     </>
   )
 }
@@ -1128,10 +1376,16 @@ export const CUSTOM_ROWS: Partial<Record<keyof LauncherSettings, () => JSX.Eleme
   backgroundImage: WallpaperRow,
   reducedMotion: ReducedMotionRow,
   experimental: SkinThemeRow,
+  /* uapis.cn API KEY 挂在派生字段 `uapisApiKeySet` 上：这样它能按注册表顺序排在
+     「减少动态效果」与「背景」之间（自定义子节点只能追加在板块末尾，排不进中间）。 */
+  uapisApiKeySet: UapisKeyRow,
   enableMultiplayer: EnableMultiplayerRow,
   hardwareAcceleration: HardwareAccelerationRow,
   gameDir: GameDirRow,
   gameWindowSize: GameWindowSizeRow,
+  /* HUD 显示：整块（总开关 + 显示内容 + 透明度）挂在 `hudEnabled` 上，位置即
+     「游戏」板块里该字段的声明位置。 */
+  hudEnabled: HudDisplayRows,
   debugMode: DebugModeRow,
   debugKey: DebugKeyRow,
   metadataOnlyMods: MetadataOnlyRow,

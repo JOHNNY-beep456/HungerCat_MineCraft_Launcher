@@ -86,19 +86,15 @@ export type SettingsDefs = { [K in keyof LauncherSettings]-?: SettingDef<Launche
  * 分组顺序即设置页各板块内的显示顺序。
  */
 export const SETTINGS_DEFS: SettingsDefs = {
-  /* ============ 运行模式（板块 id：mode） ============ */
-  mode: { default: 'normal', ui: { section: 'mode', control: 'custom' } },
-  showServerStatus: {
-    default: true,
-    ui: { section: 'mode', control: 'switch', labelKey: 'settings.row.showServerStatus' }
-  },
-
-  /* ============ 外观（板块 id：appearance） ============ */
-  language: { default: 'zh-CN', ui: { section: 'appearance', control: 'custom' } },
+  /* ============ 通用（板块 id：general） ============ */
+  /* 顺序即渲染顺序，按「设置页 → 通用」的条目次序排列：
+     明暗模式 → 运行模式 → 主题 → 减少动态效果 → uapis.cn API KEY
+     → 背景 → 自定义壁纸 → 导航栏位置 → 显示服务器状态 → 关闭按钮行为 */
+  /* 明暗模式（light/dark/system）：文档把它列在「通用」的首位。 */
   theme: {
     default: 'system',
     ui: {
-      section: 'appearance',
+      section: 'general',
       control: 'segmented',
       labelKey: 'settings.row.lightDark',
       disableWhen: ['autoThemeFromWallpaper'],
@@ -109,22 +105,28 @@ export const SETTINGS_DEFS: SettingsDefs = {
       ]
     }
   },
+  mode: { default: 'normal', ui: { section: 'general', control: 'custom' } },
   /* 界面主题（皮肤）：原先在「实验性功能」里是九个互斥开关，靠「开一个自动关别的」
-     表达单选，读起来像能多选、换皮肤还得点两下。现在并到外观里做成下拉。
-     取值不变（`off` = 扁平化，即默认观感），老配置无需迁移。 */
-  experimental: { default: 'off', ui: { section: 'appearance', control: 'custom' } },
+     表达单选，读起来像能多选、换皮肤还得点两下。现在做成下拉，主题类型作为子选项。 */
+  experimental: { default: 'off', ui: { section: 'general', control: 'custom' } },
   /** 皮肤的子选项：由「界面主题」行按当前皮肤决定是否出现，故无独立 ui。 */
   materialStyle: { default: 'you' },
   githubStyle: { default: 'system' },
-  accentColor: { default: '#0a84ff', ui: { section: 'appearance', control: 'custom' } },
-  background: { default: 'midnight', ui: { section: 'appearance', control: 'custom' } },
-  backgroundImage: { default: '', ui: { section: 'appearance', control: 'custom' } },
+  accentColor: { default: '#0a84ff', ui: { section: 'general', control: 'custom' } },
+  reducedMotion: { default: false, ui: { section: 'general', control: 'custom' } },
+  /* uapis.cn API KEY：真实 KEY 经主进程加密保存，不落入 settings.json。
+     这一项是「自定义行」，注册在 `uapisApiKeySet`（派生字段）上，以便让它排在
+     「减少动态效果」与「背景」之间 —— AutoSection 的自定义子节点只能追加在末尾，
+     排不到中间去。 */
+  uapisApiKeySet: { default: false, ui: { section: 'general', control: 'custom' } },
+  background: { default: 'midnight', ui: { section: 'general', control: 'custom' } },
+  backgroundImage: { default: '', ui: { section: 'general', control: 'custom' } },
   /* 导航栏位置：上 / 下 / 左 / 右。上、下是横向长条，左、右是竖栏。
      老配置里的布尔值 topNav 在读取时迁移成 'top' / 'left'（见 main/store.ts）。 */
   navPosition: {
     default: 'left',
     ui: {
-      section: 'appearance',
+      section: 'general',
       control: 'segmented',
       labelKey: 'settings.row.navPosition',
       options: [
@@ -135,11 +137,32 @@ export const SETTINGS_DEFS: SettingsDefs = {
       ]
     }
   },
-  reducedMotion: { default: false, ui: { section: 'appearance', control: 'custom' } },
+  showServerStatus: {
+    default: true,
+    ui: { section: 'general', control: 'switch', labelKey: 'settings.row.showServerStatus' }
+  },
+  /* 关闭按钮行为：三选一（每次询问 / 退至后台 / 直接关闭）。 */
+  closeBehavior: {
+    default: 'ask',
+    ui: {
+      section: 'general',
+      control: 'segmented',
+      labelKey: 'settings.row.closeBehavior',
+      hintKey: 'settings.closeBehavior.hint',
+      options: [
+        { value: 'ask', labelKey: 'settings.closeBehavior.ask' },
+        { value: 'tray', labelKey: 'settings.closeBehavior.tray' },
+        { value: 'quit', labelKey: 'settings.closeBehavior.quit' }
+      ]
+    }
+  },
+
+  /* ============ 语言（板块 id：language） ============ */
+  language: { default: 'zh-CN', ui: { section: 'language', control: 'custom' } },
   autoTranslateResources: {
     default: false,
     ui: {
-      section: 'appearance',
+      section: 'language',
       control: 'switch',
       labelKey: 'settings.row.autoTranslate',
       disableWhen: ['local'],
@@ -149,7 +172,7 @@ export const SETTINGS_DEFS: SettingsDefs = {
   translateResourceNames: {
     default: true,
     ui: {
-      section: 'appearance',
+      section: 'language',
       control: 'switch',
       labelKey: 'settings.row.translateResourceNames',
       disableWhen: ['local', 'autoTranslateOff']
@@ -169,24 +192,25 @@ export const SETTINGS_DEFS: SettingsDefs = {
   enableMultiplayer: { default: false, ui: { section: 'experimental', control: 'custom' } },
   /* 进程级开关，必须在 app ready 之前读；自定义行里带「需重启」提示与重启按钮。 */
   hardwareAcceleration: { default: false, ui: { section: 'experimental', control: 'custom' } },
-  /* 网易云歌词浮层：默认关闭；开 / 关只影响 HUD 那块内容与后台轮询，不改动播放器。 */
-  neteaseLyricsHudEnabled: {
-    default: false,
-    ui: {
-      section: 'experimental',
-      control: 'switch',
-      labelKey: 'settings.row.neteaseLyrics',
-      hintKey: 'settings.exp.neteaseLyrics.desc',
-      disableWhen: ['local']
-    }
-  },
 
   /* ============ 游戏（板块 id：game） ============ */
+  /* 顺序即渲染顺序：默认版本目录 → 版本隔离 → 模组信息仅识别元数据 → HUD 显示
+     → 游戏窗口尺寸 → 启动游戏后关闭启动器 → Java 运行时（原独立板块，已并入）。 */
   gameDir: { default: '', ui: { section: 'game', control: 'custom' } },
   versionIsolation: {
     default: false,
     ui: { section: 'game', control: 'switch', labelKey: 'settings.row.versionIsolation' }
   },
+  metadataOnlyMods: { default: false, ui: { section: 'game', control: 'custom' } },
+  /* 游戏内 HUD 浮层：三块内容共用同一个透明置顶穿透窗口（见主进程 syncOverlayWindows），
+     所以只有一个总开关 + 一组「显示内容」子选项。整块由 `pages/settings/rows.tsx` 的
+     `HudDisplayRows` 手工绘制（主开关关掉时子选项要整体收起，注册表逐行渲染做不到），
+     因此只有 `hudEnabled` 带 ui（custom），其余字段只登记默认值。 */
+  hudEnabled: { default: false, ui: { section: 'game', control: 'custom' } },
+  hudOpacity: { default: 0.8 },
+  hudShowMultiplayer: { default: true },
+  hudShowAi: { default: true },
+  hudShowLyrics: { default: false },
   gameWindowSize: { default: '720p', ui: { section: 'game', control: 'custom' } },
   /** 自定义窗口尺寸：随 gameWindowSize 的自定义行一起渲染，故无独立 ui。 */
   gameWindowWidth: { default: 1280 },
@@ -195,15 +219,20 @@ export const SETTINGS_DEFS: SettingsDefs = {
     default: false,
     ui: { section: 'game', control: 'switch', labelKey: 'settings.row.closeOnLaunch' }
   },
-  debugMode: { default: false, ui: { section: 'game', control: 'custom' } },
-  debugKey: { default: '', ui: { section: 'game', control: 'custom' } },
-  metadataOnlyMods: { default: false, ui: { section: 'game', control: 'custom' } },
-
-  /* ============ Java（板块 id：java） ============ */
-  javaAutoDetect: { default: true, ui: { section: 'java', control: 'custom' } },
-  javaPath: { default: undefined, ui: { section: 'java', control: 'custom' } },
+  /* Java 运行时：原「Java 运行时」板块已并入「游戏」。
+     开关（自动检测）与版本下拉是两条独立自定义行，注册顺序即渲染顺序：
+     先开关、再版本选择（关闭自动检测后，下拉才会可用 —— 联动在行内部处理）。 */
+  javaAutoDetect: { default: true, ui: { section: 'game', control: 'custom' } },
+  javaPath: { default: undefined, ui: { section: 'game', control: 'custom' } },
   /** 实例级 Java 覆盖（versionId → 路径）：在「实例 → 版本」页设置，不占设置页的板块。 */
   versionJava: { default: {} },
+
+  /* ============ 开发者选项（板块 id：dev） ============ */
+  /* 原「开发模式」板块 + 原属于「游戏」的 Debug 模式 / 调试密钥，合并为「开发者选项」。
+     「开发模式」本身的授权流程是手工绘制的（`DeveloperSection` 的 intro），
+     这三项作为注册表字段排在它后面。 */
+  debugMode: { default: false, ui: { section: 'dev', control: 'custom' } },
+  debugKey: { default: '', ui: { section: 'dev', control: 'custom' } },
 
   /* ============ 下载（板块 id：download） ============ */
   downloadSource: {
@@ -254,40 +283,22 @@ export const SETTINGS_DEFS: SettingsDefs = {
     ui: { section: 'download', control: 'number', labelKey: 'settings.row.connections', min: 1, max: 256 }
   },
 
-  /* ============ 社区资源（板块 id：community） ============ */
-  communitySource: {
-    default: 'auto',
-    ui: {
-      section: 'community',
-      control: 'select',
-      labelKey: 'settings.row.communitySource',
-      disabled: true,
-      options: [
-        { value: 'mirror-first', labelKey: 'settings.source.mirrorFirstList' },
-        { value: 'auto', labelKey: 'settings.communitySource.auto' },
-        { value: 'official-first', labelKey: 'settings.source.officialFirst' }
-      ]
-    }
-  },
-  modTitleStyle: {
-    default: 'translated-first',
-    ui: {
-      section: 'community',
-      control: 'select',
-      labelKey: 'settings.row.modTitleStyle',
-      disabled: true,
-      options: [
-        { value: 'translated-first', labelKey: 'settings.modTitle.translatedFirst' },
-        { value: 'filename-first', labelKey: 'settings.modTitle.filenameFirst' }
-      ]
-    }
-  },
+  /* ============ 社区资源（原板块已撤销） ============ */
+  /* 「社区资源」板块按设置页改版要求移除。这两个字段仍被下载层与 Mod 列表使用
+     （`main/mirror.ts` 的镜像策略、`modListTitles` 的标题展示），因此**保留数据与
+     默认值，只去掉 ui 元数据** —— 去掉 ui 后它们不再出现在设置页，行为保持原样。
+     注意：这两项此前本就是 `disabled: true`（占位说明），界面上本来也改不了。 */
+  communitySource: { default: 'auto' },
+  modTitleStyle: { default: 'translated-first' },
 
-  /* ============ 公告（板块 id：notice） ============ */
+  /* ============ 公告 & 更新（板块 id：announce） ============ */
+  /* 原「公告」与「更新」两个板块合并成一个（设置页改版要求），因此这里的板块 id
+     统一为 `announce`，条目顺序即渲染顺序：公告显示 → 自动检查启动器更新
+     → 自动检查主页更新。 */
   announcementDisplay: {
     default: 'all',
     ui: {
-      section: 'notice',
+      section: 'announce',
       control: 'select',
       labelKey: 'settings.row.announcementDisplay',
       options: [
@@ -296,15 +307,13 @@ export const SETTINGS_DEFS: SettingsDefs = {
       ]
     }
   },
-
-  /* ============ 更新（板块 id：update） ============ */
   autoCheckLauncherUpdate: {
     default: true,
-    ui: { section: 'update', control: 'switch', labelKey: 'settings.row.autoCheckLauncher' }
+    ui: { section: 'announce', control: 'switch', labelKey: 'settings.row.autoCheckLauncher' }
   },
   autoCheckHomepageUpdate: {
     default: true,
-    ui: { section: 'update', control: 'switch', labelKey: 'settings.row.autoCheckHomepage' }
+    ui: { section: 'announce', control: 'switch', labelKey: 'settings.row.autoCheckHomepage' }
   },
 
   /* ============ AI 助手（板块 id：ai） ============ */
@@ -327,8 +336,6 @@ export const SETTINGS_DEFS: SettingsDefs = {
   /* 悬浮球位置：-1 = 从未拖动过，按「右下角」现算。 */
   aiBallX: { default: -1 },
   aiBallY: { default: -1 },
-  aiHudEnabled: { default: false },
-  aiHudOpacity: { default: 0.85 },
   aiAutoAnalyzeErrors: { default: true },
   aiToolsEnabled: { default: false },
   /* 每个工具的授权策略（工具名 → allow / ask / deny）。 */
@@ -348,8 +355,8 @@ export const SETTINGS_DEFS: SettingsDefs = {
   homepageId: { default: '' },
   selectedVersionId: { default: '' },
   hardwareChecked: { default: false },
-  /** 派生字段：真实 KEY 由主进程安全存储持有，这里只反映「有没有」。 */
-  uapisApiKeySet: { default: false },
+  /* uapis.cn 的 KEY 是否已保存：注册在「通用」板块顶部（见上面 general 区），
+     那里带着 ui 元数据，此处不再重复声明（重复键会覆盖前一处，把设置行弄丢）。 */
   /* 派生字段（不持久化，只随 settings:get 下发给渲染层）：
      portable 决定「默认目录」是否置灰，gameDirAbs 是便携版相对路径解析后的绝对路径。 */
   portable: { default: false },
@@ -386,8 +393,6 @@ export const SETTINGS_DEFS: SettingsDefs = {
   multiplayerDanmakuSpeed: { default: 8 },
   multiplayerDanmakuOpacity: { default: 0.85 },
   multiplayerDanmakuTracks: { default: 4 },
-  multiplayerHudEnabled: { default: false },
-  multiplayerHudOpacity: { default: 0.8 },
   multiplayerTheme: { default: 'system' },
   multiplayerStatsMinutes: { default: 0 },
   multiplayerJoinCount: { default: 0 },

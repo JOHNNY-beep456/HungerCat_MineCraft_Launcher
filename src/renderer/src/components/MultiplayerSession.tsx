@@ -55,7 +55,12 @@ export function MultiplayerSession(): JSX.Element | null {
       return
     }
     void window.api.mp.syncOverlays()
-  }, [inLobby, settings.multiplayerHudEnabled, settings.multiplayerDanmakuEnabled])
+  }, [
+    inLobby,
+    settings.hudEnabled,
+    settings.hudShowMultiplayer,
+    settings.multiplayerDanmakuEnabled
+  ])
 
   // 提示音：新消息 / 成员加入 / 成员离开。
   useEffect(() => {

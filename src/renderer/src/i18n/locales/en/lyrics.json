@@ -1,4 +1,0 @@
-{
-  "settings.row.neteaseLyrics": "NetEase Cloud Music lyrics overlay",
-  "settings.exp.neteaseLyrics.desc": "Show the lyrics of the song playing in NetEase Cloud Music line by line on the HUD overlay. Windows only, and the NetEase client (3.x or newer) must be playing; lyrics are fetched from NetEase online."
-}

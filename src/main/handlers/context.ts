@@ -79,4 +79,12 @@ export interface IpcContext {
    * 热键是全局抢注的：没开 AI 的用户不该被占走 `Ctrl+Alt+V`。
    */
   syncAiShortcuts(): void
+
+  /**
+   * 按「关闭按钮行为」同步托盘图标。
+   *
+   * `closeBehavior === 'tray'` 时需要常驻托盘（否则窗口一隐藏就再也唤不回来）；
+   * 切回「每次询问 / 直接关闭」时把托盘收掉，避免留下一个没有意义的常驻图标。
+   */
+  syncTray(): void
 }

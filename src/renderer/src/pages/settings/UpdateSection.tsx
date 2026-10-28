@@ -7,7 +7,13 @@ import { Button, Icon, Markdown, ProgressBar } from '../../components/ui'
 import { Row, Section } from './parts'
 import { AutoFields } from './AutoSection'
 
-/** 「更新」板块：当前版本、自动检查更新（注册表自动渲染）与手动检查 / 下载。 */
+/**
+ * 「公告 & 更新」板块：原「公告」与「更新」两个板块合并为一节。
+ *
+ * 内容顺序：公告显示范围 → 当前版本 → 自动检查启动器 / 主页更新 → 手动检查更新。
+ * 公告那一项与自动检查都是普通设置字段（注册表 section: 'announce'），
+ * 由 `AutoFields` 顺序渲染；当前版本与手动检查 / 下载是这里手工绘制的部分。
+ */
 export function UpdateSection(): JSX.Element {
   const { settings, t } = useApp()
   const [appVersion, setAppVersion] = useState('')
@@ -105,14 +111,15 @@ export function UpdateSection(): JSX.Element {
 
   return (
     <>
-      {/* 更新 */}
+      {/* 公告 & 更新（合并为一个板块） */}
       {settings.mode !== 'local' && (
-        <Section title={t('settings.section.update')} icon="refresh">
+        <Section title={t('settings.section.announce')} icon="refresh">
+          {/* 公告显示范围 + 自动检查启动器 / 主页更新：由共享注册表按声明顺序渲染
+              （announcementDisplay → autoCheckLauncherUpdate → autoCheckHomepageUpdate） */}
+          <AutoFields section="announce" />
           <Row label={t('settings.row.currentVersion')}>
             <span className="chip">{appVersion || '…'}</span>
           </Row>
-          {/* 自动检查启动器 / 主页更新：由共享注册表自动渲染 */}
-          <AutoFields section="update" />
           <div>
             <div className="mb-2 flex items-center justify-between">
               <span className="text-[13px] opacity-80">{t('settings.update.check')}</span>

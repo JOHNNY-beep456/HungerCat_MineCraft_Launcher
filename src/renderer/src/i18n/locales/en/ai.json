@@ -1,5 +1,5 @@
 {
-  "settings.row.ai": "AI Assistant",
+  "settings.row.ai": "AI Assistant (experimental)",
   "settings.row.aiEnabled": "Enable AI assistant",
   "settings.row.aiFormat": "API format",
   "settings.row.aiBaseUrl": "API base URL",
@@ -9,8 +9,6 @@
   "settings.row.aiHistoryTurns": "Kept conversation turns",
   "settings.row.aiVoice": "Voice chat",
   "settings.row.aiBall": "Desktop floating ball",
-  "settings.row.aiHud": "In-game overlay",
-  "settings.row.aiHudOpacity": "Overlay opacity",
   "settings.row.aiAutoAnalyze": "Auto-analyze errors",
   "settings.row.aiTools": "Let AI operate the launcher",
   "settings.row.aiToolPolicy": "Tool permissions",
@@ -27,12 +25,8 @@
   "settings.ai.headersHint": "Optional. A JSON object such as {\"X-Api-Version\":\"2024-01\"}, or one Key: Value per line.",
   "settings.ai.modelHint": "For example gpt-4o-mini, claude-3-5-sonnet-latest, gemini-2.0-flash, qwen2.5:7b.",
   "settings.ai.historyHint": "Maximum turns kept in context (1–50). Larger costs more tokens.",
-  "settings.ai.voiceHint": "Speak into the microphone and let the assistant read replies aloud. Speech recognition needs an OpenAI-compatible transcription endpoint.",
-  "settings.ai.ballHint": "Show a draggable ball in the bottom-right corner. Its position survives restarts; click it to chat.",
-  "settings.ai.hudHint": "Show a translucent overlay in game with chat and voice status (shares the same overlay as the multiplayer HUD).",
   "settings.ai.autoAnalyzeHint": "On launch or install failures, automatically send the error and recent logs to the AI for advice.",
   "settings.ai.toolsHint": "When on, the AI may inspect and even modify your instances. Destructive actions always require your confirmation.",
-  "settings.ai.toolPolicyHint": "\"Ask every time\" prompts before running; \"Always allow\" skips the prompt; \"Deny\" rejects outright.",
   "settings.ai.test": "Test connection",
   "settings.ai.testing": "Testing…",
   "settings.ai.toolSafe": "Read",
@@ -65,7 +59,6 @@
   "ai.askAi": "Ask AI to analyze this error",
   "ai.ballTip": "Click to chat with the AI assistant",
   "ai.collapse": "Collapse",
-  "ai.close": "Close",
   "settings.ai.headersBadJson": "Headers are not valid JSON — check brackets and quotes",
   "settings.ai.headersNotObject": "Headers must be a JSON object, e.g. {\"X-Foo\":\"bar\"}"
 }

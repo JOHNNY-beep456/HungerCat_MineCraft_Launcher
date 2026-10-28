@@ -22,7 +22,17 @@
 import type { NeteaseLyricsState } from '@shared/types'
 import { settings } from '../store'
 import { fetchLyrics, locateLineIndex, normalizeName, type LyricLine } from './lyrics'
+import {
+  applyAnchor,
+  applyFreeze,
+  decideProgress,
+  estimateAt,
+  initialProgress,
+  type ProgressSample,
+  type ProgressState
+} from './progress'
 import { isSmtcSupported, startSmtcPoller, type SmtcSample, type SmtcSession } from './smtc'
+import { isTimelinePublished, songPositionAt, toSongDuration } from './timeline'
 
 /**
  * 只认 AUMID 里带这些片段的媒体会话。
@@ -39,9 +49,6 @@ const TICK_MS = 250
 /** 网络类失败后的重试间隔（同一首歌不反复打接口）。 */
 const RETRY_MS = 30_000
 
-/** 允许的进度偏差（秒）：超过就认为播放位置「跳了」，重新锚定。 */
-const RESYNC_THRESHOLD_SEC = 1.5
-
 /** 歌词缓存上限：来回切歌时不重复打接口，又不至于无限占内存。 */
 const LYRIC_CACHE_MAX = 12
 
@@ -55,18 +62,25 @@ export interface NeteaseLyricsService {
   sync(): void
   /** 当前快照：HUD 窗口刚建好时补推一次。 */
   current(): NeteaseLyricsState
+  /**
+   * 手动校准：把当前句向上（-1）/ 向下（+1）移一行并重锚。
+   *
+   * 网易云的 SMTC 不发布时间轴（实测播放 / 暂停 / 拖动都是全零 + 哨兵），
+   * 进度只能本地外推，用户中途加入 / 拖动过的漂移不可检测 —— 这是唯一对齐手段。
+   */
+  nudge(direction: -1 | 1): void
   /** 退出前收尾（停子进程 / 清定时器）。 */
   dispose(): void
 }
 
 /** 「不显示」的快照（开关关掉 / 非 Windows）。 */
 function offState(): NeteaseLyricsState {
-  return { enabled: false, status: 'off', title: '', artist: '', prev: '', current: '', next: '' }
+  return { enabled: false, status: 'off', title: '', artist: '', source: '', prev: '', current: '', next: '' }
 }
 
 /** 「开着但没在放」：HUD 不渲染卡片，但内部状态已就绪。 */
 function idleState(): NeteaseLyricsState {
-  return { enabled: false, status: 'idle', title: '', artist: '', prev: '', current: '', next: '' }
+  return { enabled: false, status: 'idle', title: '', artist: '', source: '', prev: '', current: '', next: '' }
 }
 
 /** 从一次采样里挑出网易云的会话：优先正在播放的那条，其次暂停中的。 */
@@ -79,9 +93,42 @@ function pickNeteaseSession(sessions: SmtcSession[]): SmtcSession | null {
   return playing ?? matched[0]
 }
 
-/** 歌曲身份：标题 + 歌手 + 时长。三者任一变化都算「换歌」（同一首歌的不同版本时长不同）。 */
+/**
+ * 歌曲身份：标题 + 歌手 + 时长。
+ *
+ * 两条稳定性要求（都来自实际故障）：
+ *
+ * 1. **时长读不到时不能当成「换了首歌」。** 改成占位 `?` 仍不够 —— 先读到 326、
+ *    下一次读到 0，key 还是会从 `…|326` 变成 `…|?`，照样触发换歌。所以身份判定
+ *    改成「标题 + 歌手」为主：时长只在**两边都读到**时才参与比较（见 `sameSong`），
+ *    这里保留它只是为了区分「同名不同版本」的极端情况。
+ *
+ * 2. **取整到秒。** 播放器上报的时长可能有小数抖动（326.0 / 326.4），不取整会让
+ *    同一首歌每隔几次采样就换一次 key。
+ */
 function songKeyOf(session: SmtcSession): string {
-  return [normalizeName(session.title), normalizeName(session.artist), Math.round(session.end)].join('|')
+  const duration = toSongDuration(session)
+  const shown = duration > 0 ? String(Math.round(duration)) : '?'
+  return [normalizeName(session.title), normalizeName(session.artist), shown].join('|')
+}
+
+/**
+ * 判断两次采样是否**仍是同一首歌**。
+ *
+ * 与直接比 `songKeyOf` 的字符串不同，这里对「时长读不到」做了宽容处理：
+ *   · 标题 / 歌手不同 → 一定是换了歌；
+ *   · 标题 / 歌手相同，且两边时长都读到了、但差得多（> 5 秒）→ 认为是同名不同版本；
+ *   · 其余情况（含任一方时长没读到）→ 仍算同一首歌，避免因一次读失败就重载歌词。
+ */
+function sameSong(a: SmtcSession | null, b: SmtcSession): boolean {
+  if (!a) return false
+  if (normalizeName(a.title) !== normalizeName(b.title)) return false
+  if (normalizeName(a.artist) !== normalizeName(b.artist)) return false
+  // 比较真实时长（都已减去各自时间轴起点）；任一方读不到就不参与判定。
+  const da = toSongDuration(a)
+  const db = toSongDuration(b)
+  if (da > 0 && db > 0 && Math.abs(da - db) > 5) return false
+  return true
 }
 
 export function createNeteaseLyricsService(hooks: NeteaseLyricsHooks): NeteaseLyricsService {
@@ -121,29 +168,84 @@ export function createNeteaseLyricsService(hooks: NeteaseLyricsHooks): NeteaseLy
   }
 
   /* ---- 进度外推 ---- */
-  let anchored = false
-  let basePos = 0
-  let baseAt = 0
-  let playing = false
-
   /**
-   * 外推当前播放位置（秒）。
-   * 未锚定（还没收到采样）时返回 0；播放中按本地时钟推进，暂停则停在锚点。
+   * 锚点状态。
+   *
+   * 判定逻辑抽在 `progress.ts`（纯函数、可单测）：这里的坑是「播放器没刷新位置」与
+   * 「播放器上报了一个旧位置」在数值上完全一样，必须靠**采样值有没有变化**来区分，
+   * 不能拿冻结值和前进的外推值比差。详见那个文件的头部注释。
    */
+  let progress: ProgressState = initialProgress()
+
+  /** 外推当前播放位置（歌曲内时间，秒）。 */
   function estimatePosition(now: number): number {
-    if (!anchored) return 0
-    const raw = playing ? basePos + (now - baseAt) / 1000 : basePos
-    const end = session?.end ?? 0
+    const raw = estimateAt(progress, now)
+    // 用「歌曲真实时长」做上限，而不是绝对时间轴的 EndTime。
+    const duration = session ? toSongDuration(session) : 0
     // 歌曲尾部：SMTC 的 Position 偶尔会越过 EndTime 停住，钳住避免「最后一句之后空转」。
-    return end > 0 ? Math.min(raw, end) : raw
+    return duration > 0 ? Math.min(raw, duration) : raw
   }
 
-  /** 用一次采样重新锚定播放位置。 */
-  function anchor(sample: SmtcSession, sampledAt: number): void {
-    basePos = sample.pos
-    baseAt = sampledAt
-    playing = sample.status === 'Playing'
-    anchored = true
+  /** 按一次采样决定是否需要重新锚定（标准消费模型，细节见 progress.ts）。 */
+  function handleSampleProgress(sample: SmtcSession, sampledAt: number): void {
+    /**
+     * 播放状态未知时沿用「上一次已知的状态」。
+     *
+     * 不能直接 `sample.status === 'Playing'`：读失败是空串，那样会被判成「暂停」，
+     * 于是进度钉死在锚点、歌词停止滚动 —— 而用户明明在放歌。见 smtc.ts 的
+     * `statusKnown` 与 progress.ts 的说明。
+     */
+    const nowPlaying = sample.statusKnown ? sample.status === 'Playing' : progress.playing
+    /*
+     * 时间轴是否发布（标准模型的规则 3 分界线）：
+     * 网易云暂停时实测上报 pos=0 start=0 end=0 + FILETIME 哨兵时间戳，
+     * 那是「没有时间轴」，不是「位置在 0」。
+     */
+    const timelineValid = isTimelinePublished(sample)
+    /**
+     * 换算「此刻」的歌曲内位置（标准模型的规则 1）。
+     *
+     * `Position` 是 `LastUpdatedTime` 那一刻的快照（API 文档原文），补上两者之间的
+     * 时间差才是当前位置；暂停时不推进时间。时间轴未发布时这个值无意义，
+     * 但仍会安全地算出来（为 0）—— 由 decideProgress 决定用不用它。
+     */
+    const songPos = songPositionAt(sample, sampledAt, nowPlaying)
+    const action = decideProgress(
+      progress,
+      {
+        songPos,
+        rawPos: sample.pos,
+        updatedAt: sample.updatedAt,
+        isPlaying: nowPlaying,
+        statusKnown: sample.statusKnown,
+        timelineValid
+      },
+      sampledAt
+    )
+    if (action === 'anchor') {
+      progress = applyAnchor(
+        progress,
+        {
+          songPos,
+          rawPos: sample.pos,
+          updatedAt: sample.updatedAt,
+          isPlaying: nowPlaying,
+          statusKnown: sample.statusKnown,
+          timelineValid
+        },
+        sampledAt
+      )
+    } else if (action === 'freeze') {
+      /*
+       * 位置不可用但播放状态可信（典型：网易云暂停时清空时间轴）。
+       *
+       * 必须走 freeze 而不是「什么都不做」：只保留锚点而不更新 `playing`，
+       * 暂停后进度仍按本地时钟前进，歌词会继续往下滚 —— 与「暂停」直接矛盾。
+       * freeze 把锚点钉在当前推算位置，并采纳新的播放状态。
+       */
+      progress = applyFreeze(progress, nowPlaying, sampledAt)
+    }
+    // 'ignore'：没有任何新信息（同一快照且状态没变），继续沿锚点外推。
   }
 
   /** 推送（内容没变就不发）。 */
@@ -154,6 +256,35 @@ export function createNeteaseLyricsService(hooks: NeteaseLyricsHooks): NeteaseLy
     hooks.push(state)
   }
 
+  /**
+   * 手动校准：把「当前句」向上 / 向下移一行，并把锚点重新钉到那一行的时间戳上。
+   *
+   * 为什么需要它：网易云的 SMTC **从不发布时间轴**（实测播放 / 暂停 / 用户拖动进度条
+   * 都返回全零 + FILETIME 哨兵，违反标准「每 5 秒更新」义务），所以进度只能靠本地
+   * 时钟从锚点自累计。用户中途加入播放、在客户端里拖动过进度条、或从歌单中段开始
+   * 播放时，锚点就会与真实位置产生**不可检测的偏差** —— 这是 SMTC 通道内无解的，
+   * 唯一出路就是让用户一键对齐。
+   *
+   * 交互形态：HUD 歌词卡上的「上一句 / 下一句」按钮。用户看到歌词与实际演唱不齐，
+   * 点一下立刻对齐；偏移只需校正一次，之后沿外推保持同步。
+   *
+   * 实现：把目标行的时间戳作为新锚点 —— 这比「偏移量 ±几秒」精确，因为 LRC 的时间
+   * 戳就是歌词自己的坐标系，不需要猜测行与行之间的间隔。
+   */
+  function nudge(direction: -1 | 1): void {
+    if (lines.length === 0) return
+    const now = Date.now()
+    const currentIndex = locateLineIndex(lines, estimatePosition(now))
+    // 越界（前奏期 index=-1 视为「在第一行之前」）：统一钳到有效范围。
+    const from = currentIndex < 0 ? 0 : Math.min(currentIndex, lines.length - 1)
+    const target = Math.min(lines.length - 1, Math.max(0, from + direction))
+    if (target === from && currentIndex >= 0) return // 已到头，无需重锚
+    const at = lines[target].time
+    progress = applyAnchor(progress, { songPos: at, rawPos: at, updatedAt: 0, isPlaying: progress.playing, statusKnown: true, timelineValid: false }, now)
+    // 立即重算三行并推送，让用户点完马上看到对齐效果。
+    runTick(true)
+  }
+
   /** 回到「没有在播放」：清掉曲目与歌词，并让在途的歌词请求作废。 */
   function resetIdle(): void {
     session = null
@@ -161,7 +292,9 @@ export function createNeteaseLyricsService(hooks: NeteaseLyricsHooks): NeteaseLy
     lines = []
     fetching = false
     retryAt = 0
-    anchored = false
+    // 锚点连同采样基准一起清空：否则下一次换歌时会拿上一首残留的位置去做
+    // 「播放器这次有没有刷新」的比较，把新歌的第一个采样误判成「没刷新」。
+    progress = initialProgress()
     fetchToken++
     if (state.status !== 'idle') {
       state = idleState()
@@ -176,6 +309,17 @@ export function createNeteaseLyricsService(hooks: NeteaseLyricsHooks): NeteaseLy
     lines = []
     fetching = true
     retryAt = 0
+    /**
+     * 换歌必须清空进度锚点。
+     *
+     * 锚点是「某一首歌的某一秒」——上一首的 118s 与新歌的 5s 毫无关系。如果不重置，
+     * 新歌的首个采样会拿旧歌的位置做比较：位置的「变化量」被判成抖动就被忽略、
+     * 或差分不到阈值就被 keep，新歌的歌词于是从错误的行开始、要等好几秒才跳正。
+     * 这正是「歌曲从中途开始播放时歌词显示异常」的主要成因之一。
+     *
+     * 清空后，`onSample` 里紧接着的 `handleSampleProgress` 会以新歌的首个采样重建锚点。
+     */
+    progress = initialProgress()
     const token = ++fetchToken
     // 同一首歌可能被反复切换（暂停再播放、客户端重开），命中缓存就别再打接口。
     const cached = lyricCache.get(songKey)
@@ -187,6 +331,7 @@ export function createNeteaseLyricsService(hooks: NeteaseLyricsHooks): NeteaseLy
         status: 'sync',
         title: next.title.trim(),
         artist: next.artist.trim(),
+        source: next.source,
         prev: '',
         current: '',
         next: '',
@@ -200,6 +345,7 @@ export function createNeteaseLyricsService(hooks: NeteaseLyricsHooks): NeteaseLy
       status: 'loading',
       title: next.title.trim(),
       artist: next.artist.trim(),
+      source: next.source,
       prev: '',
       current: '',
       next: '',
@@ -215,7 +361,7 @@ export function createNeteaseLyricsService(hooks: NeteaseLyricsHooks): NeteaseLy
     const result = await fetchLyrics({
       title: target.title,
       artist: target.artist,
-      durationSec: target.end
+      durationSec: toSongDuration(target)
     })
     if (token !== fetchToken) return
     fetching = false
@@ -262,23 +408,35 @@ export function createNeteaseLyricsService(hooks: NeteaseLyricsHooks): NeteaseLy
       resetIdle()
       return
     }
-    // 进度：偏差大才重新锚定（拖动进度、切歌、播放器重新上报）。
-    const estimated = estimatePosition(sample.ts)
-    if (!anchored || Math.abs(next.pos - estimated) > RESYNC_THRESHOLD_SEC) {
-      anchor(next, sample.ts)
-    } else {
-      playing = next.status === 'Playing'
-    }
-
-    const key = songKeyOf(next)
-    if (key !== songKey) {
+    /**
+     * 换歌判定要在**进度校准之前**做。
+     *
+     * 顺序搞反会留下一个很难复现的错位：`handleSampleProgress` 拿新歌的位置去和
+     * **旧歌**的锚点比较 —— 若两首歌的位置恰好接近（上一首在 118s，新歌从 119s
+     * 开始），会被判成 keep 而沿用旧锚点，新歌的歌词于是整体偏了 1 秒；若差得多则
+     * 重锚一次、紧接着 `startSong` 又清空锚点，白做一遍。
+     * 正确顺序：先认出「这是另一首歌」→ 换歌（此时 `startSong` 会重置进度）→
+     * 再按新歌的首个采样做锚定。
+     *
+     * 用 `sameSong` 而不是直接比 key 字符串：时长偶尔读不到时不能当成换了歌，
+     * 否则会反复 `startSong`、歌词一直闪「加载中」。
+     */
+    if (!sameSong(session, next)) {
       startSong(next)
+      // 换歌后必须用这一帧的采样重新锚定，否则进度会停在上一首的位置。
+      handleSampleProgress(next, sample.ts)
       return
     }
-    // 同一首歌：只更新时长 / 状态这类元信息（标题可能在播放器里被编辑）。
+    // 同一首歌：只有「播放器真的上报了新位置」时才用它校准，否则沿本地时钟外推。
+    handleSampleProgress(next, sample.ts)
+    // 元信息（标题可能在播放器里被编辑、来源名可能刚解析出来）随时更新。
     session = { ...next }
-    if (state.title !== next.title.trim() || state.artist !== next.artist.trim()) {
-      state = { ...state, title: next.title.trim(), artist: next.artist.trim() }
+    if (
+      state.title !== next.title.trim() ||
+      state.artist !== next.artist.trim() ||
+      state.source !== next.source
+    ) {
+      state = { ...state, title: next.title.trim(), artist: next.artist.trim(), source: next.source }
       publish()
     }
   }
@@ -296,13 +454,46 @@ export function createNeteaseLyricsService(hooks: NeteaseLyricsHooks): NeteaseLy
       return
     }
     if (state.status !== 'sync' || lines.length === 0) return
-    const index = locateLineIndex(lines, estimatePosition(Date.now()))
+    const now = Date.now()
+    const pos = estimatePosition(now)
+    const duration = toSongDuration(session)
+    /**
+     * 越界自愈：外推位置越过歌曲总时长，说明锚点错了。
+     *
+     * 网易云不发布时间轴，锚点只能从「换歌 / 恢复播放」起算。若用户是**从歌单中段
+     * 加入播放**（SMTC 只报曲名，不报位置），锚点 0 与真实位置的偏差无从得知；
+     * 歌放完时外推值远超时长就是唯一的可观测信号。此时回到 0 重新等下一首，
+     * 至少保证换歌后是对的。
+     */
+    if (duration > 0 && pos > duration + 3) {
+      progress = applyAnchor(
+        progress,
+        { songPos: 0, rawPos: 0, updatedAt: 0, isPlaying: progress.playing, statusKnown: true, timelineValid: false },
+        now
+      )
+      runTick(true)
+      return
+    }
+    const index = locateLineIndex(lines, pos)
     const prev = index > 0 ? lines[index - 1].text : ''
     const current = index >= 0 ? lines[index].text : ''
     const next = index + 1 < lines.length ? lines[index + 1].text : ''
     if (prev === state.prev && current === state.current && next === state.next) return
     state = { ...state, prev, current, next }
     publish()
+  }
+
+  /**
+   * 立即执行一轮歌词同步并强制推送。
+   *
+   * `tick()` 内容没变就静默返回（常规节拍的节流），但用户点「上一句 / 下一句」
+   * 校准后必须**立刻**看到效果 —— 即使三行文本恰好没变（比如间奏里连点两下），
+   * 也要把快照推下去，否则按钮像坏了。
+   */
+  function runTick(force: boolean): void {
+    const before = state
+    tick()
+    if (force && state === before) publish(true)
   }
 
   function start(): void {
@@ -339,7 +530,7 @@ export function createNeteaseLyricsService(hooks: NeteaseLyricsHooks): NeteaseLy
     lines = []
     fetching = false
     retryAt = 0
-    anchored = false
+    progress = initialProgress()
     fetchToken++
     state = offState()
     publish(true)
@@ -349,13 +540,22 @@ export function createNeteaseLyricsService(hooks: NeteaseLyricsHooks): NeteaseLy
     sync(): void {
       const s = settings.get()
       // 「本地」模式关掉了全部联网功能：歌词要联网，这里跟着一起停。
-      const want = isSmtcSupported() && s.neteaseLyricsHudEnabled === true && s.mode !== 'local'
+      // 开关统一走 HUD 的「显示歌词」子选项（总开关关掉时它自然也就不跑了）。
+      const want = isSmtcSupported() && s.hudEnabled === true && s.hudShowLyrics === true && s.mode !== 'local'
       if (want === running) return
       if (want) start()
       else stop()
     },
     current(): NeteaseLyricsState {
       return state
+    },
+    /**
+     * 手动校准入口（HUD 歌词卡的「上一句 / 下一句」按钮）。
+     *
+     * 网易云不发布 SMTC 时间轴（实测），进度漂移不可检测，这是唯一的对齐手段。
+     */
+    nudge(direction: -1 | 1): void {
+      if (running) nudge(direction)
     },
     dispose(): void {
       stop()

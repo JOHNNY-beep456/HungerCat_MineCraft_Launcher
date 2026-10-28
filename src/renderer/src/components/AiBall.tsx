@@ -7,7 +7,11 @@
  *
  * 两种形态共用一个窗口（主进程改尺寸，见 main/ai/ball.ts）：
  *   · 收起：圆形按钮，可拖动，单击展开；
- *   · 展开：聊天面板，头部同样可拖动，右上角可收起 / 关闭。
+ *   · 展开：聊天面板，头部同样可拖动，右上角有「新对话 / 收起」。
+ *
+ * 展开态不放「关闭」按钮：那等于关掉悬浮球开关，而悬浮球是否出现已经在
+ * 「设置 → AI 助手 → 桌面悬浮球」里控制，两处入口表达同一件事容易让人误以为是
+ * 「关掉这个面板」。收起（chevronLeft）就够了 —— 要彻底关掉，去设置里关开关。
  */
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { AiToolRequest, LauncherSettings } from '@shared/types'
@@ -81,7 +85,7 @@ export function AiBall(): JSX.Element {
   /**
    * 卸载收尾：停录音、清定时器、停朗读。
    *
-   * 悬浮球关闭（点「×」或关掉开关）时窗口会被销毁。这些资源不跟着释放的话，
+   * 悬浮球关闭（在设置里关掉开关）时窗口会被销毁。这些资源不跟着释放的话，
    * 麦克风指示灯会一直亮着，朗读也会继续念下去。
    */
   useEffect(() => {
@@ -421,16 +425,6 @@ export function AiBall(): JSX.Element {
             onClick={async () => {
               setExpanded(false)
               await window.api.ai.ball.expand(false)
-            }}
-          />
-          <Button
-            size="sm"
-            icon="xmark"
-            title={t('ai.close')}
-            aria-label={t('ai.close')}
-            onClick={() => {
-              // 关闭 = 关掉开关（主进程据此不再自动创建），与设置页保持一致。
-              void window.api.settings.set({ aiBallEnabled: false })
             }}
           />
         </div>

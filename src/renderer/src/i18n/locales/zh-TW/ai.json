@@ -1,5 +1,5 @@
 {
-  "settings.row.ai": "AI 助手",
+  "settings.row.ai": "AI 助手（實驗性）",
   "settings.row.aiEnabled": "啟用 AI 助手",
   "settings.row.aiFormat": "介面格式",
   "settings.row.aiBaseUrl": "API 位址",
@@ -9,8 +9,6 @@
   "settings.row.aiHistoryTurns": "保留對話輪數",
   "settings.row.aiVoice": "語音聊天",
   "settings.row.aiBall": "桌面懸浮球",
-  "settings.row.aiHud": "遊戲內浮層",
-  "settings.row.aiHudOpacity": "浮層透明度",
   "settings.row.aiAutoAnalyze": "錯誤自動分析",
   "settings.row.aiTools": "允許 AI 操作啟動器",
   "settings.row.aiToolPolicy": "工具權限",
@@ -27,12 +25,8 @@
   "settings.ai.headersHint": "選填。JSON 物件，例如 {\"X-Api-Version\":\"2024-01\"}；也支援每行一個 Key: Value。",
   "settings.ai.modelHint": "例如 gpt-4o-mini、claude-3-5-sonnet-latest、gemini-2.0-flash、qwen2.5:7b。",
   "settings.ai.historyHint": "帶進上下文的最大對話輪數（1–50），越大越耗 token。",
-  "settings.ai.voiceHint": "用麥克風說話、讓助手朗讀回覆。語音辨識需要 OpenAI 相容介面的轉寫能力。",
-  "settings.ai.ballHint": "在桌面右下角顯示一個可拖動的圓球，位置會在重新啟動後保留；點一下開始對話。",
-  "settings.ai.hudHint": "進入遊戲後疊一層半透明浮層，顯示對話與語音狀態（與「連線」HUD 共用同一塊浮層）。",
   "settings.ai.autoAnalyzeHint": "啟動失敗或安裝錯誤時，自動把錯誤與最近日誌交給 AI 分析並給出處理建議。",
   "settings.ai.toolsHint": "開啟後 AI 可以查詢甚至修改你的實例。刪除類操作始終需要你逐次確認。",
-  "settings.ai.toolPolicyHint": "「每次詢問」= 執行前彈框；「始終允許」= 不再詢問；「禁止」= 直接拒絕。",
   "settings.ai.test": "測試連線",
   "settings.ai.testing": "測試中…",
   "settings.ai.toolSafe": "查詢",
@@ -65,7 +59,6 @@
   "ai.askAi": "讓 AI 分析這個錯誤",
   "ai.ballTip": "點擊與 AI 助手對話",
   "ai.collapse": "收合",
-  "ai.close": "關閉",
   "settings.ai.headersBadJson": "請求標頭不是合法的 JSON，請檢查括號與引號",
   "settings.ai.headersNotObject": "請求標頭必須是 JSON 物件，例如 {\"X-Foo\":\"bar\"}"
 }

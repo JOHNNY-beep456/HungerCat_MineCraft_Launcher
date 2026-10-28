@@ -337,7 +337,6 @@ export function AiSection(): JSX.Element {
               onChange={(v) => void updateSettings({ aiVoiceEnabled: v })}
             />
           </Row>
-          <p className="caption -mt-1">{t('settings.ai.voiceHint')}</p>
 
           {/* ---------- 悬浮球 ---------- */}
           <Row label={t('settings.row.aiBall')}>
@@ -349,28 +348,6 @@ export function AiSection(): JSX.Element {
               }}
             />
           </Row>
-          <p className="caption -mt-1">{t('settings.ai.ballHint')}</p>
-
-          {/* ---------- 游戏内浮层 ---------- */}
-          <Row label={t('settings.row.aiHud')}>
-            <Switch checked={settings.aiHudEnabled} onChange={(v) => void updateSettings({ aiHudEnabled: v })} />
-          </Row>
-          <p className="caption -mt-1">{t('settings.ai.hudHint')}</p>
-          {settings.aiHudEnabled && (
-            <Row label={t('settings.row.aiHudOpacity')}>
-              <div className="flex items-center gap-3">
-                <input
-                  type="range"
-                  min={0.2}
-                  max={1}
-                  step={0.05}
-                  value={settings.aiHudOpacity}
-                  onChange={(e) => void updateSettings({ aiHudOpacity: Number(e.target.value) })}
-                />
-                <span className="caption w-10 text-right">{Math.round(settings.aiHudOpacity * 100)}%</span>
-              </div>
-            </Row>
-          )}
 
           {/* ---------- 工具（MCP） ---------- */}
           <Row label={t('settings.row.aiTools')}>
@@ -383,7 +360,6 @@ export function AiSection(): JSX.Element {
               <p className="caption px-1" style={{ fontWeight: 600 }}>
                 {t('settings.row.aiToolPolicy')}
               </p>
-              <p className="caption px-1 -mt-1">{t('settings.ai.toolPolicyHint')}</p>
               <div className="flex flex-col gap-1.5 px-1">
                 {tools.map((spec) => (
                   <div key={spec.name} className="flex items-center gap-3">

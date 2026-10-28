@@ -410,7 +410,13 @@ const api: LauncherApi = {
   // 网易云歌词浮层（实验性）：只有 HUD 窗口订阅，其它窗口拿到也不显示任何东西。
   music: {
     onLyricsState: subscribe<NeteaseLyricsState>('music:lyricsState'),
-    lyricsState: () => ipcRenderer.invoke('music:lyricsState')
+    lyricsState: () => ipcRenderer.invoke('music:lyricsState'),
+    // 手动校准（网易云不发布 SMTC 时间轴，漂移只能用户一键对齐）。
+    lyricsNudge: (direction: -1 | 1) => ipcRenderer.invoke('music:lyricsNudge', direction)
+  },
+  // 浮层窗口自身的交互开关：默认鼠标穿透，鼠标移到歌词卡按钮上时临时取消穿透。
+  hud: {
+    setInteractive: (interactive: boolean) => ipcRenderer.send('hud:setInteractive', interactive)
   }
 }
 

@@ -94,6 +94,15 @@ let lyricsService: NeteaseLyricsService | null = null
 
 /** AI 语音热键（Electron accelerator 写法）。 */
 const AI_VOICE_ACCELERATOR = 'Control+Alt+V'
+/**
+ * 歌词校准热键（上一句 / 下一句）。
+ *
+ * 为什么必须配热键：游戏内浮层是**鼠标穿透**窗口，而且全屏游戏（含 Minecraft）会把
+ * 鼠标锁定在游戏里，指针根本移不到浮层上 —— 光有按钮等于没有。热键是全局注册的，
+ * 游戏里按下就能校准。
+ */
+const LYRICS_PREV_ACCELERATOR = 'Control+Alt+['
+const LYRICS_NEXT_ACCELERATOR = 'Control+Alt+]'
 /** 全部下载任务的取消控制器，按 taskId 区分（版本安装 / Java / 资源下载共用）。 */
 const downloadAborts = new Map<string, AbortController>()
 /**
@@ -361,33 +370,62 @@ function createWindow(): void {
     mainWindow.loadFile(join(OUT_DIR, 'renderer/index.html'))
   }
 
-  // 关窗拦截：联机进行中时询问「退出 / 放置后台」，避免误关导致掉线与残留进程。
+  /**
+   * 关窗拦截：按设置决定「每次询问 / 退至后台 / 直接关闭」。
+   *
+   * 这套行为此前只覆盖「联机中」这一种情形，其余情况一律直接退出；而文案里
+   * 早就有一个 `mp.set.closeToTray`（「关闭时最小化到托盘」），却没有对应字段、
+   * 也没接进任何逻辑。现在统一成一个三态设置（`closeBehavior`），关窗时按它走：
+   *
+   *   ask   每次询问 —— 弹框三选一（完全关闭 / 退至后台 / 取消）
+   *   tray  退至后台 —— 直接隐藏到托盘，程序继续跑（联机不中断）
+   *   quit  直接关闭 —— 直接退出（联机中先停组网，与「确认退出」等价）
+   *
+   * 托盘建不起来时不能隐藏（隐藏后就再也唤不回来了），退回直接关闭。
+   */
   mainWindow.on('close', (event) => {
     if (isQuitting) return
-    // 仅联机进行中才拦截；平时关窗即正常退出，不打扰用户。
-    if (getMultiplayerAppState() !== 'in-lobby') return
+    const behavior = settings.get().closeBehavior
+    const inLobby = getMultiplayerAppState() === 'in-lobby'
+
+    // 直接关闭：不拦，让 close 正常走完（closed 里会清理附属浮层）。
+    if (behavior === 'quit') return
+
+    // 退至后台：隐藏窗口、建托盘；只有托盘可用时才隐藏。
+    if (behavior === 'tray') {
+      event.preventDefault()
+      ensureTray()
+      if (tray && mainWindow && !mainWindow.isDestroyed()) mainWindow.hide()
+      return
+    }
+
+    // ask：询问用户。默认项跟随「是否联机」——联机中更希望留在后台继续联机，
+    // 非联机时更希望直接关掉。
     event.preventDefault()
     const win = mainWindow
     if (!win || win.isDestroyed()) return
+    const buttons = ['完全关闭', '退至后台', '取消']
+    const defaultId = inLobby ? 1 : 0
     void (async () => {
       const { response } = await dialog.showMessageBox(win, {
         type: 'question',
-        buttons: ['确认退出', '放置后台', '取消'],
-        defaultId: 0,
+        buttons,
+        defaultId,
         cancelId: 2,
         // 中文按钮；noLink 避免 Windows 把按钮渲染成命令链接样式。
         noLink: true,
-        title: '退出启动器',
-        message: '当前正在联机中',
+        title: '关闭启动器',
+        message: inLobby ? '当前正在联机中' : '要关闭启动器吗？',
         detail:
-          '「确认退出」将关闭所有联机进程（含虚拟网络）并退出程序；\n' +
-          '「放置后台」将隐藏窗口并最小化到系统托盘，联机继续保持。'
+          '「完全关闭」将退出程序' +
+          (inLobby ? '，并关闭所有联机进程（含虚拟网络）' : '') +
+          '；\n「退至后台」将隐藏窗口并最小化到系统托盘，程序继续运行' +
+          (inLobby ? '，联机不中断' : '') +
+          '。\n\n可在「设置 → 模式 → 关闭按钮行为」里固定这个选择，不再每次询问。'
       })
       if (response === 0) {
-        // 确认退出：关闭所有进程后退出。
         void quitAppCompletely()
       } else if (response === 1) {
-        // 放置后台：隐藏窗口 + 建托盘，联机不中断。
         ensureTray()
         // 托盘建不起来（Linux 缺 AppIndicator 等）时不能隐藏：隐藏后就再也唤不回来了。
         if (tray) win.hide()
@@ -398,6 +436,16 @@ function createWindow(): void {
 
   mainWindow.on('closed', () => {
     mainWindow = null
+    /**
+     * 主窗口真正关掉时，把附属浮层一并收走。
+     *
+     * 悬浮球 / HUD / 弹幕都是 `skipTaskbar` 的独立置顶窗，不跟主窗口同生共死。
+     * 留着它们会让 Electron 认为「还有窗口」，`window-all-closed` 因而永不触发，
+     * 进程与浮层一起悬挂在桌面上（点不回来、只能去任务管理器结束）。
+     *
+     * 「放置后台」走的是 `hide()`，不会触发 `closed`，所以联机后台常驻不受影响。
+     */
+    closeAllOverlays()
   })
 }
 
@@ -606,6 +654,23 @@ function destroyTray(): void {
   tray = null
 }
 
+/**
+ * 按「关闭按钮行为」同步托盘图标。
+ *
+ * 选「退至后台」时必须常驻托盘 —— 否则窗口一隐藏，用户就再也找不到入口把它唤回来
+ * （`window-all-closed` 里也因为 `tray` 存在而不退出，程序会变成一个看不见的幽灵进程）。
+ * 切回「每次询问」或「直接关闭」时把托盘收掉：留着它没有意义，还会让
+ * `window-all-closed` 误以为要常驻、导致关窗后进程不退出。
+ *
+ * 「每次询问」不预建托盘：用户还没选过要不要后台，提前常驻一个托盘图标是多余的；
+ * 等他真的选了「退至后台」，`ensureTray()` 会在那一刻建。
+ */
+function syncTray(): void {
+  const should = settings.get().closeBehavior === 'tray'
+  if (should) ensureTray()
+  else destroyTray()
+}
+
 /** 唤回并聚焦主窗口（从托盘 / 二次启动时调用）。 */
 function showMainWindow(): void {
   const win = mainWindow
@@ -621,7 +686,7 @@ function showMainWindow(): void {
 /**
  * 真正退出程序：停止联机（关闭 EasyTier 等子进程）后退出。
  *
- * 与「关闭窗口放置后台」相对；托盘菜单的「退出程序」与关闭确认框的「确认退出」都走这里。
+ * 与「关闭窗口退至后台」相对；托盘菜单的「退出程序」与关闭确认框的「完全关闭」都走这里。
  */
 async function quitAppCompletely(): Promise<void> {
   if (isQuitting) return
@@ -632,6 +697,14 @@ async function quitAppCompletely(): Promise<void> {
   } catch {
     /* 联机可能未启动，忽略 */
   }
+  /**
+   * 先把附属浮层收掉再 quit。
+   *
+   * 不能只依赖主窗口 `closed` 里的那次清理：`isQuitting` 在上面已经置真，
+   * 等待 `forceStopMultiplayer()` 的这几百毫秒里主窗口若被关掉，`close` 会直接放行、
+   * 时序上就不好保证清理一定发生在进程退出之前。这里显式收一遍（幂等）。
+   */
+  closeAllOverlays()
   app.quit()
 }
 
@@ -646,11 +719,11 @@ function createOverlayWindow(kind: 'hud' | 'danmaku'): BrowserWindow {
   const workArea = screen.getPrimaryDisplay().workArea
   const isHud = kind === 'hud'
   /**
-   * 开了歌词浮层时把 HUD 窗口放宽 / 放高一点：歌词是整句中文，360px 宽的卡片
+   * 开了歌词子选项时把 HUD 窗口放宽 / 放高一点：歌词是整句中文，360px 宽的卡片
    * 一行放不下几句、换行也多；而三行歌词 + 歌名至少要 400px 才不至于挤成一团。
    * 其它两种内容（大厅成员 / AI 回复）对尺寸不敏感，跟着一起放大没有副作用。
    */
-  const lyricsWide = isHud && settings.get().neteaseLyricsHudEnabled === true
+  const lyricsWide = isHud && settings.get().hudShowLyrics === true
   const hudWidth = lyricsWide ? 460 : 360
   const hudHeight = lyricsWide ? 420 : 300
   const win = new BrowserWindow({
@@ -731,27 +804,63 @@ function closeDanmakuWindow(): void {
 }
 
 /**
- * 按设置同步两个浮层窗口的存续（进入大厅且开关开启时创建，否则关闭）。
+ * 关闭全部「附属窗口」：AI 悬浮球、HUD 浮层（联机状态 / AI / 歌词）、弹幕，
+ * 以及联机迷你窗、日志窗、开发工具窗。
  *
- * AI 浮层（`aiHudEnabled` + 游戏运行中）与联机 HUD 复用**同一个窗口**：
+ * 这些窗口都**独立于主窗口**创建（多数是 `skipTaskbar + alwaysOnTop`），主窗口关掉
+ * 不会带走它们。之前只在 `will-quit` 里收拾，可是主窗口一关、这些窗还在，Electron
+ * 就认为「还有窗口」，`window-all-closed` 不触发 → `app.quit()` 不执行 →
+ * 进程与浮层一起悬挂在桌面上（任务栏里还看得见，却再也点不回主界面）。
+ * 所以关主窗口时必须主动把它们收掉，让「窗口全部关闭」重新成立。
+ *
+ * 歌词采样（常驻 PowerShell 子进程）也在这一步停掉：它只为 HUD 那块内容服务，
+ * 浮层没了还继续每 0.4 秒采一次系统媒体会话纯属浪费。`will-quit` 里还会再
+ * dispose 一次兜底（服务内部是幂等的）。
+ *
+ * 幂等：重复调用不会报错。
+ */
+function closeAllOverlays(): void {
+  closeHudWindow()
+  closeDanmakuWindow()
+  closeAiBall()
+  closeMiniWindow()
+  closeDebugWindow()
+  closeDevWindow()
+  lyricsService?.dispose()
+  lyricsService = null
+}
+
+/**
+ * 按设置同步两个浮层窗口的存续。
+ *
+ * HUD 是**一扇窗承载三块内容**：联机大厅状态 / AI 助手 / 网易云歌词。所以存续只取决于
+ * 总开关 `hudEnabled` 与各内容的「此时此刻有没有东西可显示」：
  * 两个独立的透明置顶窗口会互相遮挡、也各自消耗一个渲染进程，而它们在游戏里
- * 本来就是叠在同一块区域上的两块信息。谁需要就创建，两个都不需要才关闭。
+ * 本来就是叠在同一块区域上的几块信息。
  */
 function syncOverlayWindows(): void {
   const s = settings.get()
   const inLobby = !!getMultiplayerLobby()
-  const mpHud = inLobby && s.multiplayerHudEnabled
-  const aiHud = aiService?.hudState().enabled ?? false
   /**
-   * 网易云歌词浮层：只要实验开关开着就常驻。
+   * 联机状态：总开关 + 子选项 + 真在大厅里。
    *
-   * 与 AI 浮层不同，它的展示时机不依赖「游戏是否在跑」——歌词浮层本身就是
-   * 「桌面上想边听边看词」的用法，而且检测播放器与是否开着游戏毫无关系。
-   * 没有曲目时窗口里什么都不画（`GameHud` 自己返回 null），不会挡住桌面。
+   * 子选项关掉时即使在大厅也不建窗 —— 否则会留下一扇「什么都没有」的空浮层。
    */
-  const lyricsHud = isSmtcSupported() && s.neteaseLyricsHudEnabled === true
+  const mpHud = s.hudEnabled && s.hudShowMultiplayer && inLobby
+  const aiHud = s.hudEnabled && s.hudShowAi && (aiService?.hudState().active ?? false)
+  /**
+   * 网易云歌词：不依赖「游戏是否在跑」。
+   *
+   * 歌词浮层本身就是「桌面上想边听边看词」的用法，而且检测播放器与是否开着游戏
+   * 毫无关系。没有曲目时窗口里什么都不画（`GameHud` 自己返回 null），不会挡住桌面。
+   * 「本地」模式关掉联网后歌词取不到，此时不建窗 —— 与设置页把该子选项置灰保持一致，
+   * 否则会留下一扇永远空着的浮层窗。
+   */
+  const lyricsHud = s.hudEnabled && s.hudShowLyrics && s.mode !== 'local' && isSmtcSupported()
   // 轮询 / 取歌词的启停跟着同一个条件走，避免「窗口关了就没人停轮询」。
   lyricsService?.sync()
+  // 校准热键跟歌词浮层同生共死，理由同上（不用的功能不占快捷键）。
+  syncLyricsShortcuts()
   if (mpHud || aiHud || lyricsHud) {
     createHudWindow()
     resizeHudForLyrics(lyricsHud)
@@ -789,8 +898,8 @@ function pushHudState(): void {
   if (!hudWindow || hudWindow.isDestroyed()) return
   const s = settings.get()
   const payload: MpHudState = {
-    enabled: s.multiplayerHudEnabled,
-    opacity: s.multiplayerHudOpacity,
+    enabled: s.hudEnabled && s.hudShowMultiplayer && !!getMultiplayerLobby(),
+    opacity: s.hudOpacity,
     players: getMultiplayerHudPlayers()
   }
   hudWindow.webContents.send('mp:hudState', payload)
@@ -864,6 +973,37 @@ function syncAiShortcuts(): void {
     if (!ok) console.warn(`[AI] 语音热键 ${AI_VOICE_ACCELERATOR} 注册失败（可能被其他程序占用）`)
   } catch (err) {
     console.warn('[AI] 语音热键注册异常', err)
+  }
+}
+
+/**
+ * 按设置同步歌词校准热键。
+ *
+ * 只在「歌词浮层真的可能显示」时占用这两个组合键（HUD 总开关 + 显示歌词 + 非本地模式
+ * + Windows）—— 与 AI 语音热键同样的原则：不用的功能不该抢走用户的快捷键。
+ *
+ * 注册失败不报警给用户（可能被其它软件占用），只在日志里留一行：校准还能用按钮。
+ */
+function syncLyricsShortcuts(): void {
+  const s = settings.get()
+  const want =
+    isSmtcSupported() && s.hudEnabled === true && s.hudShowLyrics === true && s.mode !== 'local'
+  const pairs: Array<[string, -1 | 1]> = [
+    [LYRICS_PREV_ACCELERATOR, -1],
+    [LYRICS_NEXT_ACCELERATOR, 1]
+  ]
+  for (const [accelerator, direction] of pairs) {
+    if (!want) {
+      if (globalShortcut.isRegistered(accelerator)) globalShortcut.unregister(accelerator)
+      continue
+    }
+    if (globalShortcut.isRegistered(accelerator)) continue
+    try {
+      const ok = globalShortcut.register(accelerator, () => lyricsService?.nudge(direction))
+      if (!ok) console.warn(`[lyrics] 校准热键 ${accelerator} 注册失败（可能被其他程序占用）`)
+    } catch (err) {
+      console.warn('[lyrics] 校准热键注册异常', err)
+    }
   }
 }
 
@@ -1135,6 +1275,10 @@ const ipcContext: IpcContext = {
   // 语音热键按开关动态占用 / 归还，避免没用 AI 的用户被抢走组合键。
   syncAiShortcuts: () => {
     syncAiShortcuts()
+  },
+  // 关闭按钮行为改了之后同步托盘（「退至后台」需要托盘入口）。
+  syncTray: () => {
+    syncTray()
   }
 }
 
@@ -1198,6 +1342,24 @@ function registerIpc(): void {
     }
   })
   ipcMain.handle('music:lyricsState', () => lyricsService?.current() ?? null)
+  // 手动校准：网易云不发布 SMTC 时间轴（实测），进度漂移只能由用户一键对齐。
+  // 方向取 -1（上一句）/ +1（下一句），服务端按目标行的时间戳重锚。
+  ipcMain.handle('music:lyricsNudge', (_e, direction: number) => {
+    if (direction !== -1 && direction !== 1) return
+    lyricsService?.nudge(direction)
+  })
+  /**
+   * 浮层交互开关：默认鼠标穿透，鼠标移到歌词卡的校准按钮上时临时取消穿透。
+   *
+   * 用 `send`（而非 handle）是因为它由渲染层的 mousemove 高频触发，不该有往返等待；
+   * 渲染层只在「状态真的变化」时才发，避免刷 IPC。
+   */
+  ipcMain.on('hud:setInteractive', (_e, interactive: boolean) => {
+    if (!hudWindow || hudWindow.isDestroyed()) return
+    // `forward: true` 保证穿透状态下仍能收到 mousemove，否则鼠标一移上去就再也收不到
+    // 事件、按钮永远点不到（这是 Electron 浮层做可点区域的固定写法）。
+    hudWindow.setIgnoreMouseEvents(!interactive, { forward: true })
+  })
 
   // 硬件加速是进程级开关（Chromium 只允许在 app ready 之前决定是否启用），
   // 改完必须重启才生效：这里把「本次启动实际用的值」暴露给设置页，
@@ -1333,6 +1495,8 @@ app.whenReady().then(() => {
   syncOverlayWindows()
   // AI 语音热键：游戏内 / 桌面都能一键说话（浮层是鼠标穿透的，只能靠热键）。
   syncAiShortcuts()
+  // 关闭按钮行为若为「退至后台」，启动时就要有托盘可回（否则隐藏后无处唤回）。
+  syncTray()
   // 用户在系统里切换明暗模式时，同步窗口底色（主题为「跟随系统」时才实际变化）。
   nativeTheme.on('updated', applyWindowBackground)
   // 开发模式：注册状态广播 + 到期兜底检查（到期自动关闭并回收开发者工具窗口）。
@@ -1363,11 +1527,11 @@ app.on('will-quit', () => {
   // 联机板块：退出启动器时停掉 EasyTier 与虚拟网卡，避免残留虚拟网卡影响下次启动。
   void forceStopMultiplayer()
   closeMiniWindow()
-  // 悬浮球是独立窗口，主窗口关掉不会带走它。
-  closeAiBall()
-  // 歌词采样是常驻 PowerShell 子进程，必须显式收掉，否则会残留到下次启动。
-  lyricsService?.dispose()
-  lyricsService = null
+  // 悬浮球 / HUD / 弹幕是独立窗口，主窗口关掉不会带走它们。
+  // 关主窗口时已经收过一遍（见 createWindow 的 `closed`），这里是兜底：
+  // 走托盘「退出程序」、或其它直接 quit 的路径时不经过主窗口 `closed`。
+  // 歌词采样（常驻 PowerShell 子进程）也在这里一并收掉，否则会残留到下次启动。
+  closeAllOverlays()
   // 全局快捷键必须显式释放，否则重启后可能被上一次的注册占着。
   globalShortcut.unregisterAll()
 })

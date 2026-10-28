@@ -628,6 +628,17 @@ export interface LauncherSettings {
    */
   showServerStatus: boolean
   /**
+   * 点击主窗口关闭按钮时的行为。
+   *
+   *   ask   每次询问（默认）：弹框让用户选「完全关闭 / 退至后台 / 取消」
+   *   tray  退至后台：直接隐藏到系统托盘，程序继续运行（联机不中断）
+   *   quit  直接关闭：直接退出程序（联机中会先停掉组网）
+   *
+   * 只有「退至后台」需要托盘；托盘建不起来时（个别 Linux 桌面缺 AppIndicator）
+   * 会退回「完全关闭」，否则隐藏后将无法再唤回窗口。
+   */
+  closeBehavior: 'ask' | 'tray' | 'quit'
+  /**
    * 是否已保存 uapis.cn 的 API KEY。
    *
    * 这是**派生状态**，不是持久字段：真实 KEY 由主进程经系统安全存储加密保存，
@@ -688,10 +699,6 @@ export interface LauncherSettings {
   multiplayerDanmakuOpacity: number
   /** 联机 · 弹幕轨道数。 */
   multiplayerDanmakuTracks: number
-  /** 联机 · 游戏内 HUD 浮层开关。 */
-  multiplayerHudEnabled: boolean
-  /** 联机 · HUD 浮层透明度（0–1）。 */
-  multiplayerHudOpacity: number
   /** 联机 · 界面主题偏好（跟随系统 / 亮色 / 暗色）。 */
   multiplayerTheme: 'system' | 'light' | 'dark'
   /** 联机 · 联机时长与统计的本地数据。 */
@@ -731,10 +738,6 @@ export interface LauncherSettings {
   aiBallX: number
   /** 悬浮球纵坐标；-1 同上。 */
   aiBallY: number
-  /** 进入游戏（启动实例）后自动显示 AI 浮层，并与「联机」HUD 合并同一块浮层。 */
-  aiHudEnabled: boolean
-  /** AI 浮层透明度（0–1）。 */
-  aiHudOpacity: number
   /** 语音聊天：麦克风语音输入 + 回复语音播报。 */
   aiVoiceEnabled: boolean
   /** 语音识别模型 ID（OpenAI 兼容接口的 `model` 字段，默认 `whisper-1`）。 */
@@ -753,20 +756,25 @@ export interface LauncherSettings {
   /** 带进对话的历史轮数上限（1–50）。 */
   aiHistoryTurns: number
 
-  /* ==================== 网易云音乐歌词（实验性） ==================== */
+  /* ==================== 游戏内 HUD 浮层 ==================== */
 
   /**
-   * 实验性（默认关闭）：在 HUD 浮层上显示网易云音乐「正在播放」歌曲的歌词。
+   * 游戏内 HUD 浮层的**总开关**。
    *
-   * 数据链路：Windows 媒体会话（SMTC）取当前曲目 → 按「歌名 + 歌手 + 时长」匹配
-   * 网易云歌词接口 → 解析 LRC 并按播放进度逐句高亮。
-   *
-   * 因此它有三条前置条件，都会在开关下方说明：
-   *   · 需要网易云音乐客户端（3.x 起把播放状态注册进系统媒体控件）正在播放；
-   *   · 取歌词要联网（「本地」模式下不显示）；
-   *   · 只有 Windows 有 SMTC，其它平台即使开启也不会显示任何内容。
+   * 三块内容（联机大厅状态 / AI 助手 / 网易云歌词）共用同一个透明置顶穿透窗口，
+   * 因此只保留这一个总开关 + 一组「显示内容」子选项，而不是每块内容各配一个开关：
+   * 之前三个开关分散在「AI 助手」「联机」「实验性功能」三处，彼此还互相影响
+   * （关掉一处不知道另一处还开着），用户很难建立「它们其实是同一块浮层」的心智。
    */
-  neteaseLyricsHudEnabled: boolean
+  hudEnabled: boolean
+  /** 浮层整体透明度（0–1）：三块内容统一生效。 */
+  hudOpacity: number
+  /** 子选项：显示联机大厅状态（成员列表 / 人数）。 */
+  hudShowMultiplayer: boolean
+  /** 子选项：显示 AI 助手状态与最近一条回复。 */
+  hudShowAi: boolean
+  /** 子选项（实验性）：显示网易云音乐正在播放的歌词。 */
+  hudShowLyrics: boolean
 }
 
 /* ------------------------------------------------------------------ */
@@ -862,6 +870,12 @@ export interface NeteaseLyricsState {
   /** 曲名 / 歌手（识别到但无歌词时也用于回显）。 */
   title: string
   artist: string
+  /**
+   * 来源应用的可读名称（如「网易云音乐」）。
+   *
+   * 由 SMTC 会话的 AUMID 反查归属进程得到；空串表示没解析出来，浮层会退回通用文案。
+   */
+  source?: string
   /** 三行歌词：上一句（可能为空串）。 */
   prev: string
   /** 当前句（空串 = 前奏 / 间奏）。 */
@@ -878,12 +892,27 @@ export interface NeteaseLyricsApi {
   onLyricsState: (cb: (state: NeteaseLyricsState) => void) => () => void
   /** 窗口刚建好时主动拉一次当前快照（订阅可能晚于主进程那次推送）。 */
   lyricsState: () => Promise<NeteaseLyricsState>
+  /**
+   * 手动校准：把当前句向上（-1）/ 向下（+1）移一行并重锚。
+   *
+   * 网易云的 SMTC 从不发布时间轴（实测播放 / 暂停 / 拖动都是全零 + 哨兵），
+   * 歌词进度只能本地外推，中途加入 / 拖动过的漂移不可检测 —— 这是唯一对齐手段。
+   */
+  lyricsNudge: (direction: -1 | 1) => void
 }
 
 /** AI 浮层（游戏内 HUD）的快照。 */
 export interface AiHudState {
-  /** 是否应当显示（总开关 + 进游戏 + 浮层开关共同决定）。 */
+  /** 是否应当显示（HUD 总开关 + 「显示 AI 助手」子选项 + AI 总开关 + 游戏运行中）。 */
   enabled: boolean
+  /**
+   * 游戏是否运行中（与开关无关的「现场」信号）。
+   *
+   * 主进程判断这扇浮层窗还需不需要时用它：`enabled` 可以被用户关掉开关变成 false，
+   * 但窗口存续要同时看「游戏在跑」和「有没有内容可显示」，两者混在一个字段里会
+   * 出现「关了开关就连联机 HUD 一起被拆掉」的问题。
+   */
+  active: boolean
   opacity: number
   /** 当前状态：idle 待命 / thinking 思考中 / speaking 播报中 / listening 收音中。 */
   status: 'idle' | 'thinking' | 'speaking' | 'listening'
@@ -2242,6 +2271,24 @@ export interface LauncherApi {
   mp: MpApi
   /** 网易云音乐歌词浮层（实验性，HUD 窗口用）。 */
   music: NeteaseLyricsApi
+  /** 游戏内浮层窗口自身的交互开关（只对 HUD 窗口有意义）。 */
+  hud: HudWindowApi
+}
+
+/**
+ * HUD 浮层窗口的交互控制。
+ *
+ * 浮层默认是**鼠标穿透**的（游戏里点击不会被它吃掉）。但歌词卡上有「上一句 / 下一句」
+ * 校准按钮，需要能点 —— 渲染层在鼠标移到按钮上时请求临时取消穿透，移开再恢复。
+ */
+export interface HudWindowApi {
+  /**
+   * 请求切换「是否接收鼠标事件」。
+   *
+   * `true` = 取消穿透（可点按钮）；`false` = 恢复穿透（不挡游戏）。
+   * 只在状态真的变化时调用，避免高频 IPC。
+   */
+  setInteractive: (interactive: boolean) => void
 }
 
 /* ------------------------------------------------------------------ */

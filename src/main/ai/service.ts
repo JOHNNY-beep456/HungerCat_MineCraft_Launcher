@@ -152,14 +152,29 @@ export function createAiService(deps: AiServiceDeps): AiService {
   /** 等待用户裁决的工具调用。 */
   const pending = new Map<string, PendingDecision>()
   /** 浮层状态。 */
-  let hud: AiHudState = { enabled: false, opacity: 0.85, status: 'idle', text: '', lastUser: '' }
+  let hud: AiHudState = {
+    enabled: false,
+    active: false,
+    opacity: 0.8,
+    status: 'idle',
+    text: '',
+    lastUser: ''
+  }
   /** 是否处于「游戏运行中」（渲染层在启动 / 退出时同步过来）。 */
   let hudActive = false
 
+  /**
+   * 按当前设置重算浮层快照。
+   *
+   * 是否显示由**统一的 HUD 设置**决定（总开关 + 「显示 AI 助手」子选项 + AI 总开关），
+   * 同时把 `active`（游戏是否在跑）一并带出去：主进程据此判断这扇窗还需不需要，
+   * 渲染层只看 `enabled`。
+   */
   const pushHud = (): void => {
     const s = settings.get()
-    hud.enabled = hudActive && s.aiEnabled && s.aiHudEnabled
-    hud.opacity = typeof s.aiHudOpacity === 'number' ? s.aiHudOpacity : 0.85
+    hud.active = hudActive
+    hud.enabled = hudActive && s.aiEnabled && s.hudEnabled && s.hudShowAi
+    hud.opacity = typeof s.hudOpacity === 'number' ? s.hudOpacity : 0.8
     broadcast('ai:hudState', hud)
   }
 
@@ -270,9 +285,10 @@ export function createAiService(deps: AiServiceDeps): AiService {
 
     hudState(): AiHudState {
       const s = settings.get()
-      hud.enabled = hudActive && s.aiEnabled && s.aiHudEnabled
+      hud.active = hudActive
+      hud.enabled = hudActive && s.aiEnabled && s.hudEnabled && s.hudShowAi
       // 旧版本设置文件里可能没有这一项，缺省时给回默认不透明度。
-      hud.opacity = typeof s.aiHudOpacity === 'number' ? s.aiHudOpacity : 0.85
+      hud.opacity = typeof s.hudOpacity === 'number' ? s.hudOpacity : 0.8
       return hud
     },
 
