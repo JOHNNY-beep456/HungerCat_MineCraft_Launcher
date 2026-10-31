@@ -372,7 +372,22 @@ export const settings = {
     if (isPortable) next.gameDir = PORTABLE_GAME_DIR
     // 内存缓存先行：渲染层立刻拿到新值（乐观更新），落盘在后台异步完成，
     // 不再让「切换版本 / 切换版本目录」此类高频写入同步阻塞主进程事件循环。
-    cachedSettings = { ...next, uapisApiKeySet: hasUapisKey(), aiApiKeySet: hasAiKey() }
+    //
+    // 注意：portable 与 gameDirAbs 在上面被 delete 了（不落盘），但**必须补回缓存**。
+    // 渲染层要靠它们：
+    //   · portable   → 「默认版本目录」那一行是否置灰；
+    //   · gameDirAbs → 自实现的资源管理器打开哪个目录（少了就回落到相对写法 ./.minecraft，
+    //                  于是报「路径不存在或已被移动」）。
+    // 之前只补了 uapisApiKeySet / aiApiKeySet，导致**任何一次 set() 之后**这两个字段消失：
+    // 表现为「切换过一次版本隔离，默认目录就不再置灰」「首次打开资源管理器报路径不存在」，
+    // 重启启动器又恢复正常（get() 重新归一化时会把它们加回来）—— 典型的缓存漏字段。
+    cachedSettings = {
+      ...next,
+      uapisApiKeySet: hasUapisKey(),
+      aiApiKeySet: hasAiKey(),
+      portable: isPortable,
+      gameDirAbs: resolvePortablePath(next.gameDir)
+    }
     setSourceStrategies({
       download: next.downloadSource,
       versionList: next.versionListSource,

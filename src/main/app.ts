@@ -1435,6 +1435,21 @@ function checkPortableGameDir(): void {
 app.whenReady().then(() => {
   initLogger()
   checkPortableGameDir()
+  /*
+   * 保证「当前生效的版本目录」在启动时就存在。
+   *
+   * 自实现的资源管理器一打开就列这个目录，而 readdir 对不存在的目录只会抛 ENOENT，
+   * 界面显示的就是「路径不存在或已被移动」。便携版已由 checkPortableGameDir 建好，
+   * 安装版（文档/HungerCatMC）此前没人创建 —— 首次使用、还没装过版本的机器上
+   * 一打开资源管理器就会看到那条红字。
+   *
+   * 只建默认目录、失败不阻塞启动（只读介质 / 权限不足时留给资源管理器如实报错）。
+   */
+  try {
+    mkdirSync(activeGameDir(settings.get()), { recursive: true })
+  } catch {
+    /* 目录建不出来不影响启动，后续操作会给出更具体的错误 */
+  }
   // 上次自更新时旧版本 exe 若被占用没删掉，这里补一刀
   cleanupPendingPortableDelete()
   // 启动器是自绘界面（含标题栏、菜单跳转全在渲染层），不需要 Electron 的默认应用菜单。

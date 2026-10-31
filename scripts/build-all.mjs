@@ -691,6 +691,22 @@ function buildCompressedWinSetup(arch) {
 
 for (const platform of targets) {
   step(`=== Packaging: ${PLATFORM_LABEL[platform]} ===`)
+  /*
+   * 打 Windows 包前先把 release/ 的完整性级别修成 Medium（含目录继承）。
+   *
+   * 原因：本工作区目录带 Low 完整性标签，新建文件会继承 Low。electron-builder 做
+   * NSIS 时会产出一个中间安装器并**运行它**来生成卸载程序；那个 exe 若是 Low，
+   * 启动时就写不进 %TEMP%，直接以退出码 2 失败，整个 Windows 打包挂掉
+   * （报错形如 `Exit code: 2. Command failed: ...-setup.exe`，很容易被误判为
+   * 安装包本身有问题）。必须在打包**之前**修，事后再修没用 —— 中间文件是临时产物。
+   */
+  if (platform === 'win') {
+    try {
+      run('node', ['scripts/fix-artifact-integrity.mjs', 'release'])
+    } catch {
+      warn('打包前修完整性失败，继续尝试打包（可能因 Low 标签导致 NSIS 步骤失败）')
+    }
+  }
   // WSL 那一趟内部已经是「逐架构串起来 + 失败即停」，整趟作为一个整体记录。
   if (platform === 'linux' && IS_WIN_HOST && useWsl) {
     try {

@@ -1777,6 +1777,172 @@ textarea.input {
   box-shadow: 0 0 0 3px rgba(10, 132, 255, 0.25);
 }
 
+/* --- 液态玻璃：控件层的玻璃材质（按钮 / 下拉 / 输入框 / 芯片 / 分栏） ---
+   上面那段「通透皮肤控件复位」把控件退成了中性灰实色（--fill-secondary），
+   解决的是「3D 云母的实心白块与通透感冲突」。但在 Liquid Glass 里，控件本身
+   也是玻璃：iOS 26/27 的按钮、分段、搜索框都是**半透明 + 一圈镜边高光**，
+   而不是一块灰。
+
+   这里只给材质，不动尺寸 / 间距 / 圆角 / 交互：
+     · 抬起件（.btn-secondary / .chip / .mica）——填充比所在面板更亮一档
+       （面板 white .10 → 控件 white .20），再用 --lg-rim-* 画镜边，
+       这样它才「浮」在面板上；亮度和面板一样就等于消失在面板里。
+     · 凹陷件（.input）——反向：比面板更暗一点 + 顶部内影，读成挖出来的浅槽。
+     · 小件**不挂 backdrop-filter**：延续文件里已有的判断（见 .status-pill 注释），
+       小面积上模糊几乎看不出来，却要多留一层合成；材质的辨识度交给镜边。
+
+   未分层 + 带 :not([data-mode='minimal'])，保证极简模式仍走上面的实色回退；
+   镜边写在 prefers-reduced-transparency 里，跟随系统「降低透明度」设置退化。 */
+[data-skin='mac']:not([data-mode='minimal']) .btn-secondary,
+[data-skin='mac']:not([data-mode='minimal']) .chip,
+[data-skin='mac']:not([data-mode='minimal']) .mica {
+  /* 近实心白：早期版本用 white/.20，在浅色玻璃面板上几乎看不出来（发灰、没有体量）。
+     Apple 的液态玻璃控件即使"透"，实质上也接近实心白，靠的是柔和投影 + 镜边立形，
+     而不是靠降低不透明度（参考 Apple Liquid Glass 演示里的滑块：纯白实体 + 大柔影）。 */
+  --lg-ctl-fill: rgba(255, 255, 255, 0.72);
+  background-color: var(--lg-ctl-fill);
+}
+[data-skin='mac'][data-theme='dark']:not([data-mode='minimal']) .btn-secondary,
+[data-skin='mac'][data-theme='dark']:not([data-mode='minimal']) .chip,
+[data-skin='mac'][data-theme='dark']:not([data-mode='minimal']) .mica {
+  /* 深色下白块会过于刺眼：改成一层半透明浅灰雾（相当于深色玻璃上的磨砂片） */
+  --lg-ctl-fill: rgba(255, 255, 255, 0.14);
+  background-color: var(--lg-ctl-fill);
+}
+
+/* 凹陷：输入框 / 下拉触发器做成面板上的浅槽 */
+[data-skin='mac']:not([data-mode='minimal']) .input {
+  background-color: rgba(15, 23, 42, 0.055);
+}
+[data-skin='mac'][data-theme='dark']:not([data-mode='minimal']) .input {
+  background-color: rgba(0, 0, 0, 0.26);
+}
+
+@media (prefers-reduced-transparency: no-preference) {
+  /* 抬起件的镜边：与面板同一套 --lg-rim-* 取样（上缘聚光 → 左右衰减 → 底部反光），
+     只是幅度收窄，避免小面积上出现一条过粗的白线。
+
+     写法与面板的镜边一致（双背景）：**下层填充层必须不透明**并裁到 padding-box，
+     把 border-box 的镜边渐变盖在 padding 区内——若填充层是透明的，
+     镜边渐变会铺满整个元素而不是只留 1px 边框。 */
+  [data-skin='mac']:not([data-mode='minimal']) :is(.btn-secondary, .chip, .mica) {
+    border-color: transparent;
+    background-image: none;
+    background:
+      linear-gradient(var(--lg-ctl-fill), var(--lg-ctl-fill)) padding-box,
+      linear-gradient(
+          180deg,
+          var(--lg-rim-top) 0%,
+          var(--lg-rim-side) 38%,
+          var(--lg-rim-low) 100%
+        )
+        border-box;
+    /* 顶缘一道聚光 + 贴下缘的接触阴影：有这一层才像压在面板上的小玻璃片，
+       只有填充色的话看起来仍是一个色块。 */
+    box-shadow:
+      inset 0 1px 1px rgba(255, 255, 255, 0.45),
+      0 1px 2px rgba(15, 23, 42, 0.12);
+  }
+  [data-skin='mac'][data-theme='dark']:not([data-mode='minimal']) :is(.btn-secondary, .chip, .mica) {
+    box-shadow:
+      inset 0 1px 1px rgba(255, 255, 255, 0.16),
+      0 1px 2px rgba(0, 0, 0, 0.4);
+  }
+
+  /* 凹陷件的内影：顶部一道柔内影定形，底缘一条极淡反光（与 .glass-soft 的碟面同理） */
+  [data-skin='mac']:not([data-mode='minimal']) .input {
+    border-color: var(--divider);
+    box-shadow:
+      inset 0 1px 2px rgba(15, 23, 42, 0.1),
+      inset 0 -1px 0 rgba(255, 255, 255, 0.35);
+  }
+  [data-skin='mac'][data-theme='dark']:not([data-mode='minimal']) .input {
+    box-shadow:
+      inset 0 1px 2px rgba(0, 0, 0, 0.4),
+      inset 0 -1px 0 rgba(255, 255, 255, 0.07);
+  }
+}
+
+/* 分层基准：控件叠在面板上，而「主栏 / 侧栏」无法用属性区分，所以层次改用
+   「填充亮度差」表达——面板 .10（light）/ .46（dark）、控件 .20 / .10、
+   输入槽 .055 / .26。下面两条把**侧栏（.glass-strong，底色更亮）内的控件**
+   再压一档，否则按钮会比它所在的面板还亮，读成一片白。 */
+[data-skin='mac']:not([data-mode='minimal']) .glass-strong :is(.btn-secondary, .chip, .mica) {
+  --lg-ctl-fill: rgba(255, 255, 255, 0.62);
+  background-color: var(--lg-ctl-fill);
+}
+[data-skin='mac'][data-theme='dark']:not([data-mode='minimal']) .glass-strong :is(.btn-secondary, .chip, .mica) {
+  --lg-ctl-fill: rgba(255, 255, 255, 0.11);
+  background-color: var(--lg-ctl-fill);
+}
+
+/* ------------------------------------------------------------------ */
+/*  液态玻璃：开关（参考 Apple Liquid Glass 演示的滑块做法）             */
+/*                                                                     */
+/*  参考实现的两个要点：                                                */
+/*    1. 滑块是**纯白实体** + 一层大而柔的投影（`0 4px 15px rgba(0,0,0,.1)`）， */
+/*       体量来自阴影而不是描边 —— 这正是它「像一颗小玻璃珠」的原因；      */
+/*       只加半透明白 + 亮边，观感会变成一片发灰的塑料。                 */
+/*    2. 按下/拖动时滑块转为极透明，并挂 `backdrop-filter: url(#滤镜)`，   */
+/*       由 feDisplacementMap 做真实折射（Chromium 支持；Safari 不支持，    */
+/*       所以对 WebKit 保留纯 CSS 外观）。                                */
+/*                                                                     */
+/*  这里只加材质与阴影，不动尺寸、位移与交互（位移仍由组件的 spring 驱动）。 */
+/* ------------------------------------------------------------------ */
+[data-skin='mac']:not([data-mode='minimal']) button[role='switch'] {
+  /* 轨道：一道内凹的玻璃槽 —— 上缘内影 + 下缘反光 */
+  box-shadow:
+    inset 0 1px 3px rgba(15, 23, 42, 0.22),
+    inset 0 -1px 0 rgba(255, 255, 255, 0.4);
+}
+[data-skin='mac'][data-theme='dark']:not([data-mode='minimal']) button[role='switch'] {
+  box-shadow:
+    inset 0 1px 3px rgba(0, 0, 0, 0.55),
+    inset 0 -1px 0 rgba(255, 255, 255, 0.12);
+}
+/* 滑块（组件的 <motion.span>，结构上是 track 的直接子元素） */
+[data-skin='mac']:not([data-mode='minimal']) button[role='switch'] > span {
+  box-shadow:
+    0 4px 15px rgba(0, 0, 0, 0.1),
+    0 1px 3px rgba(0, 0, 0, 0.14);
+}
+[data-skin='mac'][data-theme='dark']:not([data-mode='minimal']) button[role='switch'] > span {
+  box-shadow:
+    0 4px 15px rgba(0, 0, 0, 0.45),
+    0 1px 3px rgba(0, 0, 0, 0.5);
+}
+
+/* 折射：仅在支持且用户未要求降低透明度时启用。
+   滑块底色压到接近透明，让背后（轨道绿 / 卡片）透过折射上来——
+   与参考实现一致：折射滤镜本身就是「内容」，不需要再叠白。 */
+@supports (backdrop-filter: blur(1px)) {
+  @media (prefers-reduced-transparency: no-preference) {
+    [data-skin='mac']:not([data-mode='minimal']) button[role='switch'] > span {
+      background-color: rgba(255, 255, 255, 0.86);
+      backdrop-filter: url(#hc-liquid-glass);
+    }
+    [data-skin='mac'][data-theme='dark']:not([data-mode='minimal']) button[role='switch'] > span {
+      background-color: rgba(255, 255, 255, 0.78);
+    }
+  }
+}
+/* 不支持 backdrop-filter 时退回纯白实体滑块（参考实现的常态样式） */
+@supports not (backdrop-filter: blur(1px)) {
+  [data-skin='mac']:not([data-mode='minimal']) button[role='switch'] > span {
+    background-color: #ffffff;
+  }
+}
+
+/* 分段控件的选中「玻璃珠」同样挂折射：小面积、数量少，性能可控，
+   而且它是液态玻璃最有辨识度的构件（Apple 的分段选择器就是一颗折射的胶囊）。 */
+@supports (backdrop-filter: blur(1px)) {
+  @media (prefers-reduced-transparency: no-preference) {
+    [data-skin='mac']:not([data-mode='minimal']) .mica-well .mica {
+      backdrop-filter: url(#hc-liquid-glass);
+    }
+  }
+}
+
 /* --- 行内下拉触发器（.select-seamless）：去掉底色，与所在行融为一体 ---
    版本目录等「行内选择器」原先在「原毛玻璃 / 液态玻璃」是 --fill-secondary 灰底、在
    「3D 云母 / Win10」又与行底同色 —— 三套皮肤观感不一，且灰底在这一行偏突兀。
@@ -4034,4 +4200,84 @@ textarea.input {
 }
 [data-reduced-motion='true'] .app-background .blob {
   animation: none !important;
+}
+
+/* ------------------------------------------------------------------ */
+/*  不支持 backdrop-filter 时的整体降级（实色半透明）                    */
+/*                                                                     */
+/*  Liquid Glass 的观感完全建立在「背景模糊 + 折射」上。老浏览器 / 关闭   */
+/*  硬件加速 / 被策略禁用时，玻璃会退化成「一层几乎看不见的白雾」，       */
+/*  文字直接压在花哨背景上，可读性会崩。                                 */
+/*  这里把三档表面换成接近实色的半透明底：牺牲通透，保住可读性。          */
+/*                                                                     */
+/*  用 !important 是为了压过皮肤段里那些特异性更高的双背景镜边规则——      */
+/*  它们会把 background 重写成渐变，普通优先级盖不住。这个块只在        */
+/*  backdrop-filter 不可用时生效，代价可以接受。                         */
+/* ------------------------------------------------------------------ */
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  :root :is(.glass, .glass-strong, .glass-soft) {
+    -webkit-backdrop-filter: none !important;
+    backdrop-filter: none !important;
+  }
+  /* 浅色：接近纸面的白 */
+  :root :is(.glass, .glass-strong, .glass-soft),
+  :root[data-theme='light'] :is(.glass, .glass-strong, .glass-soft) {
+    background: rgba(248, 249, 252, 0.96) !important;
+    border-color: rgba(15, 23, 42, 0.1) !important;
+    box-shadow: 0 8px 24px -12px rgba(15, 23, 42, 0.35) !important;
+  }
+  /* 深色：烟灰实底 */
+  :root[data-theme='dark'] :is(.glass, .glass-strong, .glass-soft) {
+    background: rgba(26, 27, 34, 0.96) !important;
+    border-color: rgba(255, 255, 255, 0.12) !important;
+    box-shadow: 0 8px 24px -12px rgba(0, 0, 0, 0.6) !important;
+  }
+  /* 控件同样退回实色，否则会在实色面板上「消失」 */
+  :root :is(.btn-secondary, .chip, .mica) {
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+  }
+  :root[data-theme='light'] :is(.btn-secondary, .chip, .mica) {
+    background: rgba(255, 255, 255, 0.9) !important;
+    border: 1px solid rgba(15, 23, 42, 0.12) !important;
+  }
+  :root[data-theme='dark'] :is(.btn-secondary, .chip, .mica) {
+    background: rgba(255, 255, 255, 0.1) !important;
+    border: 1px solid rgba(255, 255, 255, 0.14) !important;
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/*  提高对比度（系统「增强对比度」/ 无障碍设置）                          */
+/*                                                                     */
+/*  iOS 26 在 beta 3 后给液态玻璃加了「高对比模式」：给玻璃气泡描一圈更  */
+/*  实的边框，让它在明亮壁纸上也有轮廓。Web 侧对应 prefers-contrast。    */
+/*  只加描边与填充，不改布局。                                          */
+/* ------------------------------------------------------------------ */
+@media (prefers-contrast: more) {
+  :root :is(.glass, .glass-strong, .glass-soft) {
+    --lg-rim-low: rgba(255, 255, 255, 0.32);
+    --lg-rim-side: rgba(255, 255, 255, 0.6);
+    --glass-border: rgba(15, 23, 42, 0.42);
+    border-color: rgba(15, 23, 42, 0.42) !important;
+  }
+  :root[data-theme='dark'] :is(.glass, .glass-strong, .glass-soft) {
+    --glass-border: rgba(255, 255, 255, 0.45);
+    border-color: rgba(255, 255, 255, 0.45) !important;
+  }
+  /* 文字也拉满，玻璃上的半透明字在高对比下最难读 */
+  :root {
+    --text-secondary: rgba(0, 0, 0, 0.82);
+    --text-tertiary: rgba(0, 0, 0, 0.66);
+  }
+  :root[data-theme='dark'] {
+    --text-secondary: rgba(255, 255, 255, 0.88);
+    --text-tertiary: rgba(255, 255, 255, 0.72);
+  }
+  :root :is(.btn-secondary, .chip, .mica, .input) {
+    border-color: rgba(15, 23, 42, 0.34) !important;
+  }
+  :root[data-theme='dark'] :is(.btn-secondary, .chip, .mica, .input) {
+    border-color: rgba(255, 255, 255, 0.34) !important;
+  }
 }

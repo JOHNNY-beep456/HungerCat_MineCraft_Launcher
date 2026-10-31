@@ -2,6 +2,7 @@
 import { BrowserWindow, dialog, ipcMain, shell } from 'electron'
 import { basename } from 'path'
 import { settings, allVersionDirs } from '../store'
+import { resolvePortablePath } from '../portable'
 import {
   createFile,
   listDir,
@@ -28,7 +29,16 @@ export function registerFilesHandlers(_ctx: IpcContext): void {
       }))
     )
   })
-  ipcMain.handle('files:list', (_e, path: string) => listDir(path))
+  /*
+   * 列目录前先把便携版的相对写法解析成绝对路径。
+   *
+   * 便携版的默认版本目录在设置里存的是 `./.minecraft`（相对启动器所在目录），
+   * 而这里拿到的一律应当是绝对路径。此前若渲染层因设置缓存缺字段而回落到相对写法，
+   * `readdir` 会按进程工作目录去找 —— 便携版的工作目录未必是 exe 所在目录，
+   * 于是报「路径不存在或已被移动: ./.minecraft」。在入口处统一解析，
+   * 用户手输地址栏相对路径时也能正常工作。
+   */
+  ipcMain.handle('files:list', (_e, path: string) => listDir(resolvePortablePath(path)))
   ipcMain.handle('files:open', (_e, path: string) => openPath(path))
   ipcMain.handle('files:reveal', (_e, path: string) => revealPath(path))
   // 写操作（右键菜单）：改名 / 新建空文件 / 删除 / 读写文本

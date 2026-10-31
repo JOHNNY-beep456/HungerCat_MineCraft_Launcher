@@ -1,6 +1,6 @@
 {
   "name": "hunger-cat-minecraft-launcher",
-  "version": "0.7.3-beta1",
+  "version": "0.7.4",
   "description": "HungerCat MineCraft Launcher",
   "main": "./out/main/index.js",
   "author": "Hunger Cat",
@@ -22,6 +22,7 @@
     "native:build": "node scripts/build-native-downloader.mjs",
     "native:build:debug": "node scripts/build-native-downloader.mjs --debug",
     "fix:integrity": "node scripts/fix-artifact-integrity.mjs",
+    "fix:integrity:all": "node scripts/fix-artifact-integrity.mjs --project",
     "win": "electron-vite build && electron-builder --win && node scripts/fix-artifact-integrity.mjs",
     "dist": "electron-vite build && electron-builder --win && node scripts/fix-artifact-integrity.mjs",
     "dist:win": "electron-vite build && electron-builder --win && node scripts/fix-artifact-integrity.mjs",
