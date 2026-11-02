@@ -126,4 +126,7 @@
   "res.versions.translateConsent.licenseLink": "View MIT License",
   "res.versions.translateConsent.agree": "I have read and agree to the attribution and license information above",
   "res.versions.translateConsent.confirm": "Agree and install"
+,
+  "res.versions.filter.aprilfools": "April Fools",
+  "res.versions.typeAprilFools": "April Fools"
 }

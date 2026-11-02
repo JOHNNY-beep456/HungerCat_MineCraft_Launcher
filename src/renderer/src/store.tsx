@@ -10,7 +10,7 @@ import {
   type ReactNode
 } from 'react'
 import type { AgreementStatus, Announcement, HomepageUpdate, LauncherSettings, MinecraftAccount, UpdateInfo, VersionDir } from '@shared/types'
-import { defaultSettings } from '@shared/settings'
+import { defaultSettings, skinTakesOver } from '@shared/settings'
 import { dataUrlToBlobUrl, detectWallpaperTone } from './wallpaper'
 import { runWhenIdle } from './startup'
 import { selectPendingAnnouncements, seenPatch } from './announcement'
@@ -260,7 +260,8 @@ export function AppProvider({ children }: { children: ReactNode }): JSX.Element 
   // 无贴图（看起来就像背景模糊「没有立即成型」）。
   useLayoutEffect(() => {
     const exp = settings?.experimental ?? 'off'
-    const effective = settings?.mode === 'minimal' ? 'off' : exp
+    // PCCL2 已迁移为独立 WPF 窗口；Electron 恢复页不加载旧网页主题。
+    const effective = settings?.mode === 'minimal' || exp === 'pccl2' ? 'off' : exp
     const skin = effective === 'off' || effective === 'frosted' ? 'glass' : effective
     document.documentElement.dataset['skin'] = skin
     document.documentElement.dataset['frosted'] = effective === 'frosted' ? 'on' : 'off'
@@ -328,6 +329,23 @@ export function AppProvider({ children }: { children: ReactNode }): JSX.Element 
    */
   useEffect(() => {
     const root = document.documentElement
+    /*
+     * 被皮肤接管背景时，壁纸不生效：这些皮肤的整窗背景是固定的纯色/材质
+     * （github / material / minecraft / winui2 / winui3 / win10 / pccl2，
+     *  判定表见 @shared/settings 的 SKIN_LOCKS）。
+     *
+     * 只把设置项置灰是不够的 —— CSS 里壁纸规则是
+     * `:root[data-theme][data-skin][data-wallpaper='on'] .app-background`，
+     * 特异性远高于皮肤的纯色规则，会直接盖掉背景。所以在这里就不下发
+     * `data-wallpaper='on'`，同时不加载图片（省掉一次大图读取与 blob 转换）。
+     * 用户设置本身不变，切回尊重背景的皮肤后壁纸会自动恢复。
+     */
+    if (settings && skinTakesOver(settings).background) {
+      root.dataset['wallpaper'] = 'off'
+      root.style.removeProperty('--wallpaper-image')
+      setWallpaperTone(null)
+      return
+    }
     const name = settings?.backgroundImage ?? ''
     if (!name) {
       root.dataset['wallpaper'] = 'off'
@@ -362,7 +380,7 @@ export function AppProvider({ children }: { children: ReactNode }): JSX.Element 
       alive = false
       if (objectUrl) URL.revokeObjectURL(objectUrl)
     }
-  }, [settings?.backgroundImage])
+  }, [settings?.backgroundImage, settings?.experimental])
 
   const reloadSettings = useCallback(async () => {
     setSettings(await window.api.settings.get())

@@ -13,10 +13,7 @@ import { spawnGame } from '../launcher'
 import { javaVersionAt } from '../java'
 import type { IpcContext } from './context'
 
-export function registerLaunchHandlers(ctx: IpcContext): void {
-  // ---- Launch ----
-
-  /** 自定义游戏窗口尺寸的合法范围（逻辑像素）：过小无意义，过大则几乎必然是误输入。 */
+/** 自定义游戏窗口尺寸的合法范围（逻辑像素）：过小无意义，过大则几乎必然是误输入。 */
   const MIN_WINDOW = 320
   const MAX_WINDOW = 16384
 
@@ -62,7 +59,25 @@ export function registerLaunchHandlers(ctx: IpcContext): void {
     }
   }
 
-  ipcMain.handle('launch:start', async (event, options: LaunchOptions) => {
+export function registerLaunchHandlers(ctx: IpcContext): void {
+  ipcMain.handle('launch:start', async (event, options: LaunchOptions) =>
+    launchGame(
+      ctx,
+      options,
+      (payload) => ctx.sendToSender(event.sender, 'launch:event', payload),
+      (payload) => ctx.sendToSender(event.sender, 'download:progress', payload)
+    )
+  )
+  ipcMain.handle('launch:stop', () => stopGame(ctx))
+}
+
+/** 可由 PCCL2/native bridge 复用的完整启动业务链路。 */
+export async function launchGame(
+  ctx: IpcContext,
+  options: LaunchOptions,
+  emit: (payload: unknown) => void,
+  emitProgress?: (payload: unknown) => void
+): Promise<{ pid: number }> {
     const s = settings.get()
     if (s.disabledVersions.includes(options.versionId)) {
       throw new Error('该版本已被禁用，请在版本管理中启用后再启动')
@@ -79,8 +94,6 @@ export function registerLaunchHandlers(ctx: IpcContext): void {
         throw new Error(`账号令牌已过期且刷新失败：${err instanceof Error ? err.message : err}`)
       }
     }
-
-    const emit = (e: unknown): void => ctx.sendToSender(event.sender, 'launch:event', e)
 
     emit({ state: 'downloading' })
     const installDir = activeGameDir(s)
@@ -100,7 +113,7 @@ export function registerLaunchHandlers(ctx: IpcContext): void {
     const controller = new AbortController()
     ctx.downloadAborts.set(downloadKey, controller)
     const result = await installVersion(json, installDir, effConcurrency.fileConcurrency, (p) => {
-      ctx.sendToSender(event.sender, 'download:progress', { ...p, taskId: options.versionId })
+      emitProgress?.({ ...p, taskId: options.versionId })
     }, controller.signal, effConcurrency.connections).finally(() => {
       ctx.downloadAborts.delete(downloadKey)
     })
@@ -187,9 +200,10 @@ export function registerLaunchHandlers(ctx: IpcContext): void {
     ctx.setGameProcess(proc)
 
     return { pid: proc.pid ?? 0 }
-  })
-  ipcMain.handle('launch:stop', () => {
-    ctx.gameProcess()?.kill()
-    return true
-  })
+}
+
+/** 停止当前游戏进程；bridge 与普通 IPC 共用同一语义。 */
+export function stopGame(ctx: IpcContext): boolean {
+  ctx.gameProcess()?.kill()
+  return true
 }

@@ -189,4 +189,17 @@
   "ins.external.confirm": "Import",
   "ins.external.importDone": "Imported {n} version(s)",
   "ins.external.importPartial": "{fail} version(s) failed to import: {errors}"
+,
+  "ins.loader.installTitle": "Install a mod loader",
+  "ins.loader.installDesc": "Installs the loader into this instance (based on {mc}): worlds, resource packs, shaders, schematics and instance settings are all kept. The instance name stays the same.",
+  "ins.loader.version": "Loader version",
+  "ins.loader.install": "Install",
+  "ins.loader.installing": "Installing…",
+  "ins.loader.phaseMerge": "Merging loader profile…",
+  "ins.loader.phaseDownload": "Downloading loader libraries…",
+  "ins.loader.loading": "Fetching versions…",
+  "ins.loader.timeout": "Timed out fetching {kind} versions, try again later",
+  "ins.loader.none": "No {kind} version available for {mc}",
+  "ins.loader.done": "Loader installed for {name}",
+  "ins.aprilFools": "April Fools"
 }

@@ -1,11 +1,16 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { motion } from 'motion/react'
 import type { ForgeKind, InstalledVersion, LoaderKind, VersionDirInstance, VersionManifest } from '@shared/types'
+import { displayVersionType, type DisplayVersionType } from '@shared/version-type'
 import { useRuntime } from '../runtime'
 import { allVersionDirs, useApp, versionDirLabel } from '../store'
 import { Button, Checkbox, GlassCard, Icon, LoadingState, ProgressBar, Segmented, Select } from '../components/ui'
 
-type Filter = 'all' | 'release' | 'snapshot'
+/**
+ * 分栏取值：前三个是清单里的原始类型，`aprilfools` 是**派生**类型
+ * （官方清单把愚人节版也标成 snapshot，只能靠 id 再分一层）。
+ */
+type Filter = 'all' | 'release' | 'snapshot' | 'aprilfools'
 type AnyLoader = LoaderKind | ForgeKind
 type InstallKind = 'vanilla' | AnyLoader
 
@@ -176,7 +181,8 @@ export function VersionsPage({ presetSearch }: { presetSearch?: string }): JSX.E
     if (!manifest) return []
     const q = search.trim().toLowerCase()
     return manifest.versions.filter((v) => {
-      if (filter !== 'all' && v.type !== filter) return false
+      // 用派生类型筛选：愚人节版在清单里是 snapshot，直接比 v.type 会混进「快照」里。
+      if (filter !== 'all' && displayVersionType(v.id, v.type) !== filter) return false
       if (q && !v.id.toLowerCase().includes(q)) return false
       return true
     })
@@ -441,7 +447,8 @@ export function VersionsPage({ presetSearch }: { presetSearch?: string }): JSX.E
               options={[
                 { value: 'all', label: t('res.versions.filter.all') },
                 { value: 'release', label: t('res.versions.filter.release') },
-                { value: 'snapshot', label: t('res.versions.filter.snapshot') }
+                { value: 'snapshot', label: t('res.versions.filter.snapshot') },
+                { value: 'aprilfools', label: t('res.versions.filter.aprilfools') }
               ]}
             />
           </div>
@@ -449,6 +456,8 @@ export function VersionsPage({ presetSearch }: { presetSearch?: string }): JSX.E
           <div className="res-ver-grid grid grid-cols-1 gap-2.5 pb-4 sm:grid-cols-2 xl:grid-cols-3">
             {list.slice(0, shown).map((v, i) => {
               const installing = installingId === v.id
+              // 派生类型：愚人节版在清单里是 snapshot，必须再分一层才能上不同的颜色与文案。
+              const vt = displayVersionType(v.id, v.type)
               return (
                 <motion.div
                   key={v.id}
@@ -463,9 +472,11 @@ export function VersionsPage({ presetSearch }: { presetSearch?: string }): JSX.E
                     className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl text-white"
                     style={{
                       background:
-                        v.type === 'snapshot'
-                          ? 'linear-gradient(135deg,#ff9f0a,#ff375f)'
-                          : 'linear-gradient(135deg,#30d158,#0a84ff)'
+                        vt === 'aprilfools'
+                          ? 'linear-gradient(135deg,#bf5af2,#ff375f)'
+                          : vt === 'snapshot'
+                            ? 'linear-gradient(135deg,#ff9f0a,#ff375f)'
+                            : 'linear-gradient(135deg,#30d158,#0a84ff)'
                     }}
                   >
                     <Icon name="cube" size={17} />
@@ -473,8 +484,14 @@ export function VersionsPage({ presetSearch }: { presetSearch?: string }): JSX.E
                   <div className="min-w-0 flex-1">
                     <div className="truncate text-[14px] font-semibold">{v.id}</div>
                     <div className="caption">
-                      {t(v.type === 'snapshot' ? 'res.versions.typeSnapshot' : 'res.versions.typeRelease')} ·{' '}
-                      {v.releaseTime.slice(0, 10)}
+                      {t(
+                        vt === 'aprilfools'
+                          ? 'res.versions.typeAprilFools'
+                          : vt === 'snapshot'
+                            ? 'res.versions.typeSnapshot'
+                            : 'res.versions.typeRelease'
+                      )}{' '}
+                      · {v.releaseTime.slice(0, 10)}
                     </div>
                   </div>
                   <div className="flex items-center gap-1">
@@ -541,14 +558,18 @@ export function VersionsPage({ presetSearch }: { presetSearch?: string }): JSX.E
                   <span
                     className="rounded-full px-3 py-1 text-[12px] font-semibold"
                     style={
-                      targetSummary?.type === 'snapshot'
-                        ? { background: 'rgba(255,159,10,0.16)', color: 'rgb(255,159,10)' }
-                        : { background: 'rgba(10,132,255,0.16)', color: 'rgb(10,132,255)' }
+                      targetSummary && displayVersionType(targetSummary.id, targetSummary.type) === 'aprilfools'
+                        ? { background: 'rgba(191,90,242,0.16)', color: 'rgb(191,90,242)' }
+                        : targetSummary?.type === 'snapshot'
+                          ? { background: 'rgba(255,159,10,0.16)', color: 'rgb(255,159,10)' }
+                          : { background: 'rgba(10,132,255,0.16)', color: 'rgb(10,132,255)' }
                     }
                   >
-                    {targetSummary?.type === 'snapshot'
-                      ? t('res.versions.typeSnapshot')
-                      : t('res.versions.badgeRelease')}
+                    {targetSummary && displayVersionType(targetSummary.id, targetSummary.type) === 'aprilfools'
+                      ? t('res.versions.typeAprilFools')
+                      : targetSummary?.type === 'snapshot'
+                        ? t('res.versions.typeSnapshot')
+                        : t('res.versions.badgeRelease')}
                   </span>
                 </div>
 

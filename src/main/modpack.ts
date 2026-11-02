@@ -654,6 +654,8 @@ async function applyModpackFiles(
     emit: (snap) => {
       onProgress({
         taskId: 'modpack',
+        // 大任务标题 = 整合包名；`task` 是当前文件（小行）。
+        jobTitle: `安装 ${name}`,
         task: latestLabel || '整合包文件',
         current: snap.done,
         total: snap.total,

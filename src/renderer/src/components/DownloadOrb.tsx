@@ -23,9 +23,13 @@ export function DownloadOrb({ onNavigate }: { onNavigate: (p: PageId) => void })
   const { t } = useApp()
   // done 的进度会被 runtime 即时移除，这里再过滤一次以兜底瞬时空窗。
   const active = downloads.filter((d) => d.phase !== 'done')
+  // 汇总所有进行中任务的字节。**必须夹紧到 0–100**：
+  // 主进程上报的字节口径一旦有偏差（例如分母漏计已存在文件），这里会算出
+  // 133273% 这种溢出值 —— 显示层不该相信上游数据一定自洽。
   const totalCurrent = active.reduce((s, d) => s + (d.currentBytes || 0), 0)
   const totalTotal = active.reduce((s, d) => s + (d.totalBytes || 0), 0)
-  const percent = totalTotal > 0 ? Math.round((totalCurrent / totalTotal) * 100) : 0
+  const rawPercent = totalTotal > 0 ? (totalCurrent / totalTotal) * 100 : 0
+  const percent = Math.max(0, Math.min(100, Math.round(rawPercent)))
   const speed = active.reduce((s, d) => s + (d.speed || 0), 0)
 
   return (

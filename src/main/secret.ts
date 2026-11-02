@@ -13,13 +13,14 @@ import { join } from 'node:path'
  *
  * 若系统不支持安全存储（部分 Linux 缺少密钥环），保存会被拒绝而不是退回明文。
  *
- * 注意：CurseForge 的 KEY 不在这里——它由 curseforge-key.ts 作为内置默认值随程序分发，
- * 无需用户配置，也不存在本机保存这一说。
+ * CurseForge Key 同样使用本机加密存储；公开源码不再内置 Key，
+ * 也不会通过状态接口向原生前端回传。
  */
 const FILES = {
   uapis: 'uapis-key.bin',
   feedback: 'feedback-session.bin',
-  ai: 'ai-key.bin'
+  ai: 'ai-key.bin',
+  curseforge: 'curseforge-key.bin'
 } as const
 
 type SecretName = keyof typeof FILES
@@ -85,6 +86,13 @@ function dropSecret(name: SecretName): void {
   } catch {
     // 文件不存在 / 无权限：忽略——内存缓存已清空，等价于「未设置」。
   }
+}
+
+/* -------------------- CurseForge（仅本机加密保存，不入库） -------------------- */
+export function getCurseforgeKey(): string { return readSecret('curseforge') }
+export function setCurseforgeKey(key: string): string | null {
+  if (!key.trim()) { dropSecret('curseforge'); return null }
+  return writeSecret('curseforge', key, 'CurseForge API Key')
 }
 
 /* -------------------- uapis.cn（翻译） -------------------- */

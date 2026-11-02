@@ -10,6 +10,14 @@ export function DownloadsPage(): JSX.Element {
   const { downloads, cancelDownload, cancelTask } = useRuntime()
   const active = downloads.filter((d) => d.phase !== 'done')
   /**
+   * 按「是否大任务」分两档渲染：
+   *   · 大任务（带 jobTitle）= 实例安装 / 整合包导入 / 加载器安装 → 大卡片；
+   *   · 其余 = 单个文件、Java 运行时等细碎下载 → 紧凑小行。
+   * 这样大任务不会被一串语言文件的标题淹没。
+   */
+  const bigTasks = active.filter((d) => !!d.jobTitle)
+  const smallTasks = active.filter((d) => !d.jobTitle)
+  /**
    * 当前实际使用的下载器。
    *
    * 原生内核是在网络进程启动时按平台探测加载的，运行期不会变，因此进入本页拉一次即可。
@@ -55,7 +63,12 @@ export function DownloadsPage(): JSX.Element {
               </Button>
             </div>
             <AnimatePresence initial={false}>
-              {active.map((d) => (
+              {/*
+               * 大任务（实例安装 / 整合包 / 加载器）用**大卡片**：标题是任务本身，
+               * 当前正在下的文件降级为卡片里的「小行」—— 这就是「大的包小的」。
+               * 没有 jobTitle 的是细碎单项下载，用下面的紧凑小行，视觉层级更低。
+               */}
+              {bigTasks.map((d) => (
                 <motion.div
                   key={d.taskId ?? 'main'}
                   layout
@@ -63,10 +76,18 @@ export function DownloadsPage(): JSX.Element {
                   animate={{ opacity: 1, y: 0 }}
                   exit={{ opacity: 0, scale: 0.98, transition: { duration: 0.15 } }}
                   transition={{ type: 'spring', bounce: 0, duration: 0.3 }}
-                  className="glass-soft rounded-2xl p-4"
+                  className="glass-soft rounded-[24px] p-5"
                 >
-                  <div className="mb-2 flex items-center justify-between gap-2">
-                    <span className="headline truncate">{d.task}</span>
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="min-w-0">
+                      <div className="headline truncate">{d.jobTitle}</div>
+                      {/* 小行：当前正在下载的具体文件 */}
+                      {d.task && (
+                        <div className="caption mt-0.5 truncate" title={d.task}>
+                          {t('downloads.currentFile', { name: d.task })}
+                        </div>
+                      )}
+                    </div>
                     <div className="flex shrink-0 items-center gap-2">
                       <span className="chip">{d.percent}%</span>
                       {d.taskId && (
@@ -83,13 +104,57 @@ export function DownloadsPage(): JSX.Element {
                       )}
                     </div>
                   </div>
-                  <ProgressBar percent={d.percent} />
+                  <div className="mt-3">
+                    <ProgressBar percent={d.percent} />
+                  </div>
                   <div className="mt-2 flex items-center justify-between text-[12px] opacity-70">
-                    <span>{d.currentBytes > 0 ? formatBytes(d.currentBytes) : ''}{d.totalBytes > 0 ? ` / ${formatBytes(d.totalBytes)}` : ''}</span>
+                    <span>
+                      {d.total > 0 && t('downloads.filesProgress', { done: d.current, total: d.total })}
+                      {d.total > 0 && d.currentBytes > 0 ? ' · ' : ''}
+                      {d.currentBytes > 0 ? formatBytes(d.currentBytes) : ''}
+                      {d.totalBytes > 0 ? ` / ${formatBytes(d.totalBytes)}` : ''}
+                    </span>
                     <span>{d.speed && d.speed > 0 ? formatSpeed(d.speed) : '--'}</span>
                   </div>
                 </motion.div>
               ))}
+
+              {/* 细碎单项下载：紧凑一行，不抢大任务的视觉重心 */}
+              {smallTasks.length > 0 && (
+                <div className="mt-1 space-y-2">
+                  {bigTasks.length > 0 && <div className="caption px-1">{t('downloads.otherTasks')}</div>}
+                  {smallTasks.map((d) => (
+                    <motion.div
+                      key={d.taskId ?? 'main-small'}
+                      layout
+                      initial={{ opacity: 0, y: 6 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      exit={{ opacity: 0, transition: { duration: 0.12 } }}
+                      className="glass-soft flex items-center gap-3 rounded-xl px-3 py-2"
+                    >
+                      <span className="min-w-0 flex-1 truncate text-[13px]" title={d.task}>
+                        {d.task}
+                      </span>
+                      <div className="hidden w-[120px] shrink-0 sm:block">
+                        <ProgressBar percent={d.percent} />
+                      </div>
+                      <span className="chip shrink-0">{d.percent}%</span>
+                      {d.taskId && (
+                        <button
+                          type="button"
+                          onClick={() => cancelTask(d.taskId as string)}
+                          aria-label={t('downloads.cancel')}
+                          title={t('downloads.cancel')}
+                          className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full opacity-60 transition-opacity hover:opacity-100"
+                          style={{ background: 'var(--fill-secondary)' }}
+                        >
+                          <Icon name="xmark" size={12} />
+                        </button>
+                      )}
+                    </motion.div>
+                  ))}
+                </div>
+              )}
             </AnimatePresence>
           </div>
         )}

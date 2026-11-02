@@ -23,6 +23,7 @@ import type { HomepageEntry } from '@shared/types'
 import { useApp } from '../store'
 import { useRuntime } from '../runtime'
 import { HomePage } from './HomePage'
+import type { PageId } from '../components/Sidebar'
 import { useHomepageData } from './customhome/data'
 import { homepageOrigins, httpOrigin, useSecurityGuard } from './customhome/security'
 import { useHostBridge } from './customhome/bridge'
@@ -30,10 +31,16 @@ import { buildFrameSrcDoc } from './customhome/sandbox'
 import { HomepageFrame } from './customhome/frame'
 
 /** 「启动游戏」板块的替代界面：有自定义主页时顶替内置启动页。 */
-export function HomeRoute({ onManage }: { onManage?: (versionId: string) => void }): JSX.Element {
+export function HomeRoute({
+  onManage
+}: {
+  onManage?: (versionId: string) => void
+  onNavigate?: (p: PageId) => void
+}): JSX.Element {
   const { settings } = useApp()
-  if (!settings.homepageId) return <HomePage onManage={onManage} />
-  return <CustomHomePage key={settings.homepageId} id={settings.homepageId} />
+  // 用户配置的自定义主页优先，未配置时使用内置主页。
+  if (settings.homepageId) return <CustomHomePage key={settings.homepageId} id={settings.homepageId} />
+  return <HomePage onManage={onManage} />
 }
 
 export function CustomHomePage({ id }: { id: string }): JSX.Element {

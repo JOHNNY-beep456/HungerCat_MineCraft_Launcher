@@ -54,6 +54,7 @@ import { registerVersionsHandlers } from './handlers/versions'
 import { registerModsHandlers } from './handlers/mods'
 import { registerJavaHandlers } from './handlers/java'
 import { registerLaunchHandlers } from './handlers/launch'
+import { registerPccl2Handlers } from './pccl2/bridge'
 import { registerSettingsHandlers } from './handlers/settings'
 import { registerHomepageHandlers } from './handlers/homepage'
 import { registerNetworkHandlers } from './handlers/network'
@@ -1297,6 +1298,7 @@ function registerIpc(): void {
   registerModsHandlers(ipcContext)
   registerJavaHandlers(ipcContext)
   registerLaunchHandlers(ipcContext)
+  registerPccl2Handlers(ipcContext)
   registerSettingsHandlers(ipcContext)
   registerHomepageHandlers(ipcContext)
   registerNetworkHandlers(ipcContext)

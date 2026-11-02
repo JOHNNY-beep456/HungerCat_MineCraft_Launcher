@@ -126,4 +126,7 @@
   "res.versions.translateConsent.licenseLink": "查看 MIT License",
   "res.versions.translateConsent.agree": "我已阅读并同意上述署名与许可信息",
   "res.versions.translateConsent.confirm": "同意并继续安装"
+,
+  "res.versions.filter.aprilfools": "愚人节版",
+  "res.versions.typeAprilFools": "愚人节版"
 }

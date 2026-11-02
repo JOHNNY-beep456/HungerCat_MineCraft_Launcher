@@ -189,4 +189,17 @@
   "ins.external.confirm": "匯入",
   "ins.external.importDone": "已匯入 {n} 個版本",
   "ins.external.importPartial": "{fail} 個版本匯入失敗：{errors}"
+,
+  "ins.loader.installTitle": "安裝模組載入器",
+  "ins.loader.installDesc": "把載入器裝進目前實例（基於 {mc}）：存檔、資源包、光影、投影與實例設定全部保留，實例名不變。",
+  "ins.loader.version": "載入器版本",
+  "ins.loader.install": "安裝",
+  "ins.loader.installing": "正在安裝…",
+  "ins.loader.phaseMerge": "正在合併載入器設定…",
+  "ins.loader.phaseDownload": "正在下載載入器依賴…",
+  "ins.loader.loading": "正在取得版本…",
+  "ins.loader.timeout": "取得 {kind} 版本清單逾時，請稍後重試",
+  "ins.loader.none": "{kind} 沒有適配 {mc} 的版本",
+  "ins.loader.done": "已為 {name} 安裝載入器",
+  "ins.aprilFools": "愚人節版"
 }

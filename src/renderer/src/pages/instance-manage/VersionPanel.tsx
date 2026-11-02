@@ -4,10 +4,15 @@ import { instanceJavaPath } from '@shared/settings'
 import { useApp } from '../../store'
 import { Button, Select } from '../../components/ui'
 import { Row } from './shared'
+import { LoaderInstallCard } from './LoaderInstallCard'
 
-/** 版本设置与目录操作板块：Java、重命名、禁用、启动、打开目录、导出整合包、删除实例。 */
+/** 版本设置与目录操作板块：Java、加载器安装、重命名、禁用、启动、打开目录、导出整合包、删除实例。 */
 export function VersionPanel({
   versionId,
+  mcVersion,
+  loader,
+  dirId,
+  onLoaderInstalled,
   disabled,
   deleting,
   renaming,
@@ -21,6 +26,14 @@ export function VersionPanel({
   onDeleteRequest
 }: {
   versionId: string
+  /** 基础原版版本；加载器安装需要它作为「装在哪个版本之上」。 */
+  mcVersion: string
+  /** 当前实例的加载器；null = 原版（只有原版才提供安装入口）。 */
+  loader: string | null | undefined
+  /** 实例所属版本目录 id。 */
+  dirId: string
+  /** 加载器安装完成（就地安装，实例本身不变）。 */
+  onLoaderInstalled: () => void
   disabled: boolean
   deleting: boolean
   renaming: boolean
@@ -98,6 +111,18 @@ export function VersionPanel({
 
   return (
     <div className="space-y-3">
+      {/* 只有原版实例才显示加载器安装入口：已经装了加载器的实例再装一次没有意义
+          （要换加载器，正确做法是新建实例，而不是覆盖现有 profile）。
+          mcVersion 尚未从已安装列表解析出来时先不渲染 —— 空版本号会先打一次
+          必然失败的版本清单请求，白等一次超时。 */}
+      {loader === null && mcVersion !== '' && (
+        <LoaderInstallCard
+          instanceId={versionId}
+          mcVersion={mcVersion}
+          dirId={dirId}
+          onInstalled={onLoaderInstalled}
+        />
+      )}
       <div className="glass-soft rounded-2xl p-4">
         <div className="flex items-center justify-between gap-4">
           <div>

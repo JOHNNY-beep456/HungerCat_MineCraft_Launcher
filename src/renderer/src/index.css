@@ -4281,3 +4281,82 @@ textarea.input {
     border-color: rgba(255, 255, 255, 0.34) !important;
   }
 }
+
+/* ==================================================================== */
+/*  液态玻璃 · iOS 26「Liquid Glass」对齐细调                            */
+/* ==================================================================== */
+/*                                                                      */
+/*  先说边界：Apple 的 HIG 只给**原则**（通透、颜色由背后内容决定、      */
+/*  镜面高光、边缘透镜、随内容自适应），**从公布数值**（模糊半径、不透明  */
+/*  度百分比都没有）；而 Liquid Glass 是实时 GPU 折射，CSS 只能近似。    */
+/*  所以下面是对照实机观感做的**工程取值**，不是官方参数，也不要当成     */
+/*  「完全一致」——真正无法用 CSS 复现的是实时折射与逐像素光照。          */
+/*                                                                      */
+/*  这一整段集中在此处覆盖上面的皮肤取值，避免以后改数值时到处找。        */
+/* ==================================================================== */
+
+[data-skin='mac'] {
+  /*
+   * 控件圆角比全局更圆：iOS 26 的按钮 / 输入框圆角明显大于 12px，
+   * 但没到药丸（999px 只留给分段控件与开关）。14px 对 36–38px 高的控件
+   * 约为 0.37 的圆角比，观感接近 iOS 的「圆润但仍有直边」。
+   */
+  --radius-control: 14px;
+  /*
+   * 悬停提亮更明显：iOS 26 的控件在指针进入时有可感知的「浮起」，
+   * 1.02 太弱几乎看不出。
+   */
+  --control-hover-brightness: 1.06;
+}
+
+/*
+ * 控件填充从「近乎实心白」退一档。
+ *
+ * 0.72 观感偏「白板」；iOS 26 的控件是**厚玻璃**：能透出一点背后内容，
+ * 但靠镜边（--lg-rim-*）与内高光把轮廓钉住。0.64 在保住文字对比的前提下
+ * 让材质重新读成玻璃。（历史上曾用 0.20 被反馈「太透、发灰不好看」，
+ * 所以这里不做激进削减。）
+ */
+[data-skin='mac']:not([data-mode='minimal']) .btn-secondary,
+[data-skin='mac']:not([data-mode='minimal']) .chip,
+[data-skin='mac']:not([data-mode='minimal']) .mica {
+  --lg-ctl-fill: rgba(255, 255, 255, 0.64);
+}
+[data-skin='mac'][data-theme='dark']:not([data-mode='minimal']) .btn-secondary,
+[data-skin='mac'][data-theme='dark']:not([data-mode='minimal']) .chip,
+[data-skin='mac'][data-theme='dark']:not([data-mode='minimal']) .mica {
+  --lg-ctl-fill: rgba(255, 255, 255, 0.16);
+}
+/* 侧栏等更亮的面板内再压一档，否则控件比面板还亮、读成一片白。 */
+[data-skin='mac']:not([data-mode='minimal']) .glass-strong :is(.btn-secondary, .chip, .mica) {
+  --lg-ctl-fill: rgba(255, 255, 255, 0.56);
+}
+[data-skin='mac'][data-theme='dark']:not([data-mode='minimal']) .glass-strong :is(.btn-secondary, .chip, .mica) {
+  --lg-ctl-fill: rgba(255, 255, 255, 0.12);
+}
+
+/*
+ * 按压缩放之外再压一点亮度：iOS 26 按下去是「略微缩小 + 变暗」，
+ * 只缩放的话在小控件上几乎看不出反馈。
+ */
+[data-skin='mac'] .btn:active:not(:disabled) {
+  filter: brightness(0.97);
+}
+
+/*
+ * 浮层阴影补一层更大的柔影：iOS 26 的投影散得很开、边缘几乎看不见，
+ * 只有接触影 + 中层影时，卡片读起来还是「贴着的纸」。
+ */
+[data-skin='mac'] .glass {
+  --glass-shadow:
+    0 1px 2px rgba(15, 23, 42, 0.12), 0 12px 28px -14px rgba(15, 23, 42, 0.4),
+    0 32px 64px -32px rgba(15, 23, 42, 0.28);
+}
+[data-skin='mac'][data-theme='dark'] .glass {
+  --glass-shadow:
+    0 1px 2px rgba(0, 0, 0, 0.4), 0 12px 28px -14px rgba(0, 0, 0, 0.55),
+    0 32px 64px -32px rgba(0, 0, 0, 0.45);
+}
+
+
+/* ------------------------------------------------------------------ */

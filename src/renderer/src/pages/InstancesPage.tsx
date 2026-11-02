@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent } from 'react'
 import { AnimatePresence, motion } from 'motion/react'
 import type { ConflictPolicy, ExternalVersion, InstalledVersion, MinecraftServerStatus, ModpackProbe, VersionDir } from '@shared/types'
+import { displayVersionType } from '@shared/version-type'
 import { activeGameDir, allVersionDirs, useApp, versionDirLabel } from '../store'
 import { useAutoTranslate } from '../translate'
 import type { TFunction } from '../i18n'
@@ -652,6 +653,8 @@ export function InstancesPage({ onManage }: { onManage: (versionId: string) => v
                       <div className="truncate text-[14px] font-semibold">{ver.id}</div>
                       <div className="caption truncate">
                         {ver.mcVersion}
+                        {/* 外部版本不是 InstalledVersion（没有 versionType 字段），按 base 版本号现算 */}
+                        {displayVersionType(ver.mcVersion) === 'aprilfools' && ` · ${t('ins.aprilFools')}`}
                         {ver.loader ? ` · ${loaderLabel(ver.loader, t)}` : ''}
                         {` · ${formatSize(ver.size)}`}
                       </div>
@@ -828,7 +831,19 @@ function InstanceCard({
       <div className="flex items-center gap-3">
         <div
           className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl text-white"
-          style={{ background: 'linear-gradient(135deg,#30d158,#0a84ff)' }}
+          style={{
+            /*
+             * 方块按版本类型上色，与「资源下载 → 版本列表」的三档配色保持一致：
+             *   愚人节版 = 紫、快照 = 橙、正式版 = 绿蓝。
+             * 之前这里写死绿蓝渐变，只有愚人节版单独判过，快照实例看着和正式版一样。
+             */
+            background:
+              v.versionType === 'aprilfools'
+                ? 'linear-gradient(135deg,#bf5af2,#ff375f)'
+                : v.versionType === 'snapshot'
+                  ? 'linear-gradient(135deg,#ff9f0a,#ff375f)'
+                  : 'linear-gradient(135deg,#30d158,#0a84ff)'
+          }}
         >
           <Icon name="cube" size={19} />
         </div>
@@ -836,6 +851,9 @@ function InstanceCard({
           <div className="truncate text-[15px] font-semibold group-hover:underline">{v.id}</div>
           <div className="caption">
             {v.mcVersion}
+            {/* 实例类型识别：愚人节版的 base 版本号（如 24w14potato）本身不说明问题，
+                单列一个标签，用户才看得出这不是普通快照。 */}
+            {v.versionType === 'aprilfools' && ` · ${t('ins.aprilFools')}`}
             {v.loader ? ` · ${loaderLabel(v.loader, t)}` : ''}
             {t('ins.cardMeta', { worlds: v.worlds.length, servers: v.servers.length })}
           </div>

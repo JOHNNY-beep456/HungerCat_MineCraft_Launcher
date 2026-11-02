@@ -23,6 +23,7 @@ import { UpdateSection } from './settings/UpdateSection'
  *   · 社区资源 → 撤销（下层的 communitySource / modTitleStyle 字段保留）；
  *   · 公告 + 更新 → 合并为「公告 & 更新」。
  */
+
 export function SettingsPage(): JSX.Element {
   const { t } = useApp()
 

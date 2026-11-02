@@ -15,10 +15,24 @@ export function Section({ title, icon, children }: { title: string; icon: string
 }
 
 /** 设置页各板块共用的「一行设置」：左侧标签 + 右侧控件。 */
-export function Row({ label, children, className }: { label: string; children: ReactNode; className?: string }): JSX.Element {
+export function Row({
+  label,
+  desc,
+  children,
+  className
+}: {
+  label: string
+  /** 可选的副说明（小字，显示在标签下方）。用于「该行为何被皮肤锁定」这类解释。 */
+  desc?: string
+  children: ReactNode
+  className?: string
+}): JSX.Element {
   return (
     <div className={`flex items-center justify-between gap-4 ${className ?? ''}`}>
-      <span className="text-[13px] opacity-80">{label}</span>
+      <div className="min-w-0">
+        <span className="text-[13px] opacity-80">{label}</span>
+        {desc && <div className="caption mt-0.5 opacity-70">{desc}</div>}
+      </div>
       {children}
     </div>
   )

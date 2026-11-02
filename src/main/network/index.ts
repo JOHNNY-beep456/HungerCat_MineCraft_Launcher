@@ -68,7 +68,8 @@ async function fetchVersionManifest(): Promise<VersionManifest> {
         .map((v) => ({
           id: v.id,
           type: v.type as VersionManifest['versions'][number]['type'],
-          releaseTime: v.releaseTime
+          releaseTime: v.releaseTime,
+          url: v.url
         }))
     }
   }

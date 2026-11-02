@@ -121,6 +121,69 @@ export async function resolveVersionJson(id: string, gameDir?: string): Promise<
   return json
 }
 
+/**
+ * 把模组加载器的 profile **就地合并进已有实例**的版本 JSON。
+ *
+ * ## 为什么可以就地合并
+ *
+ * 加载器 profile 本来是一份「继承原版」的增量 JSON。`mergeVersions` 已经能把它与
+ * 父版本合成为**自包含** JSON —— 既然如此，就可以把合成结果直接写回实例自己的
+ * `versions/<id>/<id>.json`，而**不必新建实例**：
+ *
+ *   · 实例 id 不变 → 启动器里仍是同一个实例；
+ *   · 版本目录不变 → 存档、资源包、光影、投影、模组、实例级设置全部原样保留；
+ *   · 原版 JSON 备份到 `<id>.json.vanilla.bak`，需要时可还原。
+ *
+ * ## 为什么要先解析再合并
+ *
+ * 实例的 JSON 有两种形态：完整的原版 JSON，或 `{id, inheritsFrom}` 这样的包装
+ * （导入整合包 / 自定义命名实例）。直接读文件合并会把包装当成原版，丢掉
+ * client / assetIndex。所以先用 `resolveVersionJson` 把它解析成完整的原版 JSON
+ * 再作为父版本。
+ *
+ * @param instanceId 目标实例 id（安装后保持不变）
+ * @param profile    加载器 profile（会带 inheritsFrom，合并时丢弃）
+ */
+export async function mergeLoaderProfileInPlace(
+  gameDir: string,
+  instanceId: string,
+  profile: VersionJson
+): Promise<void> {
+  const base = await resolveVersionJson(instanceId, gameDir)
+
+  /*
+   * 防重复安装：真正的闸门在界面（只有原版实例显示入口），这里只是主进程侧兜底。
+   * 判据用 mainClass —— 原版的入口类是 net.minecraft.client.main.Main，
+   * 而 Fabric / Quilt / Forge / NeoForge 都会换成自己的启动器类。
+   * 这是启发式判断，不足以冒充「权威检测」，故只在明显不符时拒绝。
+   */
+  if (base.mainClass && !base.mainClass.includes('net.minecraft.client.main.Main')) {
+    throw new Error('该实例已安装模组加载器，无法重复安装')
+  }
+
+  // 以实例自身 id 作为子版本合并：profile 的 inheritsFrom 由 base 实际承担，故丢弃。
+  const merged = mergeVersions(base, { ...profile, id: instanceId } as VersionJson)
+  merged.id = instanceId
+  merged.clientVersion = base.clientVersion || base.id || instanceId
+  delete (merged as { inheritsFrom?: string }).inheritsFrom
+
+  const dir = join(gameDir, 'versions', instanceId)
+  mkdirSync(dir, { recursive: true })
+  const file = join(dir, `${instanceId}.json`)
+
+  /*
+   * 原版 JSON 只备份一次。
+   * 重复安装（换加载器）时当前文件已经是「合并过的」，拿它覆盖备份就把唯一的原版
+   * 副本弄丢了 —— 所以备份存在时不再写。
+   */
+  const backup = join(dir, `${instanceId}.json.vanilla.bak`)
+  if (!existsSync(backup) && existsSync(file)) {
+    writeFileSync(backup, readFileSync(file), 'utf-8')
+  }
+
+  writeFileSync(file, JSON.stringify(merged, null, 2), 'utf-8')
+}
+
 /** 创建原版的自定义命名实例：`versions/<customName>/<customName>.json`，继承基础版本。 */
 export async function createVanillaInstance(
   gameDir: string,

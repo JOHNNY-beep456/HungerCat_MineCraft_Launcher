@@ -48,6 +48,14 @@ function subscribe<T>(channel: string): (cb: (payload: T) => void) => () => void
 
 const api: LauncherApi = {
   platform: process.platform,
+  pccl2: {
+    status: () => ipcRenderer.invoke('pccl2:status'),
+    install: () => ipcRenderer.invoke('pccl2:install'),
+    open: () => ipcRenderer.invoke('pccl2:open'),
+    restore: () => ipcRenderer.invoke('pccl2:restore'),
+    onProgress: subscribe<{ phase: string; received?: number; total?: number }>('pccl2:progress'),
+    onNavigate: subscribe<{ page: string; versionId?: string }>('pccl2:navigate')
+  },
   getVersion: () => ipcRenderer.invoke('app:version'),
   hardwareAccelerationBooted: () => ipcRenderer.invoke('app:hardwareAccelerationBooted'),
   relaunch: () => ipcRenderer.invoke('app:relaunch'),
@@ -111,7 +119,15 @@ const api: LauncherApi = {
   loaders: {
     versions: (kind: LoaderKind, mcVersion: string) => ipcRenderer.invoke('loaders:versions', kind, mcVersion),
     install: (kind: LoaderKind, mcVersion: string, loaderVersion: string, customId?: string, dirId?: string) =>
-      ipcRenderer.invoke('loaders:install', kind, mcVersion, loaderVersion, customId, dirId)
+      ipcRenderer.invoke('loaders:install', kind, mcVersion, loaderVersion, customId, dirId),
+    /** 就地装进已有实例：实例 id / 目录 / 存档全不变（四种加载器共用这一个入口）。 */
+    installInPlace: (
+      kind: LoaderKind | ForgeKind,
+      mcVersion: string,
+      loaderVersion: string,
+      instanceId: string,
+      dirId?: string
+    ) => ipcRenderer.invoke('loaders:installInPlace', kind, mcVersion, loaderVersion, instanceId, dirId)
   },
   forge: {
     versions: (kind: ForgeKind, mcVersion: string) => ipcRenderer.invoke('forge:versions', kind, mcVersion),

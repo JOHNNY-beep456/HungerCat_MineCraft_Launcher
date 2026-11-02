@@ -2,6 +2,7 @@ import { existsSync, promises as fsp } from 'fs'
 import { join } from 'path'
 import { gunzipSync, gzipSync } from 'zlib'
 import type { InstalledVersion } from '@shared/types'
+import { displayVersionType, type DisplayVersionType } from '@shared/version-type'
 import { nativeScanDirs } from './native-downloader'
 
 function runDir(gameDir: string, versionId: string, isolated: boolean): string {
@@ -168,7 +169,7 @@ function deriveMcFromLibraries(libraries: Array<{ name?: string }>): string | nu
 interface MetaCacheEntry {
   mtimeMs: number
   size: number
-  meta: { mcVersion: string; loader: string | null }
+  meta: { mcVersion: string; loader: string | null; versionType: DisplayVersionType }
 }
 
 const META_CACHE_MAX = 512
@@ -186,7 +187,10 @@ function rememberMeta(path: string, mtimeMs: number, size: number, meta: MetaCac
 }
 
 /** Read version metadata (base MC version + mod loader) for an installed version id. */
-async function readVersionMeta(gameDir: string, id: string): Promise<{ mcVersion: string; loader: string | null }> {
+async function readVersionMeta(
+  gameDir: string,
+  id: string
+): Promise<{ mcVersion: string; loader: string | null; versionType: DisplayVersionType }> {
   const p = join(gameDir, 'versions', id, `${id}.json`)
   try {
     const st = await fsp.stat(p)
@@ -205,11 +209,18 @@ async function readVersionMeta(gameDir: string, id: string): Promise<{ mcVersion
       json.clientVersion ??
       extractMcVersion(json.id ?? id)
     const loader = detectLoader(json.mainClass ?? '', json.id ?? id, json.libraries ?? [])
-    const meta = { mcVersion, loader }
+    /*
+     * 版本类型按 **base 版本号** 判定，而不是实例 id：
+     * 实例可能是自定义名（"我的整合包"），只有 base mcVersion 能说明它是不是快照 /
+     * 愚人节版。已安装实例拿不到清单里的 type，故只传 id 走格式启发式 + 白名单。
+     */
+    const versionType = displayVersionType(mcVersion)
+    const meta = { mcVersion, loader, versionType }
     rememberMeta(p, st.mtimeMs, st.size, meta)
     return meta
   } catch {
-    return { mcVersion: extractMcVersion(id), loader: null }
+    const mcVersion = extractMcVersion(id)
+    return { mcVersion, loader: null, versionType: displayVersionType(mcVersion) }
   }
 }
 
@@ -259,7 +270,14 @@ export async function listInstalled(
       versionServers(gameDir, id, isIso),
       readVersionMeta(gameDir, id)
     ])
-    return { id, mcVersion: meta.mcVersion, loader: meta.loader, worlds, servers }
+    return {
+      id,
+      mcVersion: meta.mcVersion,
+      loader: meta.loader,
+      versionType: meta.versionType,
+      worlds,
+      servers
+    }
   })
 }
 

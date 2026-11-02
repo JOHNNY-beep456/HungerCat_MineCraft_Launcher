@@ -114,6 +114,7 @@ export interface CfFile {
   hashes?: Array<{ value: string; algo: number }>
   isAvailable?: boolean
   releaseType?: number
+  dependencies?: Array<{ modId: number; relationType: number }>
 }
 
 export interface CfMod {
@@ -140,7 +141,7 @@ function describeStatus(status: number): string {
   return `CurseForge 接口返回 HTTP ${status}`
 }
 
-async function cfFetch(key: string, path: string, init?: { method?: string; body?: unknown }): Promise<unknown> {
+export async function cfFetch(key: string, path: string, init?: { method?: string; body?: unknown }): Promise<unknown> {
   if (!key) throw new Error('尚未配置 CurseForge API KEY（可在「设置 → 外观 → 资源来源」中填写）')
   const res = await fetch(`${CF_BASE}${path}`, {
     method: init?.method ?? 'GET',

@@ -580,7 +580,7 @@ export function Select({
    * 选项：`note` 为可选的「备注」，显示在标题下方一行（比标题更小更淡）。
    * 用于版本目录等需要「名称 + 路径」两行展示、又不想另开一个框的场景。
    */
-  options: Array<{ value: string; label: string; note?: string }>
+  options: Array<{ value: string; label: string; note?: string; disabled?: boolean }>
   disabled?: boolean
   placeholder?: string
   /**
@@ -732,11 +732,14 @@ export function Select({
                         type="button"
                         role="option"
                         aria-selected={active}
+                        disabled={o.disabled}
+                        aria-disabled={o.disabled || undefined}
                         onClick={() => {
+                          if (o.disabled) return
                           onChange(o.value)
                           setOpen(false)
                         }}
-                        className={`flex w-full items-center gap-2 rounded-xl px-3 py-2 no-drag transition-colors ${
+                        className={`flex w-full items-center gap-2 rounded-xl px-3 py-2 no-drag transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${
                           align === 'right' ? 'justify-end' : 'justify-between'
                         } ${align === 'right' ? 'text-right' : 'text-left'}`}
                         style={{ background: active ? 'var(--fill-secondary)' : 'transparent' }}

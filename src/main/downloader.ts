@@ -602,6 +602,9 @@ export async function installVersion(
   const reporter = new ProgressReporter({
     emit: (snap) => {
       onProgress({
+        // 大任务标题 = 实例名。有了它，进度板块才会把这条渲染成大卡片，
+        // 把 `task`（当前文件）作为卡片内的小行显示。
+        jobTitle: json.id,
         task: latestLabel,
         current: snap.done,
         total: snap.total,
@@ -623,6 +626,20 @@ export async function installVersion(
 
   const queue = tasks
   let index = 0
+
+  /**
+   * 队列里**已知大小**的任务先一次性计入分母。
+   *
+   * 为什么必须预置：`doneBytes` 包含「校验发现已存在」的文件与所有下载完成的文件，
+   * 而 `totalBytes` 旧实现只在服务器返回 Content-Length（onSize）时才累加 ——
+   * 于是已存在的文件全进了分子、却没进分母，百分比虚高到几百上千（实测 133273%）。
+   * 预置之后分子分母口径一致：都是「整个队列的字节量」。
+   */
+  const knownTotalBytes = queue.reduce((sum, t) => sum + (t.size ?? 0), 0)
+  if (knownTotalBytes > 0) reporter.addTotalBytes(knownTotalBytes)
+
+  /** 大小未知的任务：记录 onSize 已经计入的那部分，用于后续用差值覆盖而非重复累加。 */
+  const discoveredSize = new Map<DownloadTask, number>()
 
   /**
    * 每个任务本次已计入的字节数。**按任务记账**而非全局累加：
@@ -691,12 +708,19 @@ export async function installVersion(
           signal,
           3,
           (size) => {
-            // 该任务的预期总大小先撤回上一次的估算再加新值，避免重复计入 totalBytes。
-            const prevSize = taskBytes.get(task)
-            if (prevSize != null && task.size == null) {
-              reporter.addTotalBytes(-prevSize)
+            /*
+             * 只有「大小未知」的任务才需要动态补分母。
+             * 已知 size 的任务已经在队列开始时统一计入 totalBytes，这里再加一次就会重复，
+             * 让分母虚大、进度条走不到 100%（旧实现两种错误都出现过）。
+             * 未知大小的任务用「差值覆盖」：镜像回退可能先报一个估算值、后来换成真值。
+             */
+            if (task.size == null) {
+              const prev = discoveredSize.get(task) ?? 0
+              if (size !== prev) {
+                reporter.addTotalBytes(size - prev)
+                discoveredSize.set(task, size)
+              }
             }
-            reporter.addTotalBytes(size)
             emit(task.phase, task.label)
           },
           connections
@@ -778,7 +802,7 @@ export async function installVersion(
     throw err
   }
   console.info(`[下载] 版本 ${json.id} 安装完成`)
-  onProgress({ task: '完成', current: total, total, currentBytes: reporter.getDoneBytes(), totalBytes: 0, phase: 'done', percent: 100 })
+  onProgress({ jobTitle: json.id, task: '完成', current: total, total, currentBytes: reporter.getDoneBytes(), totalBytes: 0, phase: 'done', percent: 100 })
   return { nativesDir, librariesDir: join(gameDir, 'libraries'), assetIndexId: assetIndex.id }
 }
 

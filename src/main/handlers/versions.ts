@@ -8,8 +8,8 @@ import { scanExternalVersions, importExternalVersion } from '../import-version'
 import { installVersion } from '../downloader'
 import { effectiveConcurrency } from '../network-profile'
 import { nativeDownloaderStatus } from '../native-downloader'
-import { loaderVersions, installLoader } from '../loaders'
-import { forgeVersions, installForge } from '../forge'
+import { loaderVersions, installLoader, installLoaderInPlace } from '../loaders'
+import { forgeVersions, installForge, installForgeInPlace } from '../forge'
 import { pickInstallerJava, requiredJavaForMc } from '../java'
 import type { IpcContext } from './context'
 
@@ -140,6 +140,65 @@ export function registerVersionsHandlers(ctx: IpcContext): void {
     ctx.installedCache.invalidateAll()
     return id
   })
+
+  /**
+   * 把加载器**就地安装到已有实例**（不新建实例）。
+   *
+   * 与 `loaders:install` / `forge:install` 的区别是「装到哪」：那两个各写一个
+   * 新版本目录（于是实例列表多一项、存档要从头积累），这个把 profile 合并进
+   * 实例自己的版本 JSON，实例 id、目录、存档、资源包、实例级设置全部不变。
+   *
+   * 返回值就是传入的 instanceId —— 调用方用它去下载加载器依赖的库。
+   */
+  ipcMain.handle(
+    'loaders:installInPlace',
+    async (
+      event,
+      kind: LoaderKind | ForgeKind,
+      mc: string,
+      loader: string,
+      instanceId: string,
+      dirId?: string
+    ) => {
+      const s = settings.get()
+      const dir = ctx.dirPathById(s, dirId)
+
+      if (kind === 'forge' || kind === 'neoforge') {
+        // Forge 家族必须跑安装器，需要一个能运行它的 Java。
+        const jr = await pickInstallerJava(
+          allVersionDirs(s).map((d) => d.path),
+          s.javaPath,
+          requiredJavaForMc(mc)
+        )
+        if (!jr) throw new Error('未找到可用的 Java，无法运行安装器（请在「设置」中指定 Java 路径）')
+        // 与 forge:install 一致的登记方式：进度带独立 taskId，可单独取消。
+        const taskId = `forge-inplace-${instanceId}`
+        const controller = new AbortController()
+        ctx.downloadAborts.set(taskId, controller)
+        try {
+          await installForgeInPlace(
+            kind,
+            mc,
+            loader,
+            dir,
+            instanceId,
+            jr.path,
+            (line) => ctx.sendToSender(event.sender, 'forge:log', line),
+            (p) => ctx.sendToSender(event.sender, 'download:progress', { ...p, taskId }),
+            controller.signal
+          )
+        } finally {
+          ctx.downloadAborts.delete(taskId)
+        }
+      } else {
+        // Fabric / Quilt：只取 profile JSON 再合并，无需安装器。
+        await installLoaderInPlace(kind, mc, loader, dir, instanceId)
+      }
+
+      ctx.installedCache.invalidateAll()
+      return instanceId
+    }
+  )
 
   // ---- Mod loaders (Forge / NeoForge) ----
   ipcMain.handle('forge:versions', (_e, kind: ForgeKind, mc: string) => forgeVersions(kind, mc))

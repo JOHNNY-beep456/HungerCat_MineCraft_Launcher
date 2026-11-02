@@ -158,8 +158,19 @@ function faceStyle(
     backgroundSize: `${64 * unit}px ${skinH * unit}px`,
     backgroundPosition: `${-x * unit}px ${-y * unit}px`,
     backgroundRepeat: 'no-repeat',
-    imageRendering: 'pixelated',
-    backfaceVisibility: 'hidden'
+    imageRendering: 'pixelated'
+    /*
+     * 刻意**不设** backface-visibility: hidden。
+     *
+     * 每个盒子的 6 个面都朝外，背面本来就会被正面挡住，剔除它们看起来"等价"。
+     * 但 CSS 3D 没有 z-buffer：背面剔除靠的是法线与视线的点积，当某个面转到
+     * 几乎侧对镜头（法线 ⟂ 视线）时判定处在临界点，浮点误差会让结果在相邻帧之间
+     * 翻转 —— 该面瞬间消失，模型露出缺口。自转动画又是 steps() 离散的，
+     * 会长时间停在整数角度，正好把临界帧停在最久，于是表现为「随机缺一块、且停住看得见」。
+     *
+     * 保留背面绘制后，远面由深度排序画在近面之后，轮廓始终连续；代价只是半透明的
+     * 外层（帽子/外套）背面会隔着正面透出一点点，远轻于轮廓破洞。
+     */
   }
 }
 

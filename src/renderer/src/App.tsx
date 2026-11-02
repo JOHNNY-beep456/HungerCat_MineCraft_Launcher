@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { AnimatePresence, MotionConfig, motion } from 'motion/react'
+import { effectiveNavPosition } from '@shared/settings'
 import { AppProvider, useApp } from './store'
 import { RuntimeProvider, useRuntime } from './runtime'
 import { TitleBar } from './components/TitleBar'
@@ -24,7 +25,7 @@ import { InstanceManagePage } from './pages/InstanceManagePage'
 import { bakeBlobTextures, clearBlobTextures } from './blob-texture'
 
 function Shell(): JSX.Element {
-  const { settings, t, reloadAccounts, securityAlert, clearSecurityAlert, fileManagerPath, closeFileManager, launcherUpdateNotice, dismissLauncherUpdateNotice, needAgreement, announcements, dismissAnnouncements, navRequest } = useApp()
+  const { settings, t, reloadAccounts, reloadSettings, securityAlert, clearSecurityAlert, fileManagerPath, closeFileManager, launcherUpdateNotice, dismissLauncherUpdateNotice, needAgreement, announcements, dismissAnnouncements, navRequest } = useApp()
   const { launchReport, analyzingReport, dismissLaunchReport } = useRuntime()
   const [page, setPage] = useState<PageId>('home')
   const [managingId, setManagingId] = useState<string | null>(null)
@@ -45,6 +46,16 @@ function Shell(): JSX.Element {
     setManagingId(null)
     setPage(p)
   }
+
+  // 原生窗口恢复 Electron 时复用原有页面及实例管理入口。
+  useEffect(() => window.api.pccl2.onNavigate((data) => {
+    const pages: PageId[] = ['home', 'homepage', 'resources', 'instances', 'multiplayer', 'downloads', 'accounts', 'settings', 'feedback', 'about']
+    if (!pages.includes(data.page as PageId)) return
+    setPage(data.page as PageId)
+    setManagingId(data.page === 'instances' && typeof data.versionId === 'string' ? data.versionId : null)
+    void reloadAccounts()
+    void reloadSettings()
+  }), [reloadAccounts, reloadSettings])
 
   // 更新下载进度：仅在弹窗内发起下载时用于显示进度条。
   useEffect(
@@ -153,7 +164,8 @@ function Shell(): JSX.Element {
   const minimal = settings.mode === 'minimal'
   const desktop = !minimal && settings.experimental === 'win10'
   const frosted = !minimal && settings.experimental === 'frosted'
-  const navPosition = settings.navPosition
+  // 与设置页共用生效值，保证导航位置的显示与实际布局一致。
+  const navPosition = effectiveNavPosition(settings)
 
   // 「模糊玻璃」：把 90px 模糊一次性烘焙成贴图（详见 blob-texture.ts）。
   // 不烘焙时每帧都要重算整层模糊，实测只有 ~14fps。
@@ -248,7 +260,11 @@ function Shell(): JSX.Element {
                   >
                     <div className="h-full">
                       {managingId ? (
-                        <InstanceManagePage versionId={managingId} onBack={() => setManagingId(null)} onRename={setManagingId} />
+                        <InstanceManagePage
+                          versionId={managingId}
+                          onBack={() => setManagingId(null)}
+                          onRename={setManagingId}
+                        />
                       ) : (
                         renderPage(page, setManagingId, resourcePreset, navigate, settings.enableMultiplayer)
                       )}

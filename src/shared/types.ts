@@ -2,6 +2,8 @@
 // Shared types between main process, preload and renderer.
 // ---------------------------------------------------------------------------
 
+import type { DisplayVersionType } from './version-type'
+
 export interface MinecraftAccount {
   /** Player UUID (undashed) */
   id: string
@@ -145,6 +147,17 @@ export type DownloadPhase = 'assets' | 'libraries' | 'client' | 'logging' | 'jav
 export interface DownloadProgress {
   /** 下载任务标识（用于并发下载的区分，缺省为 'main'） */
   taskId?: string
+  /**
+   * 大任务标题（实例安装的版本号、整合包名、加载器名…）。
+   *
+   * 有这个字段时，「进度」板块把它渲染成**大卡片**，`task` 降级为卡片里的
+   * 「当前文件」小行 —— 即「大的包小的」。没有它的是细碎的单项下载（单个文件、
+   * Java 运行时等），用紧凑的小样式，视觉层级低于大任务。
+   *
+   * 历史问题：大任务的上报直接把 `task` 设成当前文件名，于是实例安装看起来
+   * 和一个语言文件下载没区别。
+   */
+  jobTitle?: string
   task: string
   current: number
   total: number
@@ -225,6 +238,12 @@ export interface InstalledVersion {
   mcVersion: string
   /** Mod loader (fabric/quilt/forge/neoforge) or null for vanilla. */
   loader: string | null
+  /**
+   * 基础版本的显示类型（正式版 / 快照 / 愚人节版 …）。
+   * 由 `@shared/version-type` 按 base 版本号判定：实例本身的 id 可能是自定义名，
+   * 只有 base mcVersion 才能反映「这是不是愚人节版」。
+   */
+  versionType: DisplayVersionType
   worlds: string[]
   servers: Array<{ name: string; address: string }>
 }
@@ -350,6 +369,8 @@ export interface LaunchEvent {
 }
 
 export interface LauncherSettings {
+  /** Windows PCCL2 原生组件的 HTTPS 清单地址；空值表示尚未部署。 */
+  pccl2ManifestUrl: string
   theme: 'light' | 'dark' | 'system'
   /**
    * 界面语言 id（默认 `zh-CN`）。
@@ -561,7 +582,19 @@ export interface LauncherSettings {
    *   win10  Win10 桌面：自动全屏，功能以桌面图标呈现，双击打开
    * 用单一字段表达「相斥」，避免多个布尔同时为真。
    */
-  experimental: 'off' | 'mica' | 'mac' | 'frosted' | 'material' | 'github' | 'winui2' | 'winui3' | 'minecraft' | 'win10'
+  experimental:
+    | 'off'
+    | 'mica'
+    | 'mac'
+    | 'frosted'
+    | 'material'
+    | 'github'
+    | 'winui2'
+    | 'winui3'
+    | 'minecraft'
+    | 'win10'
+    /** 仿 PCL2 的扁平蓝皮肤；会把导航强制为顶部并固定配色（见 @shared/settings 的 isPccl2Skin） */
+    | 'pccl2'
   /**
    * Material Design 3 风格类型（仅在 experimental = 'material' 时生效）：
    *   baseline   M3 静态基线配色（官方默认色板，表面不跟随主题色）
@@ -1729,6 +1762,14 @@ export interface FeedbackWithdrawResult {
 /** The API surface exposed to the renderer through the preload bridge. */
 export interface LauncherApi {
   platform: string
+  pccl2: {
+    status: () => Promise<{ supported: boolean; installed: boolean; version?: string; running?: boolean; error?: string }>
+    install: () => Promise<unknown>
+    open: () => Promise<unknown>
+    restore: () => Promise<unknown>
+    onProgress: (cb: (data: { phase: string; received?: number; total?: number }) => void) => () => void
+    onNavigate: (cb: (data: { page: string; versionId?: string }) => void) => () => void
+  }
   /** 当前启动器版本号。 */
   getVersion: () => Promise<string>
   /**
@@ -1828,6 +1869,17 @@ export interface LauncherApi {
   loaders: {
     versions: (kind: LoaderKind, mcVersion: string) => Promise<string[]>
     install: (kind: LoaderKind, mcVersion: string, loaderVersion: string, customId?: string, dirId?: string) => Promise<string>
+    /**
+     * 就地装进已有实例（不新建实例）：实例 id / 目录 / 存档 / 资源包全部不变。
+     * 四种加载器共用这一个入口（Forge 家族在实现里会额外跑安装器）。
+     */
+    installInPlace: (
+      kind: LoaderKind | ForgeKind,
+      mcVersion: string,
+      loaderVersion: string,
+      instanceId: string,
+      dirId?: string
+    ) => Promise<string>
   }
   forge: {
     versions: (kind: ForgeKind, mcVersion: string) => Promise<string[]>

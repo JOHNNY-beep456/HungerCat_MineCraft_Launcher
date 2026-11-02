@@ -148,7 +148,12 @@ export class ProgressReporter {
 
 /** 由 doneBytes/totalBytes（优先）或 done/total（大小未知时）推导百分比。 */
 export function computePercent(s: ProgressSnapshot): number {
-  if (s.totalBytes > 0) return Math.min(100, Math.round((s.doneBytes / s.totalBytes) * 100))
-  if (s.total > 0) return Math.min(100, Math.round((s.done / s.total) * 100))
+  /*
+   * 上下界都要夹。上界：分母可能漏计（历史 bug 导致 476MB/731KB → 133273%）。
+   * 下界：镜像回退 / 重下时 doneBytes 会短时回退到负增量，不夹会算出负数百分比。
+   */
+  const clamp = (n: number): number => Math.max(0, Math.min(100, Math.round(n)))
+  if (s.totalBytes > 0) return clamp((s.doneBytes / s.totalBytes) * 100)
+  if (s.total > 0) return clamp((s.done / s.total) * 100)
   return 0
 }

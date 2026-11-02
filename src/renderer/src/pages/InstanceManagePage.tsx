@@ -42,6 +42,8 @@ export function InstanceManagePage({
 
   const [tab, setTab] = useState<Tab>('mods')
   const [loader, setLoader] = useState<string | null | undefined>(undefined)
+  /** 实例的基础原版版本：加载器要装在它之上，由已安装列表解析得到。 */
+  const [mcVersion, setMcVersion] = useState<string>('')
   const [mods, setMods] = useState<ModEntry[]>([])
   const [loadingMods, setLoadingMods] = useState(true)
   const [worlds, setWorlds] = useState<string[]>([])
@@ -83,6 +85,11 @@ export function InstanceManagePage({
   const [shaderLoader, setShaderLoader] = useState<string>('iris')
 
   const isVanilla = loader === null
+  /**
+   * 实例所属版本目录。加载器 profile 必须写进**同一个目录**，
+   * 否则新实例会出现在别的版本目录里，用户在当前列表里找不到它。
+   */
+  const targetDirId = settings.selectedVersionDirId || 'default'
 
   const tabOptions = useMemo<Array<{ value: Tab; label: string }>>(() => {
     // 资源包原版就能用，所以原版实例也保留这一页；光影 / 投影 / 模组只有装了加载器才有意义
@@ -123,6 +130,8 @@ export function InstanceManagePage({
       setShaders(shaderList)
       setSchematics(schematicList)
       setLoader(entryLoader)
+      // 加载器安装在 mcVersion 之上；vanilla 实例的 mcVersion 就是其自身版本号。
+      setMcVersion(entry?.mcVersion || versionId)
       if (entryLoader) setLoaderSel((prev) => (prev === 'fabric' ? entryLoader : prev))
       if (entry?.mcVersion) setMcSel((prev) => prev || entry.mcVersion)
     } finally {
@@ -481,6 +490,18 @@ export function InstanceManagePage({
         {tab === 'version' && (
           <VersionPanel
             versionId={versionId}
+            mcVersion={mcVersion}
+            loader={loader}
+            dirId={targetDirId}
+            onLoaderInstalled={() => {
+              /*
+               * 就地安装：实例本身没变（id / 目录 / 存档都不动），
+               * 只要重新读一次元数据 —— loader 从 null 变为非 null，
+               * 装配入口自动消失，模组 / 光影等页签随之出现。
+               */
+              setNotice(t('ins.loader.done', { name: versionId }))
+              void reload()
+            }}
             disabled={disabled}
             deleting={deleting}
             renaming={renaming}

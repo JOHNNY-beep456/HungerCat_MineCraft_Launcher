@@ -85,6 +85,23 @@ export function ResourceDownloadPage({
   const [tab, setTab] = useState<Tab>(initialTab ?? 'mod')
   const { t } = useApp()
 
+  /*
+   * 模组/资源包/光影/整合包 ⇄ 版本：按 key 切换做淡入 + 轻微 y/scale 入场。
+   * 这里只做入场、不用 AnimatePresence 的 mode="wait" 退场——退场会延后新视图
+   * 挂载，若退场期间子视图持续重渲染，内容区会长时间空白。
+   */
+  const content = (
+    <motion.div
+      key={tab}
+      className="h-full"
+      initial={{ opacity: 0, y: 10, scale: 0.995 }}
+      animate={{ opacity: 1, y: 0, scale: 1 }}
+      transition={{ type: 'spring', bounce: 0, duration: 0.3 }}
+    >
+      {tab === 'versions' ? <VersionsPage presetSearch={presetSearch} /> : <Browser key={tab} type={tab} />}
+    </motion.div>
+  )
+
   return (
     <div className="flex h-full flex-col gap-5">
       <div className="flex flex-wrap items-end justify-between gap-3">
@@ -95,20 +112,7 @@ export function ResourceDownloadPage({
         <Segmented value={tab} onChange={setTab} options={TABS.map((x) => ({ value: x.value, label: t(x.labelKey) }))} />
       </div>
 
-      <div className="min-h-0 flex-1">
-        {/* 模组/资源包/光影/整合包 ⇄ 版本：按 key 切换做淡入 + 轻微 y/scale 入场。
-            这里只做入场、不用 AnimatePresence 的 mode="wait" 退场——退场会延后新视图
-            挂载，若退场期间子视图持续重渲染，内容区会长时间空白。 */}
-        <motion.div
-          key={tab}
-          className="h-full"
-          initial={{ opacity: 0, y: 10, scale: 0.995 }}
-          animate={{ opacity: 1, y: 0, scale: 1 }}
-          transition={{ type: 'spring', bounce: 0, duration: 0.3 }}
-        >
-          {tab === 'versions' ? <VersionsPage presetSearch={presetSearch} /> : <Browser key={tab} type={tab} />}
-        </motion.div>
-      </div>
+      <div className="min-h-0 flex-1">{content}</div>
     </div>
   )
 }

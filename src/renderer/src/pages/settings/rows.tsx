@@ -5,16 +5,18 @@
  * 具体控件。这样「板块的顺序与存在性」仍由注册表决定，只有交互复杂的一行才需要写组件。
  * 组件键与 `LauncherSettings` 字段名一一对应（见文件末尾的 `CUSTOM_ROWS`）。
  */
-import { useEffect, useRef, useState, type CSSProperties } from 'react'
+import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import { AnimatePresence, motion } from 'motion/react'
 import { createPortal } from 'react-dom'
 import type { JavaRuntime, LauncherSettings } from '@shared/types'
+import { isPccl2Skin, skinTakesOver } from '@shared/settings'
 import { useApp } from '../../store'
 import { Button, Checkbox, Icon, Segmented, Select, Switch } from '../../components/ui'
 import { dataUrlToBlobUrl } from '../../wallpaper'
 import { LOCALES } from '../../i18n'
 import { Row } from './parts'
 import { GithubSkinPreview } from './GithubSkinPreview'
+import { Pccl2ComponentRow } from './Pccl2ComponentRow'
 
 /* ================================================================== */
 /* 外观：强调色 / 背景 / 壁纸                                          */
@@ -46,15 +48,36 @@ function LanguageRow(): JSX.Element {
   )
 }
 
+/**
+ * 皮肤接管某类外观设置时的统一样式：整块降到半透明，并在行内给出原因。
+ *
+ * 为什么必须提示而不是只置灰：主题色 / 背景 / 壁纸可能被**任一**皮肤接管
+ * （见 @shared/settings 的 SKIN_LOCKS），只置灰会让用户以为「设置坏了」。
+ */
+function LockedWrap({ locked, children }: { locked: boolean; children: ReactNode }): JSX.Element {
+  return (
+    <div
+      className="flex items-center gap-2"
+      style={{ opacity: locked ? 0.45 : 1, pointerEvents: locked ? 'none' : undefined }}
+      aria-disabled={locked || undefined}
+    >
+      {children}
+    </div>
+  )
+}
+
 function AccentRow(): JSX.Element {
   const { settings, updateSettings, t } = useApp()
+  // 自带主色的皮肤（github / minecraft / winui2 / winui3 / pccl2）会覆盖 --fill-primary
+  const locked = skinTakesOver(settings).accent
   return (
-    <Row label={t('settings.row.accent')}>
-      <div className="flex items-center gap-2">
+    <Row label={t('settings.row.accent')} desc={locked ? t('settings.skin.locked') : undefined}>
+      <LockedWrap locked={locked}>
         {ACCENTS.map((c) => (
           <button
             key={c}
             onClick={() => void updateSettings({ accentColor: c })}
+            disabled={locked}
             className="h-6 w-6 rounded-full border-2 no-drag"
             style={{ background: c, borderColor: settings.accentColor === c ? 'var(--text-primary)' : 'transparent' }}
           />
@@ -62,24 +85,28 @@ function AccentRow(): JSX.Element {
         <input
           type="color"
           value={settings.accentColor}
+          disabled={locked}
           onChange={(e) => void updateSettings({ accentColor: e.target.value })}
           className="h-7 w-9 cursor-pointer rounded border-0 bg-transparent p-0 no-drag"
         />
-      </div>
+      </LockedWrap>
     </Row>
   )
 }
 
 function BackgroundRow(): JSX.Element {
   const { settings, updateSettings, theme, t } = useApp()
+  // 固定/隐藏整窗背景的皮肤（github / material / minecraft / winui2 / winui3 / win10 / pccl2）
+  const locked = skinTakesOver(settings).background
   return (
-    <Row label={t('settings.row.background')}>
-      <div className="flex items-center gap-2">
+    <Row label={t('settings.row.background')} desc={locked ? t('settings.skin.locked') : undefined}>
+      <LockedWrap locked={locked}>
         {BACKGROUNDS.map((b) => (
           <button
             key={b.key}
             title={t(b.label)}
             onClick={() => void updateSettings({ background: b.key })}
+            disabled={locked}
             className="h-8 w-8 rounded-xl border-2 no-drag"
             style={{
               background: `linear-gradient(135deg, ${(theme === 'light' ? b.lightColors : b.colors).join(',')})`,
@@ -87,7 +114,7 @@ function BackgroundRow(): JSX.Element {
             }}
           />
         ))}
-      </div>
+      </LockedWrap>
     </Row>
   )
 }
@@ -151,8 +178,11 @@ function WallpaperRow(): JSX.Element {
 
   return (
     <>
-      <Row label={t('settings.row.wallpaper')}>
-        <div className="flex items-center gap-2">
+      <Row
+        label={t('settings.row.wallpaper')}
+        desc={skinTakesOver(settings).background ? t('settings.skin.locked') : undefined}
+      >
+        <LockedWrap locked={skinTakesOver(settings).background}>
           {preview && (
             <img
               src={preview}
@@ -161,7 +191,12 @@ function WallpaperRow(): JSX.Element {
               style={{ border: '1px solid var(--divider)' }}
             />
           )}
-          <Button size="sm" icon="folder" disabled={busy} onClick={() => void choose()}>
+          <Button
+            size="sm"
+            icon="folder"
+            disabled={busy || skinTakesOver(settings).background}
+            onClick={() => void choose()}
+          >
             {busy
               ? t('settings.wallpaper.processing')
               : settings.backgroundImage
@@ -169,11 +204,17 @@ function WallpaperRow(): JSX.Element {
                 : t('settings.wallpaper.choose')}
           </Button>
           {settings.backgroundImage && (
-            <Button size="sm" variant="ghost" icon="xmark" disabled={busy} onClick={() => void remove()}>
+            <Button
+              size="sm"
+              variant="ghost"
+              icon="xmark"
+              disabled={busy || skinTakesOver(settings).background}
+              onClick={() => void remove()}
+            >
               {t('settings.wallpaper.clear')}
             </Button>
           )}
-        </div>
+        </LockedWrap>
       </Row>
       {error && (
         <div className="glass-soft rounded-xl p-3 text-[13px]" style={{ color: 'var(--fill-danger)' }}>
@@ -571,7 +612,17 @@ export function UapisKeyRow(): JSX.Element {
 function SkinThemeRow(): JSX.Element {
   const { settings, updateSettings, t } = useApp()
   const flatMode = settings.mode === 'minimal'
-  const skin = settings.experimental === 'win10' ? 'off' : settings.experimental
+  const skin = settings.experimental === 'win10' || settings.experimental === 'pccl2' ? 'off' : settings.experimental
+  const [nativeError, setNativeError] = useState('')
+  const chooseSkin = async (value: string): Promise<void> => {
+    setNativeError('')
+    if (value === 'pccl2') {
+      try { await window.api.pccl2.open() }
+      catch (e) { setNativeError(e instanceof Error ? e.message : String(e)) }
+      return
+    }
+    await updateSettings({ experimental: value as LauncherSettings['experimental'] })
+  }
 
   return (
     <>
@@ -579,7 +630,7 @@ function SkinThemeRow(): JSX.Element {
         <Select
           value={skin}
           disabled={flatMode}
-          onChange={(v) => void updateSettings({ experimental: v as LauncherSettings['experimental'] })}
+          onChange={(v) => void chooseSkin(v)}
           className="w-[280px] max-w-[65%]"
           options={[
             { value: 'off', label: t('settings.skin.flat') },
@@ -590,10 +641,13 @@ function SkinThemeRow(): JSX.Element {
             { value: 'github', label: t('settings.row.github') },
             { value: 'winui3', label: t('settings.row.winui3') },
             { value: 'winui2', label: t('settings.row.winui2') },
-            { value: 'minecraft', label: t('settings.row.minecraft') }
+            { value: 'minecraft', label: t('settings.row.minecraft') },
+            { value: 'pccl2', label: t('settings.row.pccl2'), disabled: window.api.platform !== 'win32' }
           ]}
         />
       </Row>
+      {nativeError && <p role="alert" className="caption" style={{ color: 'var(--fill-danger)' }}>{nativeError}</p>}
+      <Pccl2ComponentRow />
       {/* Material Design 3 的风格类型：只有启用 M3 皮肤时才出现（极简下不生效，隐藏）。 */}
       {!flatMode && settings.experimental === 'material' && (
         <>
