@@ -57,6 +57,7 @@ const virtual = new Map([
   ['../handlers/launch', `export const launchGame = async (ctx,opts,emit,progress) => { emit({state:'downloading'}); progress({percent:50}); emit({state:'launching'}); return {pid:12345}; }; export const stopGame = () => true;`],
   ['./resource-metadata', `export const nativeResourceMetadata = async () => ({hits:[],total_hits:0});`],
   ['../secret', `export const getCurseforgeKey = () => ''; export const setCurseforgeKey = () => null;`],
+  ['../curseforge-key', `export const defaultCurseforgeKey = () => 'TEST_KEY_ONLY';`],
   ['../store', `export const settings = globalThis.__pccl2Settings; export const accounts = globalThis.__pccl2Accounts; export const createOfflineAccount = name => ({id:'offline-'+name,name,authType:'offline'}); export const activeGameDir = () => '/game'; export const allVersionDirs = () => ['default'];`],
   ['../versions', `export const fetchVersionManifest = async () => ({ versions: [] }); export const resolveVersionJson = async (id) => ({ id });`],
   ['../installed', `export const listInstalled = async () => globalThis.__pccl2State.installed;`],

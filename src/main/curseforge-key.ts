@@ -1,7 +1,10 @@
 import { getCurseforgeKey } from './secret'
 
-// 开源仓库不得包含 CurseForge API Key。
-// 优先使用本机加密配置，分发环境也可显式注入环境变量。
+declare const __HCMCL_BUNDLED_CURSEFORGE_KEY__: string
+
+// 实际默认值由 electron-vite 从 Git 忽略的本地文件注入主进程构建。
+// 用户加密配置优先，其次运行环境覆盖，最后使用分发版自带的 Key。
 export function defaultCurseforgeKey(): string {
-  return getCurseforgeKey() || process.env.HCMCL_CURSEFORGE_API_KEY?.trim() || ''
+  const bundled = typeof __HCMCL_BUNDLED_CURSEFORGE_KEY__ === 'string' ? __HCMCL_BUNDLED_CURSEFORGE_KEY__ : ''
+  return getCurseforgeKey() || process.env.HCMCL_CURSEFORGE_API_KEY?.trim() || bundled
 }

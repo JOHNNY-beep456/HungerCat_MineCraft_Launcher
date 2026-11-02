@@ -2,9 +2,18 @@ import { defineConfig, externalizeDepsPlugin } from 'electron-vite'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 import { resolve } from 'path'
+import { existsSync, readFileSync } from 'node:fs'
+
+// 只在构建配置中读取本地凭据，源码仓库不携带实际 Key。
+const localKeyPath = resolve('.local/curseforge-api-key.txt')
+const bundledCurseforgeKey = process.env.HCMCL_CURSEFORGE_BUILD_KEY?.trim()
+  || (existsSync(localKeyPath) ? readFileSync(localKeyPath, 'utf8').trim() : '')
 
 export default defineConfig({
   main: {
+    define: {
+      __HCMCL_BUNDLED_CURSEFORGE_KEY__: JSON.stringify(bundledCurseforgeKey)
+    },
     plugins: [externalizeDepsPlugin()],
     resolve: {
       alias: {

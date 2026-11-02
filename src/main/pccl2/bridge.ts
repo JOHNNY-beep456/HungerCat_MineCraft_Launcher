@@ -15,7 +15,8 @@ import { searchResources, resolveVersionsFor, resolveProjectDetail } from '../so
 import { getComponentStatus, installComponent, getInstalledExecutable, ensureDotNet48 } from './component'
 import { nativeInstallResource } from './resources'
 import { nativeResourceMetadata } from './resource-metadata'
-import { getCurseforgeKey, setCurseforgeKey } from '../secret'
+import { setCurseforgeKey } from '../secret'
+import { defaultCurseforgeKey } from '../curseforge-key'
 import type { LaunchOptions, LauncherSettings } from '@shared/types'
 
 const MAX_FRAME = 1024 * 1024
@@ -260,7 +261,7 @@ export function registerPccl2Handlers(ctx: IpcContext): Pccl2Bridge {
         if (!detail || typeof detail.slug !== 'string') throw new Error('project not found')
         return resolveVersionsFor(detail.slug, detail.source, (p as any).type ?? 'mod', (p as any).loader ? [stringField((p as any).loader, 'loader')] : [], (p as any).mcVersion ? [stringField((p as any).mcVersion, 'mcVersion')] : [])
       }
-      case 'resources.keyStatus': return { configured: !!getCurseforgeKey() || !!process.env.HCMCL_CURSEFORGE_API_KEY }
+      case 'resources.keyStatus': return { configured: !!defaultCurseforgeKey() }
       case 'resources.setKey': {
         const key = (p as any).key
         if (typeof key !== 'string' || key.length > 512) throw new Error('invalid CurseForge key')

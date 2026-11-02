@@ -1,4 +1,6 @@
 node_modules
+# 本地构建凭据：可嵌入分发版，但绝不提交。
+/.local/
 out
 dist
 release

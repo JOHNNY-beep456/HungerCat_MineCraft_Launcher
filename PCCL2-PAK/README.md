@@ -33,7 +33,7 @@ https://你的域名/你的目录/manifest.json
 - 实例页点击“启动”先返回“启动”页，再调用 HCMCL 启动服务并显示依赖下载、启动及错误流程。
 - 首次打开显示“本组件基于PCL2开源代码编写，以遵循其协议”，确认后记录已读状态。
 - 社区资源元数据按 Modrinth / CurseForge 原始 API 格式透传，搜索不再被误识别成项目详情。
-- CurseForge Key 不包含在公开源码中；可在资源搜索页的密码输入框安全保存到本机加密存储，或用 `HCMCL_CURSEFORGE_API_KEY` 环境变量配置。Modrinth 无需 Key。
+- CurseForge Key 单独存于 Git 忽略的 `.local/curseforge-api-key.txt`，构建时注入主进程，分发版仍自带默认 Key；公开仓库不包含该私有文件。也可用 `HCMCL_CURSEFORGE_BUILD_KEY` 配置构建值。用户在资源页加密保存的 Key 优先，其次为运行时环境变量 `HCMCL_CURSEFORGE_API_KEY`，最后使用分发版默认值。Modrinth 无需 Key。
 - `tools/`、`runtime/`、编译缓存和构建产物不进入 Git。构建需要 .NET SDK（依赖库）和包含 .NET Framework 4.8 开发工具的桌面 MSBuild；发布组件时另行准备微软官方离线运行时安装程序。
 
 ## 来源与署名
