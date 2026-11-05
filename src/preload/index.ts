@@ -48,14 +48,6 @@ function subscribe<T>(channel: string): (cb: (payload: T) => void) => () => void
 
 const api: LauncherApi = {
   platform: process.platform,
-  pccl2: {
-    status: () => ipcRenderer.invoke('pccl2:status'),
-    install: () => ipcRenderer.invoke('pccl2:install'),
-    open: () => ipcRenderer.invoke('pccl2:open'),
-    restore: () => ipcRenderer.invoke('pccl2:restore'),
-    onProgress: subscribe<{ phase: string; received?: number; total?: number }>('pccl2:progress'),
-    onNavigate: subscribe<{ page: string; versionId?: string }>('pccl2:navigate')
-  },
   getVersion: () => ipcRenderer.invoke('app:version'),
   hardwareAccelerationBooted: () => ipcRenderer.invoke('app:hardwareAccelerationBooted'),
   relaunch: () => ipcRenderer.invoke('app:relaunch'),

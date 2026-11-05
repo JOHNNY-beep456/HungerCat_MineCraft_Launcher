@@ -1,6 +1,0 @@
-<Project>
-  <PropertyGroup Condition="'$(MSBuildProjectExtension)' == '.vbproj'">
-    <_PresentationBuildTasksAssembly>C:\Windows\Microsoft.NET\Framework\v4.0.30319\WPF\PresentationBuildTasks.dll</_PresentationBuildTasksAssembly>
-    <AlwaysCompileMarkupFilesInSeparateDomain>true</AlwaysCompileMarkupFilesInSeparateDomain>
-  </PropertyGroup>
-</Project>

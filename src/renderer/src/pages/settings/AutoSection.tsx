@@ -2,7 +2,6 @@ import { Fragment, type ReactNode } from 'react'
 import type { LauncherSettings } from '@shared/types'
 import {
   effectiveNavPosition,
-  isPccl2Skin,
   sectionFields,
   skinTakesOver,
   type SettingDisableWhen,
@@ -34,7 +33,6 @@ function isDisabled(when: SettingDisableWhen[] | undefined, s: LauncherSettings)
     if (c === 'local') return s.mode === 'local'
     if (c === 'autoThemeFromWallpaper') return s.autoThemeFromWallpaper
     if (c === 'autoTranslateOff') return !s.autoTranslateResources
-    if (c === 'pccl2Skin') return isPccl2Skin(s)
     // 皮肤接管了主色 / 背景时，对应设置不再生效（表见 @shared/settings 的 SKIN_LOCKS）
     if (c === 'accentLocked') return locks.accent
     if (c === 'backgroundLocked') return locks.background
@@ -106,11 +104,7 @@ export function AutoFields({ section }: { section: string }): JSX.Element {
         }
         const disabled = ui.disabled || isDisabled(ui.disableWhen, settings)
         const set = (v: unknown): void => void updateSettings({ [key]: v } as Partial<LauncherSettings>)
-        /*
-         * 显示值用「生效值」而不是原始设置值：PCCL2 皮肤会把导航栏位置强制为顶部，
-         * 若这里照 settings.navPosition 渲染，用户会看到置灰却显示「左侧」——与实际的
-         * 顶部布局自相矛盾。effectiveNavPosition 与 App 真正渲染导航时用的是同一个函数。
-         */
+        // 导航显示与实际渲染共用同一取值函数。
         const shown = key === 'navPosition' ? effectiveNavPosition(settings) : settings[key]
         return (
           <Fragment key={String(key)}>

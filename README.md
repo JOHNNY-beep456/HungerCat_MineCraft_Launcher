@@ -6,6 +6,16 @@
 
 ---
 
+## 当前版本：0.7.6-dev1
+
+- 新增 **PCL2 主题**：蓝色顶栏、白色侧栏、浅蓝渐变背景、小圆角卡片与描边控件，支持浅色和深色模式。可在「设置」的皮肤主题选项中切换。
+- 主题复用现有 Electron / React 页面和 HCMCL 业务接口，保留账号、下载、实例管理、内存调节及启动功能；导航位置仍遵循用户设置。
+- 修复启动面板中长版本名称挤压按钮的问题，版本选择与管理操作支持窄面板布局。
+- 移除旧 PCCL2 原生组件、组件安装入口和专用桥接接口；当前 PCL2 主题无需安装 WPF 组件或 .NET Framework。
+- 已生成 Windows x64 安装版与便携版：`HCMCL0.7.6-dev1-win-x64-setup.exe`、`HCMCL0.7.6-dev1-win-x64-portable.exe`。本地产物位于 `release/`，不随源码提交；公开发布以 [Releases](https://github.com/JOHNNY-beep456/HungerCat_MineCraft_Launcher/releases) 中实际上传的文件为准。
+
+本版本类型检查、生产构建、12 项自动回归脚本及 Windows 产物完整性检查通过。本机 Electron 存在启动即退出的环境限制，最新主题的实机外观、安装包安装和启动效果尚未验证；Windows 产物未签名。
+
 ## 功能特性
 
 | 模块 | 说明 |
@@ -87,12 +97,23 @@ npm run typecheck
 # 构建产物到 out/
 npm run build
 
-# 打包安装包
-npm run win           # Windows 安装包 (nsis) —— 等价于 dist:win
-npm run mac           # macOS dmg —— 等价于 dist:mac
-npm run dist          # 当前平台
-npm run dist:win      # Windows (nsis)
-npm run dist:mac      # macOS (dmg)
+# Windows x64：原生下载器、EasyTier、安装版和便携版
+node scripts/build-all.mjs --platform win --arch x64
+
+# 已安装依赖时可跳过安装步骤
+node scripts/build-all.mjs --platform win --arch x64 --skip-install
+
+# Windows 全架构（arm64 原生下载器不可用时降级为 TS 下载器）
+node scripts/build-all.mjs --platform win --arch all
+
+# 仅对当前构建环境执行 Electron 打包
+npm run dist:win
+
+# 自动回归（不包含需真实媒体会话的 SMTC live 检查）
+node scripts/verify-publication.mjs
+
+# 检查 Windows 产物完整性标签
+node scripts/fix-artifact-integrity.mjs --check
 ```
 
 > 项目已内置 `.npmrc`，Electron 与 electron-builder 二进制默认从
@@ -100,7 +121,7 @@ npm run dist:mac      # macOS (dmg)
 > 若仍处于 TLS 拦截代理环境导致证书校验失败，可再设置
 > `$env:NODE_OPTIONS="--use-system-ca"` 后重新 `npm install`。
 
-打包（`npm run dist:win` / `dist:mac`）所需的 NSIS、winCodeSign 等组件同样走
+Windows 打包所需的 NSIS、winCodeSign 等组件同样走
 `electron_builder_binaries_mirror`（已在 `.npmrc` 配置）。若需临时切换镜像，可在命令前设置环境变量：
 
 ```bash

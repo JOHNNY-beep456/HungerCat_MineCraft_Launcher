@@ -317,7 +317,7 @@ export const settings = {
     s.gameDirAbs = resolvePortablePath(s.gameDir)
     // 旧版本有独立的「原毛玻璃」实验项（'glass'），现已取消并成为默认观感，
     // 读到旧值时归一为 'off'，避免落到一个已不存在的皮肤上。
-    if ((s.experimental as string) === 'glass') s.experimental = 'off'
+    if (!['off', 'mica', 'mac', 'frosted', 'material', 'github', 'winui2', 'winui3', 'minecraft', 'pcl2', 'win10', 'google'].includes(s.experimental)) s.experimental = 'off'
     // 导航栏位置：非法 / 手改坏的取值回落到默认的左侧竖栏。
     if (!['top', 'bottom', 'left', 'right'].includes(s.navPosition)) s.navPosition = 'left'
     // 关闭按钮行为：非三者之一（旧配置没有这一项 / 手改坏）时回落到「每次询问」。

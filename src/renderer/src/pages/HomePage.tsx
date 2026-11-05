@@ -222,7 +222,7 @@ export function HomePage({ onManage }: { onManage?: (versionId: string) => void 
   }
 
   return (
-    <div className="flex h-full flex-col gap-5">
+    <div className="launch-home flex h-full flex-col gap-5">
       <div className="flex items-end justify-between">
         <div>
           {/* 版本号贴在标题左上角：反馈问题时用户能直接照着念，
@@ -254,12 +254,12 @@ export function HomePage({ onManage }: { onManage?: (versionId: string) => void 
           这里加一圈内边距 + 等量负外边距：内容区大小与位置完全不变，只把裁剪边界向外挪，
           给面板投影留出渲染空间（左右各 8px、底部 20px，正好落在 main 的内边距里）。 */}
       <div
-        className={`grid flex-1 grid-cols-1 gap-5 overflow-hidden px-2 pb-5 -mx-2 -mb-5 ${
+        className={`launch-grid grid flex-1 grid-cols-1 gap-5 overflow-hidden px-2 pb-5 -mx-2 -mb-5 ${
           showModel ? 'lg:grid-cols-[1.4fr_1fr]' : settings.debugMode ? 'lg:grid-cols-[1.1fr_1fr]' : ''
         }`}
       >
         {/* Left: controls */}
-        <div className="glass flex flex-col gap-5 rounded-[28px] p-6">
+        <div className="launch-controls glass flex flex-col gap-5 rounded-[28px] p-6">
           {/* 版本目录：版本列表与启动落点都以当前选中的版本目录为准 */}
           <div className="glass-soft flex items-center gap-3 rounded-2xl px-3 py-2">
             <Icon name="folder" size={15} className="shrink-0 opacity-60" />
@@ -275,8 +275,8 @@ export function HomePage({ onManage }: { onManage?: (versionId: string) => void 
             />
           </div>
 
-          <div className="flex items-center justify-between">
-            <div>
+          <div className="launch-version-row flex items-center justify-between">
+            <div className="launch-version-summary">
               <div className="headline">{t('home.gameVersion')}</div>
               <div className="caption">
                 {current
@@ -284,10 +284,10 @@ export function HomePage({ onManage }: { onManage?: (versionId: string) => void 
                   : t('home.noVersion')}
               </div>
             </div>
-            <div className="flex items-center gap-2">
-              <div className="relative">
-                <Button icon="cube" onClick={() => setPickerOpen((v) => !v)}>
-                  {versionId || t('home.selectVersion')}
+            <div className="launch-version-actions flex items-center gap-2">
+              <div className="launch-version-picker relative">
+                <Button className="launch-version-trigger" title={versionId || t('home.selectVersion')} icon="cube" onClick={() => setPickerOpen((v) => !v)}>
+                  <span className="launch-version-label">{versionId || t('home.selectVersion')}</span>
                   <Icon name="chevronRight" size={15} className="rotate-90" />
                 </Button>
                 <AnimatePresence>
@@ -463,7 +463,7 @@ export function HomePage({ onManage }: { onManage?: (versionId: string) => void 
         {(showModel || settings.debugMode) && (
           <div className="flex min-h-0 flex-col gap-5">
             {showModel && (
-              <div className="glass flex min-h-0 flex-1 items-center justify-center rounded-[28px] p-5">
+              <div className="launch-model glass flex min-h-0 flex-1 items-center justify-center rounded-[28px] p-5">
                 <PlayerModel3D
                   name={selectedAccount?.name}
                   uuid={selectedAccount?.id}

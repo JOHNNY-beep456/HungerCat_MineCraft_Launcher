@@ -32,22 +32,4 @@ scripts/_*.out.txt
 /*.exe
 # 本地会话记录草稿（历次排障 / 实现的对话日志，非项目文档）。
 /修复资源下载与实例匹配问题.md
-# PCCL2：仅提交源码、资源和许可，不提交下载工具链、运行时安装器与构建缓存。
-/PCCL2-PAK/tools/
-/PCCL2-PAK/runtime/
-/PCCL2-PAK/src/artifacts/
-/PCCL2-PAK/reference/full-upstream/
-/PCCL2-PAK/**/bin/
-/PCCL2-PAK/**/obj/
-/PCCL2-PAK/**/*.user
-/PCCL2-PAK/**/*.suo
-/PCCL2-PAK/**/hcmcl-*.txt
-/PCCL2-PAK/_*.py
-/PCCL2-PAK/apply-*.py
-/PCCL2-PAK/repair-*.py
-/PCCL2-PAK/connect-*.py
 *.binlog
-/PCCL2-PAK/reference/*.tar.gz
-/PCCL2-PAK/reference/upstream/full/
-/PCCL2-PAK/src/PclFrontend/upstream/.github/
-/PCCL2-PAK/src/PclFrontend/upstream/MeloongCore/.agents/

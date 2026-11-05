@@ -9,14 +9,13 @@ import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from 
 import { AnimatePresence, motion } from 'motion/react'
 import { createPortal } from 'react-dom'
 import type { JavaRuntime, LauncherSettings } from '@shared/types'
-import { isPccl2Skin, skinTakesOver } from '@shared/settings'
+import { skinTakesOver } from '@shared/settings'
 import { useApp } from '../../store'
 import { Button, Checkbox, Icon, Segmented, Select, Switch } from '../../components/ui'
 import { dataUrlToBlobUrl } from '../../wallpaper'
 import { LOCALES } from '../../i18n'
 import { Row } from './parts'
 import { GithubSkinPreview } from './GithubSkinPreview'
-import { Pccl2ComponentRow } from './Pccl2ComponentRow'
 
 /* ================================================================== */
 /* 外观：强调色 / 背景 / 壁纸                                          */
@@ -68,7 +67,7 @@ function LockedWrap({ locked, children }: { locked: boolean; children: ReactNode
 
 function AccentRow(): JSX.Element {
   const { settings, updateSettings, t } = useApp()
-  // 自带主色的皮肤（github / minecraft / winui2 / winui3 / pccl2）会覆盖 --fill-primary
+  // 自带主色的皮肤（github / minecraft / winui2 / winui3）会覆盖 --fill-primary
   const locked = skinTakesOver(settings).accent
   return (
     <Row label={t('settings.row.accent')} desc={locked ? t('settings.skin.locked') : undefined}>
@@ -96,7 +95,7 @@ function AccentRow(): JSX.Element {
 
 function BackgroundRow(): JSX.Element {
   const { settings, updateSettings, theme, t } = useApp()
-  // 固定/隐藏整窗背景的皮肤（github / material / minecraft / winui2 / winui3 / win10 / pccl2）
+  // 固定/隐藏整窗背景的皮肤（github / material / minecraft / winui2 / winui3 / win10）
   const locked = skinTakesOver(settings).background
   return (
     <Row label={t('settings.row.background')} desc={locked ? t('settings.skin.locked') : undefined}>
@@ -612,15 +611,8 @@ export function UapisKeyRow(): JSX.Element {
 function SkinThemeRow(): JSX.Element {
   const { settings, updateSettings, t } = useApp()
   const flatMode = settings.mode === 'minimal'
-  const skin = settings.experimental === 'win10' || settings.experimental === 'pccl2' ? 'off' : settings.experimental
-  const [nativeError, setNativeError] = useState('')
+  const skin = settings.experimental === 'win10' ? 'off' : settings.experimental
   const chooseSkin = async (value: string): Promise<void> => {
-    setNativeError('')
-    if (value === 'pccl2') {
-      try { await window.api.pccl2.open() }
-      catch (e) { setNativeError(e instanceof Error ? e.message : String(e)) }
-      return
-    }
     await updateSettings({ experimental: value as LauncherSettings['experimental'] })
   }
 
@@ -642,12 +634,10 @@ function SkinThemeRow(): JSX.Element {
             { value: 'winui3', label: t('settings.row.winui3') },
             { value: 'winui2', label: t('settings.row.winui2') },
             { value: 'minecraft', label: t('settings.row.minecraft') },
-            { value: 'pccl2', label: t('settings.row.pccl2'), disabled: window.api.platform !== 'win32' }
+            { value: 'pcl2', label: t('settings.row.pcl2') },
           ]}
         />
       </Row>
-      {nativeError && <p role="alert" className="caption" style={{ color: 'var(--fill-danger)' }}>{nativeError}</p>}
-      <Pccl2ComponentRow />
       {/* Material Design 3 的风格类型：只有启用 M3 皮肤时才出现（极简下不生效，隐藏）。 */}
       {!flatMode && settings.experimental === 'material' && (
         <>

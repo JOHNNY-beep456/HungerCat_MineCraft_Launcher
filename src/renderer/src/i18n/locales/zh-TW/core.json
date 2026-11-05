@@ -9,7 +9,6 @@
   "nav.settings": "設定",
   "nav.feedback": "回饋",
   "nav.about": "關於",
-  "pccl2.more": "更多",
   "titlebar.doubleClickHint": "雙擊開啟新手引導",
   "sidebar.localMode": "本地模式",
   "sidebar.minimalMode": "極簡模式",
@@ -254,7 +253,7 @@
   "settings.row.winui3": "WinUI 3 風格（Win11）",
   "settings.row.winui2": "WinUI 2 風格（Win10）",
   "settings.row.minecraft": "我的世界風格",
-  "settings.row.pccl2": "PCCL2 原生元件（Windows x64）",
+  "settings.row.pcl2": "PCL2主題",
   "settings.skin.locked": "目前主題已接管此項，切換其它主題後可修改",
   "settings.exp.github.system": "跟隨主題",
   "settings.exp.github.light": "Light",
@@ -346,14 +345,5 @@
   "settings.common.cancel": "取消",
   "settings.updLog.title": "發現新版本 v{v}",
   "settings.updLog.notes": "更新日誌",
-  "settings.updLog.empty": "暫無更新日誌。",
-  "pccl2.component.title": "PCCL2 原生元件（Windows x64）",
-  "pccl2.component.description": "安裝後可離線使用；更新時重新取得清單。關閉原生視窗可返回啟動器。",
-  "pccl2.component.missing": "未安裝",
-  "pccl2.component.windows": "僅支援 Windows x64",
-  "pccl2.component.url": "元件清單 HTTPS 網址",
-  "pccl2.component.install": "安裝 / 更新元件",
-  "pccl2.component.open": "開啟原生介面",
-  "pccl2.component.working": "正在處理…",
-  "pccl2.component.https": "元件網址必須使用 HTTPS"
+  "settings.updLog.empty": "暫無更新日誌。"
 }

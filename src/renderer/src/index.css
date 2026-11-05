@@ -4358,5 +4358,236 @@ textarea.input {
     0 32px 64px -32px rgba(0, 0, 0, 0.45);
 }
 
-
-/* ------------------------------------------------------------------ */
+/* PCL2主题：参考上游 48px 蓝标题栏、小圆角描边按钮与白色卡片。
+   独立作用域保证退出主题后恢复原皮肤；不改业务事件。 */
+[data-skin='pcl2'] {
+  --radius-control: 3px;
+  --radius-card: 6px;
+  --radius-full: 3px;
+  --surface-material: solid;
+  --surface-blur: none;
+  --surface-border-width: 1px;
+  --fill-primary: #087cf5;
+  --fill-primary-hover: #086cdb;
+  --fill-secondary: #edf5fb;
+  --fill-secondary-hover: #dfedf8;
+  --text-primary: #263b4b;
+  --text-secondary: #526979;
+  --text-tertiary: #6d7e8b;
+  --glass-bg: #ffffff;
+  --glass-bg-strong: #ffffff;
+  --glass-bg-soft: #f2f7fb;
+  --glass-border: #dce7ef;
+  --glass-highlight: transparent;
+  --surface-shade: none;
+  --surface-shade-inset: none;
+  --glass-shadow: 0 2px 7px #1b456318;
+  --glass-shadow-control: none;
+  --glass-shadow-well: none;
+  --control-raised-blur: none;
+  --control-well-blur: none;
+  --divider: #dce7ef;
+  --chip-bg: #e8f2fa;
+  --surface-flat: #ffffff;
+  --bg-flat: #d5e5f5;
+  --winbtn-radius: 3px;
+  --winbtn-hover-bg: #ffffff28;
+  --winbtn-hover-fg: #ffffff;
+  --status-pill-bg: #ffffff20;
+  --status-pill-fg: #ffffff;
+  --status-pill-radius: 3px;
+  --status-pill-shadow: none;
+  --pcl-title: #106dcc;
+}
+[data-skin='pcl2'][data-theme='dark'] {
+  --text-primary: #e0edf7;
+  --text-secondary: #b0c5d6;
+  --text-tertiary: #8fa8bc;
+  --glass-bg: #203343;
+  --glass-bg-strong: #253c4e;
+  --glass-bg-soft: #192d3e;
+  --glass-border: #395369;
+  --glass-shadow: 0 2px 7px #00000030;
+  --fill-primary: #66b5f2;
+  --fill-primary-hover: #82c6fa;
+  --fill-secondary: #2a455b;
+  --fill-secondary-hover: #34566f;
+  --divider: #395369;
+  --chip-bg: #2a455b;
+  --surface-flat: #203343;
+  --bg-flat: #152736;
+  --pcl-title: #125484;
+}
+[data-skin='pcl2'] .app-background {
+  background: linear-gradient(110deg, var(--bg-flat), color-mix(in srgb, var(--bg-flat) 82%, #bce9ee));
+}
+[data-skin='pcl2'] .app-sidebar {
+  padding: 12px 0;
+  gap: 12px;
+  background: var(--glass-bg);
+  border-inline-end: 1px solid var(--divider);
+}
+[data-skin='pcl2'] .app-sidebar > nav {
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  padding: 0 8px;
+}
+[data-skin='pcl2'] .app-sidebar nav button {
+  min-height: 38px;
+  padding: 8px 12px;
+  border-radius: 3px;
+}
+[data-skin='pcl2'] .app-sidebar nav button[aria-current='page'] {
+  color: var(--fill-primary) !important;
+}
+[data-skin='pcl2'] .app-sidebar nav button[aria-current='page']::before {
+  content: '';
+  position: absolute;
+  left: -8px;
+  top: 9px;
+  bottom: 9px;
+  width: 3px;
+  border-radius: 2px;
+  background: var(--fill-primary);
+}
+[data-skin='pcl2'] .app-sidebar > button {
+  margin: 0 10px;
+  border: 0;
+  box-shadow: none;
+  background: var(--glass-bg);
+}
+[data-skin='pcl2'] .app-topnav > nav {
+  background: var(--pcl-title);
+  border: 0;
+  color: white;
+}
+[data-skin='pcl2'] .app-topnav nav button { color: white !important; }
+[data-skin='pcl2'] .app-topnav nav button[aria-current='page'] {
+  color: var(--fill-primary) !important;
+  background: var(--glass-bg);
+  border-radius: 20px;
+}
+[data-skin='pcl2'] .app-topnav nav button[aria-current='page'] > .mica { background: transparent; }
+[data-skin='pcl2'] .launch-home { gap: 18px; }
+[data-skin='pcl2'] .launch-home > .launch-grid { min-height: 0; }
+[data-skin='pcl2'] .launch-grid > .launch-controls { border-radius: 0; box-shadow: none; }
+[data-skin='pcl2'] .launch-grid .launch-model {
+  background: transparent;
+  border: 0;
+  box-shadow: none;
+}
+[data-skin='pcl2'] .cursor-glow { display: none; }
+[data-skin='pcl2'] .titlebar-drag {
+  background: var(--pcl-title);
+  color: white;
+  padding-inline: 18px 10px;
+  box-shadow: 0 1px 4px #12395422;
+}
+[data-skin='pcl2'] .titlebar-drag .winbtn { color: white; }
+[data-skin='pcl2'] :is(.glass, .glass-strong, .glass-soft) {
+  border-radius: 6px;
+  background-image: none;
+  backdrop-filter: none;
+}
+[data-skin='pcl2'] :is(.mica, .mica-well) {
+  border-radius: 3px;
+  background: var(--fill-secondary);
+  background-image: none;
+  backdrop-filter: none;
+  box-shadow: none;
+}
+[data-skin='pcl2'] .glass::before { display: none; }
+[data-skin='pcl2'] .btn {
+  border: 1px solid var(--fill-primary);
+  border-radius: 3px;
+  font-size: 13px;
+  font-weight: 400;
+  box-shadow: none;
+}
+[data-skin='pcl2'] .btn-secondary { color: var(--fill-primary); background: var(--glass-bg); }
+[data-skin='pcl2'] .btn-secondary:hover:not(:disabled) { background: var(--fill-secondary); }
+[data-skin='pcl2'] .btn-primary { color: var(--glass-bg); }
+[data-skin='pcl2'] .btn-danger { border-color: var(--fill-danger); }
+[data-skin='pcl2'] .input {
+  border: 1px solid var(--glass-border);
+  border-radius: 3px;
+  background: var(--glass-bg);
+  box-shadow: none;
+  backdrop-filter: none;
+}
+[data-skin='pcl2'] .input:focus { border-color: var(--fill-primary); }
+[data-skin='pcl2'] :is(.chip, .select-seamless) { border-radius: 3px; }
+[data-skin='pcl2'] .display { font-size: 23px; font-weight: 400; letter-spacing: 0; }
+[data-skin='pcl2'] .title { font-size: 18px; font-weight: 500; }
+[data-skin='pcl2'] .headline { font-size: 14px; font-weight: 500; }
+[data-skin='pcl2'] .app-topnav { padding: 0; }
+[data-skin='pcl2'] .app-topnav > nav {
+  border-radius: 0;
+  border-width: 0 0 1px;
+  padding: 5px 12px;
+  box-shadow: none;
+}
+[data-skin='pcl2'] .app-topnav button { border-radius: 3px; }
+[data-skin='pcl2'] .launch-controls {
+  padding: 22px;
+  gap: 20px;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+[data-skin='pcl2'] .launch-controls > .glass-soft { border-radius: 3px; }
+[data-skin='pcl2'] .launch-controls > .mt-auto .btn-primary {
+  min-height: 54px;
+  color: var(--fill-primary);
+  background: var(--glass-bg);
+}
+[data-skin='pcl2'] .launch-controls > .mt-auto .btn-primary:hover:not(:disabled) {
+  background: var(--fill-secondary);
+}
+[data-skin='pcl2'] .launch-controls .select-seamless {
+  border: 1px solid var(--glass-border);
+  background: var(--glass-bg);
+}
+@media (min-width: 900px) {
+  [data-skin='pcl2'] .launch-home > .launch-grid {
+    grid-template-columns: minmax(300px, 360px) minmax(0, 1fr);
+    gap: 24px;
+  }
+}
+@media (max-width: 899px) {
+  [data-skin='pcl2'] .launch-home > .launch-grid { overflow-y: auto; }
+  [data-skin='pcl2'] .launch-controls { padding: 18px; gap: 16px; }
+}
+/* 窄启动面板分两行展示版本摘要与操作，避免按钮文字被挤成竖排。 */
+[data-skin='pcl2'] .launch-version-row {
+  flex-wrap: wrap;
+  gap: 12px;
+  min-width: 0;
+}
+[data-skin='pcl2'] .launch-version-summary {
+  flex: 1 1 100%;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+[data-skin='pcl2'] .launch-version-actions { width: 100%; min-width: 0; }
+[data-skin='pcl2'] .launch-version-picker { flex: 1 1 0; min-width: 0; }
+[data-skin='pcl2'] .launch-version-trigger { width: 100%; min-width: 0; }
+[data-skin='pcl2'] .launch-version-trigger svg { flex-shrink: 0; }
+[data-skin='pcl2'] .launch-version-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+[data-skin='pcl2'] .launch-version-actions > .btn { flex-shrink: 0; white-space: nowrap; }
+[data-skin='pcl2'] :is(button, input, [role='slider']):focus-visible {
+  outline: 2px solid var(--fill-primary);
+  outline-offset: 3px;
+}
+[data-skin='pcl2'] ::-webkit-scrollbar { width: 6px; height: 6px; }
+[data-skin='pcl2'] ::-webkit-scrollbar-thumb { background: #7e9bb477; border-radius: 3px; }
+@media (min-width: 1024px) {
+  [data-skin='pcl2'] .launch-grid { grid-template-columns: minmax(350px, 0.85fr) minmax(0, 1.4fr); }
+  [data-skin='pcl2'] .launch-controls:only-child { grid-column: 1 / -1; max-width: 640px; width: 100%; }
+}

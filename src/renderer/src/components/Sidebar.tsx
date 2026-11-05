@@ -68,7 +68,7 @@ export function Sidebar({
   const nav = visibleNav(settings)
 
   return (
-    <aside className={`flex h-full flex-col gap-3 p-4 ${side === 'left' ? 'pr-1' : 'pl-1'}`}>
+    <aside className={`app-sidebar flex h-full flex-col gap-3 p-4 ${side === 'left' ? 'pr-1' : 'pl-1'}`}>
       <nav className="glass-strong flex-1 rounded-[26px] p-2.5">
         <div className="flex flex-col gap-1">
           {nav.map((item) => {
@@ -78,6 +78,7 @@ export function Sidebar({
                 key={item.id}
                 id={`nav-${item.id}`}
                 onClick={() => onNavigate(item.id)}
+                aria-current={isActive ? 'page' : undefined}
                 className="relative flex items-center gap-3 rounded-[16px] px-3.5 py-2.5 text-left no-drag"
                 style={{ color: isActive ? 'var(--text-primary)' : 'var(--text-secondary)' }}
               >
@@ -162,7 +163,7 @@ export function TopNav({
   const nav = visibleNav(settings)
 
   return (
-    <div className={`shrink-0 px-4 ${side === 'top' ? 'pb-1 pt-3' : 'pb-3 pt-1'}`}>
+    <div className={`app-topnav shrink-0 px-4 ${side === 'top' ? 'pb-1 pt-3' : 'pb-3 pt-1'}`}>
       <nav className="glass-strong flex items-center gap-2 rounded-full p-2">
         <div className="no-scrollbar flex min-w-0 flex-1 items-center gap-1 overflow-x-auto">
           {nav.map((item) => {
@@ -172,6 +173,7 @@ export function TopNav({
                 key={item.id}
                 id={`nav-${item.id}`}
                 onClick={() => onNavigate(item.id)}
+                aria-current={isActive ? 'page' : undefined}
                 className="relative flex shrink-0 items-center gap-2 rounded-full px-3.5 py-2 no-drag"
                 style={{ color: isActive ? 'var(--text-primary)' : 'var(--text-secondary)' }}
               >

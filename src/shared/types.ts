@@ -369,8 +369,6 @@ export interface LaunchEvent {
 }
 
 export interface LauncherSettings {
-  /** Windows PCCL2 原生组件的 HTTPS 清单地址；空值表示尚未部署。 */
-  pccl2ManifestUrl: string
   theme: 'light' | 'dark' | 'system'
   /**
    * 界面语言 id（默认 `zh-CN`）。
@@ -592,9 +590,8 @@ export interface LauncherSettings {
     | 'winui2'
     | 'winui3'
     | 'minecraft'
+    | 'pcl2'
     | 'win10'
-    /** 仿 PCL2 的扁平蓝皮肤；会把导航强制为顶部并固定配色（见 @shared/settings 的 isPccl2Skin） */
-    | 'pccl2'
   /**
    * Material Design 3 风格类型（仅在 experimental = 'material' 时生效）：
    *   baseline   M3 静态基线配色（官方默认色板，表面不跟随主题色）
@@ -1762,14 +1759,6 @@ export interface FeedbackWithdrawResult {
 /** The API surface exposed to the renderer through the preload bridge. */
 export interface LauncherApi {
   platform: string
-  pccl2: {
-    status: () => Promise<{ supported: boolean; installed: boolean; version?: string; running?: boolean; error?: string }>
-    install: () => Promise<unknown>
-    open: () => Promise<unknown>
-    restore: () => Promise<unknown>
-    onProgress: (cb: (data: { phase: string; received?: number; total?: number }) => void) => () => void
-    onNavigate: (cb: (data: { page: string; versionId?: string }) => void) => () => void
-  }
   /** 当前启动器版本号。 */
   getVersion: () => Promise<string>
   /**

@@ -47,16 +47,6 @@ function Shell(): JSX.Element {
     setPage(p)
   }
 
-  // 原生窗口恢复 Electron 时复用原有页面及实例管理入口。
-  useEffect(() => window.api.pccl2.onNavigate((data) => {
-    const pages: PageId[] = ['home', 'homepage', 'resources', 'instances', 'multiplayer', 'downloads', 'accounts', 'settings', 'feedback', 'about']
-    if (!pages.includes(data.page as PageId)) return
-    setPage(data.page as PageId)
-    setManagingId(data.page === 'instances' && typeof data.versionId === 'string' ? data.versionId : null)
-    void reloadAccounts()
-    void reloadSettings()
-  }), [reloadAccounts, reloadSettings])
-
   // 更新下载进度：仅在弹窗内发起下载时用于显示进度条。
   useEffect(
     () =>

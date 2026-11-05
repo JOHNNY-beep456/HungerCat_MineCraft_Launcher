@@ -260,8 +260,7 @@ export function AppProvider({ children }: { children: ReactNode }): JSX.Element 
   // 无贴图（看起来就像背景模糊「没有立即成型」）。
   useLayoutEffect(() => {
     const exp = settings?.experimental ?? 'off'
-    // PCCL2 已迁移为独立 WPF 窗口；Electron 恢复页不加载旧网页主题。
-    const effective = settings?.mode === 'minimal' || exp === 'pccl2' ? 'off' : exp
+    const effective = settings?.mode === 'minimal' ? 'off' : exp
     const skin = effective === 'off' || effective === 'frosted' ? 'glass' : effective
     document.documentElement.dataset['skin'] = skin
     document.documentElement.dataset['frosted'] = effective === 'frosted' ? 'on' : 'off'
@@ -331,7 +330,7 @@ export function AppProvider({ children }: { children: ReactNode }): JSX.Element 
     const root = document.documentElement
     /*
      * 被皮肤接管背景时，壁纸不生效：这些皮肤的整窗背景是固定的纯色/材质
-     * （github / material / minecraft / winui2 / winui3 / win10 / pccl2，
+     * （github / material / minecraft / winui2 / winui3 / win10，
      *  判定表见 @shared/settings 的 SKIN_LOCKS）。
      *
      * 只把设置项置灰是不够的 —— CSS 里壁纸规则是

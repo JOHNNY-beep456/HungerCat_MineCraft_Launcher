@@ -27,7 +27,6 @@ export type SettingControl = 'number' | 'switch' | 'segmented' | 'select' | 'cus
  *   local                    当前为「本地」运行模式
  *   autoThemeFromWallpaper   开启了「随壁纸切主题」
  *   autoTranslateOff         关闭了「自动翻译」
- *   pccl2Skin                当前皮肤是 PCCL2：它按 PCL2 的布局固定为顶部导航
  *   accentLocked             当前皮肤自带主色（覆盖 --fill-primary），主题色不生效
  *   backgroundLocked         当前皮肤固定/隐藏了整窗背景，背景预设与壁纸不生效
  */
@@ -35,7 +34,6 @@ export type SettingDisableWhen =
   | 'local'
   | 'autoThemeFromWallpaper'
   | 'autoTranslateOff'
-  | 'pccl2Skin'
   | 'accentLocked'
   | 'backgroundLocked'
 
@@ -59,20 +57,14 @@ export const SKIN_LOCKS: Partial<Record<SkinId, { accent?: boolean; background?:
   minecraft: { accent: true, background: true },
   winui2: { accent: true, background: true },
   winui3: { accent: true, background: true },
-  win10: { background: true }
+  win10: { background: true },
+  pcl2: { accent: true, background: true }
 }
 
 /** 取某皮肤接管的项（未列出的皮肤表示两项都尊重用户设置）。 */
 export function skinLocks(skin: SkinId | undefined): { accent: boolean; background: boolean } {
   const l = (skin && SKIN_LOCKS[skin]) || {}
   return { accent: Boolean(l.accent), background: Boolean(l.background) }
-}
-
-/** 当前生效的皮肤是否为 PCCL2（多处共用同一判断，避免各写一遍字符串）。 */
-export function isPccl2Skin(s: Pick<LauncherSettings, 'experimental'>): boolean {
-  // 旧值保留用于配置迁移；PCCL2 界面现在由按需下载的 WPF 进程提供。
-  // Electron 页面不再进入旧的 CSS/React PCCL2 渲染分支。
-  return false
 }
 
 /**
@@ -89,14 +81,12 @@ export function skinTakesOver(s: Pick<LauncherSettings, 'experimental'>): {
 /**
  * 导航栏位置的实际生效值。
  *
- * PCCL2 按 PCL2 的布局固定为**顶部**导航（设置项在该皮肤下置灰），
- * 但**不改写用户设置**：切回其它皮肤后原来的位置自动恢复。
  * App（真正渲染导航）与设置页（显示当前值）都走这一个函数，避免显示与实际不一致。
  */
 export function effectiveNavPosition(
   s: Pick<LauncherSettings, 'experimental' | 'navPosition'>
 ): LauncherSettings['navPosition'] {
-  return isPccl2Skin(s) ? 'top' : s.navPosition
+  return s.navPosition
 }
 
 /** 选项：`labelKey` 为 i18n 键，由设置页自动翻译。 */
@@ -178,7 +168,6 @@ export const SETTINGS_DEFS: SettingsDefs = {
   /* 界面主题（皮肤）：原先在「实验性功能」里是九个互斥开关，靠「开一个自动关别的」
      表达单选，读起来像能多选、换皮肤还得点两下。现在做成下拉，主题类型作为子选项。 */
   experimental: { default: 'off', ui: { section: 'general', control: 'custom' } },
-  pccl2ManifestUrl: { default: '' },
   /** 皮肤的子选项：由「界面主题」行按当前皮肤决定是否出现，故无独立 ui。 */
   materialStyle: { default: 'you' },
   githubStyle: { default: 'system' },
@@ -202,10 +191,6 @@ export const SETTINGS_DEFS: SettingsDefs = {
       section: 'general',
       control: 'segmented',
       labelKey: 'settings.row.navPosition',
-      /* PCCL2 皮肤按 PCL2 的布局固定为顶部导航，故该皮肤下本项置灰，
-         实际生效值由 effectiveNavPosition() 给出。 */
-      disableWhen: ['pccl2Skin'],
-      /* 固定为顶部时只保留「顶部」这一个可选项，置灰的同时不会显示成「左侧」 */
       options: [
         { value: 'top', labelKey: 'settings.nav.top' },
         { value: 'bottom', labelKey: 'settings.nav.bottom' },

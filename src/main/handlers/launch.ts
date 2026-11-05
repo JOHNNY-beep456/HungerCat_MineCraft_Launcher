@@ -71,7 +71,7 @@ export function registerLaunchHandlers(ctx: IpcContext): void {
   ipcMain.handle('launch:stop', () => stopGame(ctx))
 }
 
-/** 可由 PCCL2/native bridge 复用的完整启动业务链路。 */
+/** 完整游戏启动业务链路。 */
 export async function launchGame(
   ctx: IpcContext,
   options: LaunchOptions,
