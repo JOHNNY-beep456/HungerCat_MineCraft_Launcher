@@ -66,16 +66,11 @@ jobs:
             src-tauri/target/release/bundle/appimage/*.AppImage
 
   macos:
-    name: macOS (${{ matrix.arch }})
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - runner: macos-13
-            arch: x86_64
-          - runner: macos-14
-            arch: aarch64
-    runs-on: ${{ matrix.runner }}
+    name: macOS (x86_64 + aarch64)
+    # 本仓库拿不到 macOS arm64 托管运行器（macos-14 会报
+    # "configuration 'macos-14-arm64-us-default' is not supported"），
+    # 因此固定在 Intel 运行器上交叉编译两个 target。
+    runs-on: macos-13
     steps:
       - uses: actions/checkout@v4
 
@@ -85,6 +80,8 @@ jobs:
           cache: npm
 
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-apple-darwin,aarch64-apple-darwin
 
       - uses: swatinem/rust-cache@v2
         with:
@@ -93,16 +90,27 @@ jobs:
       - run: npm ci
 
       # 未签名：用户首次打开需右键 →「打开」。公证需要 Apple 开发者证书，不在本仓库范围。
-      - name: 构建安装包
-        run: npx tauri build --bundles app,dmg
+      - name: 构建 x86_64（dmg）
+        run: npx tauri build --target x86_64-apple-darwin --bundles app,dmg
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+
+      - name: 构建 aarch64（dmg）
+        run: npx tauri build --target aarch64-apple-darwin --bundles app,dmg
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
 
       - uses: actions/upload-artifact@v4
         with:
-          name: hcmcl-macos-${{ matrix.arch }}
+          name: hcmcl-macos-x86_64
           if-no-files-found: error
-          path: src-tauri/target/release/bundle/dmg/*.dmg
+          path: src-tauri/target/x86_64-apple-darwin/release/bundle/dmg/*.dmg
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hcmcl-macos-aarch64
+          if-no-files-found: error
+          path: src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg
 
   release:
     name: 汇总到 Draft Release
