@@ -127,6 +127,40 @@ node scripts/fix-artifact-integrity.mjs --check   # 只检查，有 Low 则退�
 - mac 产物默认**未签名**（`CSC_IDENTITY_AUTO_DISCOVERY: false`），首次打开需右键 →「打开」。
 - **Windows arm64 没有原生下载器**（本机无 clang / arm64 MSVC 工具链）→ 自动降级为 TS 下载器，
   功能等价但更慢。不要以为打包坏了。
+- **多架构 Windows 打包**（2026-11-22 实测 x64 / arm64 / ia32 全部出包）：
+  ```powershell
+  # 每个架构都要自己的 combase.lib（导入库是架构相关的），放在 .local/sdk-shim/<arch>/
+  lib.exe /def:.local\sdk-shim\combase.def /machine:X86   /out:.local\sdk-shim\x86\combase.lib
+  lib.exe /def:.local\sdk-shim\combase.def /machine:ARM64 /out:.local\sdk-shim\arm64\combase.lib
+  # arm64 还要 clang（ring 的汇编），否则 cc-rs 报 failed to find tool "clang"
+  $env:PATH = "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Tools\Llvm\x64\bin;$env:PATH"
+  $env:NODE_OPTIONS = ''
+  npx tauri build --target aarch64-pc-windows-msvc --bundles nsis
+  npx tauri build --target i686-pc-windows-msvc    --bundles nsis
+  ```
+  产物在 `src-tauri/target/<triple>/release/bundle/nsis/`。**MSI 一律不要**：
+  预发布版本号（`0.8.0-beta5`）的预发布段不是纯数字，wix 直接失败。
+- **推送到 GitHub 时 schannel 报 `CRYPT_E_NO_REVOCATION_CHECK`**：这是网络侧吊销列表不可达，
+  不是凭据问题。**不要关证书校验**；正解是换 TLS 后端并让它用系统根证书（校验照旧，只是不走 CRL）：
+  ```powershell
+  # 把 Windows 根/中间证书导出成 PEM 一次即可
+  Get-ChildItem Cert:\LocalMachine\Root, Cert:\CurrentUser\Root, Cert:\LocalMachine\CA, Cert:\CurrentUser\CA |
+    Where-Object RawData | Sort-Object Thumbprint -Unique | ForEach-Object {
+      "-----BEGIN CERTIFICATE-----"; [Convert]::ToBase64String($_.RawData,'InsertLineBreaks'); "-----END CERTIFICATE-----"
+    } | Set-Content "$env:TEMP\win-root-ca.pem" -Encoding ascii
+  ```
+  ```bash
+  git -c http.sslBackend=openssl -c http.sslCAInfo="$TEMP/win-root-ca.pem" push origin main
+  ```
+  `gh api` 走 Go 的 TLS 栈，通常不受影响，可用它判断「网络通、只是 git 的 schannel 不行」。
+- **Linux / macOS 由 `.github/workflows/build-tauri.yml` 构建**（本机只有 Windows 工具链）：
+  - Linux：`ubuntu-22.04`（x86_64）+ `ubuntu-24.04-arm`（aarch64），出 `deb` + `AppImage`。
+  - macOS：**拿不到 arm64 运行器**（`macos-14` 报 `configuration 'macos-14-arm64-us-default'
+    is not supported`，`macos-13` 已退役会一直排队），因此在 `macos-15-intel` 上**交叉编译**
+    `x86_64-apple-darwin` 与 `aarch64-apple-darwin` 两个 target，各出一个 dmg。
+  - **AppImage 打包会 panic**：`couldn't find a square icon to use as AppImage icon`——`bundle.icon`
+    缺省候选里只有 `.ico`/`.icns`，没有方形 PNG。用 `npx tauri icon src-tauri/icons/icon.png -o <临时目录>`
+    生成 32/64/128/128@2x 与 `icon.icns` 复制到 `src-tauri/icons/`，并在 `tauri.conf.json` 显式列出。
 - **版本号涉及五个文件**，必须同时改：`package.json` 的 `version`、`package-lock.json` 的
   `version` 与 `packages[""].version`、`src-tauri/tauri.conf.json` 的 `version`、
   `src-tauri/Cargo.toml` 的包版本，以及 `src-tauri/Cargo.lock` 内 `hcmcl-tauri` 的版本。

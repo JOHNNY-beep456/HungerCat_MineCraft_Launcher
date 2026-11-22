@@ -612,3 +612,22 @@ Task-18 以此有界源码子任务口径收口；完整功能、外观、用户
 - **检查与产物**：`npm run typecheck` 0 错误；`node scripts/test-i18n.mjs` **14/14** 通过。安装包 **14,099,110 字节（13.45 MiB）**，15:40。
 - **构建期新坑**：vite 清空 `dist` 走 `rmSync`，被注入的 Node 安全删除垫片拦截（`genie-trash` ETIMEDOUT），`beforeBuildCommand` 失败；构建命令内临时 `NODE_OPTIONS=''` 后通过（只影响清空自身产物目录）。详见 AGENTS.md 第 3 节。
 - **仍未验证**：批量更新未做端到端点击验证（需实例内真有可更新项才跑得通，本轮以类型检查与 i18n 校验为准）；串行执行在几十项规模下的实际耗时未测。
+
+
+## 42. 首次入库、三系统多架构打包与 CI 构建链（2026-11-22 18:00–19:10，UTC+08:00）
+
+- **提交范围**：主提交 `21f9e2f`（384 文件，+73047/−32242）把 Tauri 主产品整体入库，并**排除** `HCMCL_old/`、`HungerCat MineCraft Launcher Lite/`、`.workbuddy/`、`src-tauri/target/`、`session.md`、根目录零字节 `nul`（后四项已补进 `.gitignore`）。之后两次修正提交：`8c1e564`（macOS 改为交叉编译）、`fd44252`（图标 + CI 运行器）。
+- **推送**：`schannel: CRYPT_E_NO_REVOCATION_CHECK (0x80092012)` 依旧出现（吊销列表不可达）。**未关闭证书校验**：改为 `git -c http.sslBackend=openssl -c http.sslCAInfo=<系统根证书 PEM>`，即换 TLS 后端、仍按系统根证书链校验；PEM 由 `Cert:\LocalMachine\Root` + `CurrentUser\Root` + 两级 CA 导出（156 张）。三次 push 均成功，`origin/main` 已到 `fd44252`。
+- **Windows 三架构本机构建**（均 `--bundles nsis`，MSI 因预发布段非纯数字不可用）：
+  | 架构 | 关键前置 | 产物 | 大小 |
+  | --- | --- | --- | --- |
+  | x64 | 既有 | `bundle/nsis/…_0.8.0-beta5_x64-setup.exe` | 14,099,110 B |
+  | arm64 | `aarch64-pc-windows-msvc` 目标 + **clang**（ring 汇编）+ `combase.lib /machine:ARM64` | `target/aarch64-pc-windows-msvc/release/bundle/nsis/…_arm64-setup.exe` | 13,113,901 B |
+  | ia32 | `i686-pc-windows-msvc` 目标 + `combase.lib /machine:X86` | `target/i686-pc-windows-msvc/release/bundle/nsis/…_x86-setup.exe` | 13,230,084 B |
+  三份已复制到 `release/HCMCL0.8.0-beta5-win-{x64,arm64,ia32}-setup.exe`（gitignore）。
+- **新增 CI**：[build-tauri.yml](<.github/workflows/build-tauri.yml>)，`workflow_dispatch` 或 `v*` 标签触发；Linux 为 `ubuntu-22.04`（x86_64）+ `ubuntu-24.04-arm`（aarch64）出 `deb` + `AppImage`，macOS 为 `macos-15-intel` 交叉编译 `x86_64-apple-darwin` 与 `aarch64-apple-darwin` 各出 dmg；标签触发时汇总为 Draft Release。
+- **CI 两次失败与根因**：
+  1. `macos-14` 运行器报 `configuration 'macos-14-arm64-us-default' is not supported`（本仓库拿不到 arm64 macOS 托管机），`macos-13` 已退役、任务会无限排队 → 改为 Intel 机交叉编译两个 target。
+  2. Linux `AppImage` 打包 **panic**：`couldn't find a square icon to use as AppImage icon`，退出码 134。根因是 `bundle.icon` 缺省候选只有 `icon.ico` / `icon.png`，没有 bundler 认可的方形 PNG。用 `npx tauri icon src-tauri/icons/icon.png` 生成 32/64/128/128@2x PNG 与 `icon.icns`，并在 `tauri.conf.json` 显式声明 `bundle.icon`。**Windows 侧不受影响**（仍用原 `icon.ico`，故三份本地产物无需重打）。
+- **CI 结果**：`build-tauri` run [45010415449](https://github.com/JOHNNY-beep456/HungerCat_MineCraft_Launcher/actions/runs/45010415449) **completed success**，四个产物均上传：`hcmcl-linux-x86_64`、`hcmcl-linux-aarch64`、`hcmcl-macos-x86_64`（13,909,778 B dmg）、`hcmcl-macos-aarch64`（13,465,840 B dmg）。Release 汇总 job 因非标签触发按设计跳过。
+- **仍未验证**：三架构 Windows 包均未做真实安装（本轮只到 makensis 出包）；macOS dmg 未签名未公证，未在 Apple 硬件上打开；Linux 包未在桌面环境安装运行；aarch64 Linux 未在真机验证。产物由用户自行从 Actions 下载，本机只保留了 macOS 两个 dmg 的下载副本。
