@@ -9,12 +9,14 @@ import {
   useState,
   type ReactNode
 } from 'react'
+import { isTauri } from '@tauri-apps/api/core'
 import type { AgreementStatus, Announcement, HomepageUpdate, LauncherSettings, MinecraftAccount, UpdateInfo, VersionDir } from '@shared/types'
 import { defaultSettings, skinTakesOver } from '@shared/settings'
 import { dataUrlToBlobUrl, detectWallpaperTone } from './wallpaper'
 import { runWhenIdle } from './startup'
 import { selectPendingAnnouncements, seenPatch } from './announcement'
 import { createTranslator, isLocale, type Locale, type TFunction } from './i18n'
+import { setBackendLanguage } from '@shared/backend-text'
 
 /**
  * 「当前设置」是否已满足协议要求（用于实时判断同意弹窗是否还需要显示）。
@@ -157,7 +159,9 @@ function useSystemTheme(): 'light' | 'dark' {
   return sys
 }
 
-export function AppProvider({ children }: { children: ReactNode }): JSX.Element {
+export function AppProvider({ children, scope = 'main' }: { children: ReactNode; scope?: 'main' | 'mini' }): JSX.Element {
+  // 迷你窗只使用外观和语言；不重复加载账号或运行主窗口的启动检查。
+  const mini = scope === 'mini'
   const [settings, setSettings] = useState<LauncherSettings | null>(null)
   const [accounts, setAccounts] = useState<MinecraftAccount[]>([])
   const [selectedAccount, setSelectedAccount] = useState<MinecraftAccount | null>(null)
@@ -215,6 +219,8 @@ export function AppProvider({ children }: { children: ReactNode }): JSX.Element 
   const t = useMemo<TFunction>(() => createTranslator(locale), [locale])
   useEffect(() => {
     document.documentElement.lang = locale
+    // 后端文案是「简体 / 繁體 / English」三语并列串，桥接层按这里的语言取段。
+    setBackendLanguage(locale)
   }, [locale])
 
   useEffect(() => {
@@ -328,6 +334,12 @@ export function AppProvider({ children }: { children: ReactNode }): JSX.Element 
    */
   useEffect(() => {
     const root = document.documentElement
+    if (mini) {
+      root.dataset['wallpaper'] = 'off'
+      root.style.removeProperty('--wallpaper-image')
+      setWallpaperTone(null)
+      return
+    }
     /*
      * 被皮肤接管背景时，壁纸不生效：这些皮肤的整窗背景是固定的纯色/材质
      * （github / material / minecraft / winui2 / winui3 / win10，
@@ -379,11 +391,13 @@ export function AppProvider({ children }: { children: ReactNode }): JSX.Element 
       alive = false
       if (objectUrl) URL.revokeObjectURL(objectUrl)
     }
-  }, [settings?.backgroundImage, settings?.experimental])
+  }, [mini, settings?.backgroundImage, settings?.experimental])
 
   const reloadSettings = useCallback(async () => {
-    setSettings(await window.api.settings.get())
-  }, [])
+    const next = await window.api.settings.get()
+    // Tauri 小窗只收到外观字段；其余值沿用共享默认值，不读取账号或其他业务数据。
+    setSettings(mini ? { ...defaultSettings(), ...next } : next)
+  }, [mini])
 
   const updateSettings = useCallback(async (p: Partial<LauncherSettings>) => {
     setSettings(await window.api.settings.set(p))
@@ -449,8 +463,12 @@ export function AppProvider({ children }: { children: ReactNode }): JSX.Element 
   }, [])
 
   useEffect(() => {
-    void Promise.all([reloadSettings(), reloadAccounts()])
-  }, [reloadSettings, reloadAccounts])
+    if (mini) {
+      void reloadSettings().catch((error: unknown) => console.warn('读取迷你窗外观失败：', error))
+    } else {
+      void Promise.all([reloadSettings(), reloadAccounts()])
+    }
+  }, [mini, reloadSettings, reloadAccounts])
 
   /**
    * 首次启动的硬件检测：探测 CPU 年代 / 是否虚拟机 / 内存总量。结果只落到 hardwareChecked（只跑一次），
@@ -458,7 +476,7 @@ export function AppProvider({ children }: { children: ReactNode }): JSX.Element 
    * 压低启动瞬时占用。
    */
   useEffect(() => {
-    if (!settings || settings.hardwareChecked || hardwareProbeStarted.current) return
+    if (mini || !settings || settings.hardwareChecked || hardwareProbeStarted.current) return
     hardwareProbeStarted.current = true
     return runWhenIdle(() => {
       void (async () => {
@@ -471,7 +489,7 @@ export function AppProvider({ children }: { children: ReactNode }): JSX.Element 
         }
       })()
     })
-  }, [settings, updateSettings])
+  }, [mini, settings, updateSettings])
 
   /** 请求切到指定页面（由最外层 Shell / Win10 桌面消费；不依赖具体路由实现）。 */
   const requestNavigate = useCallback((page: string) => {
@@ -497,7 +515,7 @@ export function AppProvider({ children }: { children: ReactNode }): JSX.Element 
    * 均非首屏必需，延后到首屏空闲后再发起：既降低启动瞬时占用，也避免过早 fork 网络进程。
    */
   useEffect(() => {
-    if (!settings || startupCheckStarted.current) return
+    if (mini || !settings || startupCheckStarted.current) return
     if (settings.mode === 'local') return
     startupCheckStarted.current = true
     return runWhenIdle(() => {
@@ -521,7 +539,7 @@ export function AppProvider({ children }: { children: ReactNode }): JSX.Element 
         })
         .catch(() => undefined)
     })
-  }, [settings, refreshHomepageUpdates])
+  }, [mini, settings, refreshHomepageUpdates])
 
   /**
    * 启动时（设置就绪后）核对协议版本并拉取公告，各跑一次：
@@ -531,7 +549,7 @@ export function AppProvider({ children }: { children: ReactNode }): JSX.Element 
    * 延后到首屏空闲后再发起：协议弹窗本就在首帧之后才需要，公告同理，延后不影响功能。
    */
   useEffect(() => {
-    if (!settings || announcementStarted.current) return
+    if (mini || !settings || announcementStarted.current) return
     announcementStarted.current = true
     return runWhenIdle(() => {
       void window.api.about
@@ -553,15 +571,14 @@ export function AppProvider({ children }: { children: ReactNode }): JSX.Element 
         )
         .catch(() => undefined)
     })
-  }, [settings])
+  }, [mini, settings])
 
   /**
-   * 探测主页安全检测引擎（是否使用原生 Rust 内核），设置就绪后只跑一次。
-   * 探测失败按「未使用 Rust」处理并给出提示，避免静默降级（与安全相关的降级不应被隐藏）。
-   * 该探测会 dlopen 原生 .node，开销不低且非首屏必需，延后到首屏空闲后再加载。
+   * Electron 主页有原生检测与 TS 回退，设置就绪后延至空闲时探测一次。
+   * Tauri 的主页检测服务尚未接通；其探测失败不代表已启用 Electron 的 TS 回退。
    */
   useEffect(() => {
-    if (!settings || securityEngineProbeStarted.current) return
+    if (mini || !settings || isTauri() || securityEngineProbeStarted.current) return
     securityEngineProbeStarted.current = true
     return runWhenIdle(() => {
       void window.api.homepage
@@ -569,7 +586,7 @@ export function AppProvider({ children }: { children: ReactNode }): JSX.Element 
         .then((r) => setHomepageSecurityNative(r.native === true))
         .catch(() => setHomepageSecurityNative(false))
     })
-  }, [settings])
+  }, [mini, settings])
 
   /** 关闭公告弹窗：把本次展示的公告记入 seen（避免「发布后首次开启」重复弹出）并清空列表。 */
   const dismissAnnouncements = useCallback(async () => {

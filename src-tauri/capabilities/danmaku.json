@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "danmaku-window",
+  "description": "仅允许自有弹幕页订阅和取消 launcher:event；来源、实例、配置和聊天投递由 Rust 单独核验。",
+  "windows": ["danmaku"],
+  "permissions": ["core:event:allow-listen", "core:event:allow-unlisten"]
+}

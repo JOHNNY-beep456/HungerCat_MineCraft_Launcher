@@ -20,7 +20,8 @@ export function buildFrameSrcDoc(
   entry: HomepageSource | null,
   approvedOrigins: string[],
   avatarOrigin: string,
-  skinOrigin: string
+  skinOrigin: string,
+  generation = ''
 ): string {
   if (!entry) return ''
   const csp = buildCsp(entry.networkApproved ? approvedOrigins : [], avatarOrigin, skinOrigin)
@@ -50,7 +51,7 @@ export function buildFrameSrcDoc(
           backdrop-filter: var(--hc-surface-blur);
         }
       </style>`,
-    `<script id="hc-sdk">${SDK}</script>`
+    `<script id="hc-sdk">Object.defineProperty(window,'__HC_FRAME_GENERATION__',{value:${JSON.stringify(generation)}});\n${SDK}</script>`
   ].join('')
   return buildSrcDoc(entry.content, inject)
 }

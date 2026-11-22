@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import type { AiHudState, MpHudState, NeteaseLyricsState } from '@shared/types'
+import { LyricsHudCard } from './LyricsHudCard'
+import { MultiplayerHudCard } from './MultiplayerHudCard'
 
 /**
  * 游戏内 HUD 浮层。
@@ -175,36 +177,7 @@ export function GameHud(): JSX.Element | null {
       style={{ opacity: aiOn && !mpOn ? ai.opacity : state?.opacity, pointerEvents: 'none', userSelect: 'none' }}
     >
       <div className="space-y-2">
-        {mpOn && (
-          <div
-            className="rounded-2xl p-2.5"
-            style={{
-              background: 'rgba(18, 18, 24, 0.72)',
-              backdropFilter: 'blur(10px)',
-              border: '1px solid rgba(255,255,255,0.10)',
-              boxShadow: '0 8px 28px rgba(0,0,0,0.35)'
-            }}
-          >
-            <div className="mb-1.5 flex items-center gap-1.5">
-              <span className="text-[11px] font-semibold" style={{ color: '#8fd', letterSpacing: 0.3 }}>
-                MCTier · 大厅状态
-              </span>
-              <span className="text-[10px]" style={{ color: 'rgba(255,255,255,0.45)' }}>
-                {state?.players.length ?? 0} 人
-              </span>
-            </div>
-            <div className="space-y-1">
-              {(state?.players ?? []).map((p) => (
-                <div key={p.id} className="flex items-center gap-2">
-                  <span className="truncate text-[12px]" style={{ color: 'rgba(255,255,255,0.86)', flex: 1 }}>
-                    {p.name}
-                    {p.isSelf ? '（我）' : ''}
-                  </span>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
+        {mpOn && <MultiplayerHudCard state={state} />}
 
         {aiOn && ai && (
           <div
@@ -252,153 +225,8 @@ export function GameHud(): JSX.Element | null {
           </div>
         )}
 
-        {lyricsOn && lyrics && (
-          <div
-            className="rounded-2xl p-2.5"
-            style={{
-              background: 'rgba(18, 18, 24, 0.72)',
-              backdropFilter: 'blur(10px)',
-              border: '1px solid rgba(255,255,255,0.10)',
-              boxShadow: '0 8px 28px rgba(0,0,0,0.35)'
-            }}
-          >
-            <div className="mb-1 flex items-baseline gap-1.5">
-              {/*
-                来源应用名取自 SMTC 会话（按 AUMID 反查归属进程的可读名称），
-                不再硬编码「网易云音乐」—— 谁在放歌就显示谁。
-                解析失败时退回中性文案，避免露出 cloudmusic.exe 这种标识。
-              */}
-              <span className="shrink-0 text-[11px] font-semibold" style={{ color: '#ff8fa3', letterSpacing: 0.3 }}>
-                {lyrics.source || 'SMTC'}
-              </span>
-              <span className="truncate text-[10px]" style={{ color: 'rgba(255,255,255,0.5)', flex: 1 }}>
-                {[lyrics.title, lyrics.artist].filter(Boolean).join(' · ')}
-              </span>
-              {lyrics.status === 'sync' && <LyricsNudgeControls />}
-            </div>
-            {lyrics.status === 'sync' ? (
-              // 三行布局：上一句淡、当前句亮且稍大、下一句半透明，
-              // 与桌面歌词的观感一致（多看几眼就能预判下一句，不用逐字盯）。
-              <div className="space-y-0.5 text-center">
-                <div className="truncate text-[11px]" style={{ color: 'rgba(255,255,255,0.42)' }}>
-                  {lyrics.prev || '\u00a0'}
-                </div>
-                <div
-                  className="text-[14px] font-semibold leading-snug"
-                  style={{
-                    color: '#ffffff',
-                    textShadow: '0 1px 3px rgba(0,0,0,0.55)',
-                    display: '-webkit-box',
-                    WebkitLineClamp: 2,
-                    WebkitBoxOrient: 'vertical',
-                    overflow: 'hidden'
-                  }}
-                >
-                  {lyrics.current || '…'}
-                </div>
-                <div className="truncate text-[11px]" style={{ color: 'rgba(255,255,255,0.55)' }}>
-                  {lyrics.next || '\u00a0'}
-                </div>
-              </div>
-            ) : (
-              <div className="text-[11px]" style={{ color: 'rgba(255,255,255,0.6)' }}>
-                {lyrics.status === 'loading'
-                  ? '正在获取歌词…'
-                  : (lyrics.message ?? '未找到这首歌的歌词')}
-              </div>
-            )}
-          </div>
-        )}
+        {lyricsOn && <LyricsHudCard state={lyrics} />}
       </div>
     </div>
-  )
-}
-
-/**
- * 歌词手动校准按钮（「上一句 / 下一句」）。
- *
- * 为什么存在：网易云 Win32 版**从不发布 SMTC 时间轴**（官方文档要求播放器「播放期间
- * 每 5 秒更新一次」；实测无论播放 / 暂停 / 用户拖动进度条，`GetTimelineProperties()`
- * 都返回全零 + FILETIME 哨兵值），因此 `Position` 恒为 0，没有任何可用的位置数据。
- * 歌词进度只能按文档语义从「换歌」起用本地时钟外推，中途加入播放或在客户端里拖过
- * 进度条产生的偏差**在 SMTC 通道内无法检测**。校准按钮是唯一的对齐手段。
- *
- * 交互上的两个坑（都会让按钮变成摆设，必须处理）：
- *   1. 浮层是**鼠标穿透**窗口 → 悬停到这里要临时取消穿透，移开立刻恢复；
- *   2. 全屏游戏会把鼠标锁定在游戏内，指针根本移不过来 → 同时提供全局热键
- *      `Ctrl+Alt+[` / `Ctrl+Alt+]`，两条路都通。
- */
-function LyricsNudgeControls(): JSX.Element {
-  /** 按下瞬间的高亮反馈：让用户确认点击生效了。 */
-  const [flash, setFlash] = useState<0 | -1 | 1>(0)
-  const hoverRef = useRef(false)
-
-  useEffect(() => {
-    if (flash === 0) return
-    const t = setTimeout(() => setFlash(0), 350)
-    return () => clearTimeout(t)
-  }, [flash])
-
-  /**
-   * 悬停切换鼠标穿透。
-   *
-   * 只在状态变化时发 IPC（mousemove 每像素都会触发，无条件发送会刷爆通道）。
-   * 穿透状态下窗口设了 `forward: true`，所以移入时仍能收到事件，能顺利取消穿透。
-   */
-  useEffect(() => {
-    const onMove = (e: MouseEvent): void => {
-      const target = e.target as HTMLElement | null
-      const over = !!target?.closest?.('[data-hud-hit]')
-      if (over !== hoverRef.current) {
-        hoverRef.current = over
-        window.api.hud.setInteractive(over)
-      }
-    }
-    const onLeave = (): void => {
-      if (!hoverRef.current) return
-      hoverRef.current = false
-      window.api.hud.setInteractive(false)
-    }
-    window.addEventListener('mousemove', onMove)
-    window.addEventListener('mouseleave', onLeave)
-    return () => {
-      window.removeEventListener('mousemove', onMove)
-      window.removeEventListener('mouseleave', onLeave)
-      // 组件卸载时恢复穿透，否则窗口会一直挡着游戏点击。
-      if (hoverRef.current) window.api.hud.setInteractive(false)
-    }
-  }, [])
-
-  const btnStyle = (dir: -1 | 1, label: string): JSX.Element => (
-    <button
-      type="button"
-      data-hud-hit
-      title={label}
-      onClick={(e) => {
-        e.stopPropagation()
-        setFlash(dir)
-        void window.api.music.lyricsNudge(dir)
-      }}
-      style={{
-        background: flash === dir ? 'rgba(255,143,163,0.35)' : 'rgba(255,255,255,0.08)',
-        border: '1px solid rgba(255,255,255,0.14)',
-        borderRadius: 6,
-        color: 'rgba(255,255,255,0.75)',
-        fontSize: 10,
-        lineHeight: 1,
-        padding: '3px 7px',
-        cursor: 'pointer',
-        transition: 'background 0.15s'
-      }}
-    >
-      {dir === -1 ? '‹ 上一句' : '下一句 ›'}
-    </button>
-  )
-
-  return (
-    <span className="flex shrink-0 items-center gap-1" style={{ opacity: 0.55 }} data-hud-hit>
-      {btnStyle(-1, '歌词偏后？回到上一句（热键 Ctrl+Alt+[）')}
-      {btnStyle(1, '歌词偏前？跳到下一句（热键 Ctrl+Alt+]）')}
-    </span>
   )
 }

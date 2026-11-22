@@ -1,4 +1,6 @@
-import { useEffect, useState, type CSSProperties, type ReactNode } from 'react'
+import { useEffect, useRef, useState, type CSSProperties, type MouseEvent, type ReactNode } from 'react'
+import { isTauri } from '@tauri-apps/api/core'
+import { nativeInvoke as invoke } from '../../../tauri/native-invoke'
 import { Icon } from './ui'
 import { useApp } from '../store'
 import { translateStatus, useTranslateState, type TranslateState } from '../translate-status'
@@ -29,10 +31,69 @@ const TRANSLATE_LIGHT: Record<TranslateState, { color: string; pulse: boolean; k
 export function TitleBar({ onLogoDoubleClick }: { onLogoDoubleClick?: () => void }): JSX.Element {
   const { t, settings, locale } = useApp()
   const [maximized, setMaximized] = useState(false)
+  const tauriDesktop = isTauri() && ['win32', 'darwin', 'linux'].includes(window.api.platform)
+  const refreshMaximized = useRef<() => void>(() => {})
+  const toggling = useRef(false)
 
   useEffect(() => {
-    void window.api.window.isMaximized().then(setMaximized)
-  }, [])
+    let active = true
+    let sequence = 0
+    let timer: number | undefined
+    const refresh = (): void => {
+      const ticket = ++sequence
+      void window.api.window.isMaximized().then((value) => {
+        if (active && ticket === sequence) setMaximized(value)
+      }).catch(() => { /* 查询失败时保留上一次确认的图标。 */ })
+    }
+    const onResize = (): void => {
+      window.clearTimeout(timer)
+      timer = window.setTimeout(refresh, 80)
+    }
+    refreshMaximized.current = refresh
+    refresh()
+    // Tauri 的系统贴靠/还原也会改变状态；缩放时合并查询，避免逐帧 IPC。
+    if (tauriDesktop) window.addEventListener('resize', onResize)
+    return () => {
+      active = false
+      window.clearTimeout(timer)
+      window.removeEventListener('resize', onResize)
+      refreshMaximized.current = () => {}
+    }
+  }, [tauriDesktop])
+
+  const toggleMaximized = (): void => {
+    if (!tauriDesktop) {
+      void window.api.window.maximize()
+      setMaximized((value) => !value)
+      return
+    }
+    if (toggling.current) return
+    toggling.current = true
+    void window.api.window.maximize().catch(() => { /* 保留现有状态，下一次仍可重试。 */ }).finally(() => {
+      toggling.current = false
+      refreshMaximized.current()
+    })
+  }
+
+  const isDragSurface = (event: MouseEvent<HTMLElement>): boolean =>
+    !event.defaultPrevented && event.button === 0 && event.target instanceof Element &&
+    !event.target.closest('.no-drag, button, a, input, select, textarea, [contenteditable]')
+
+  const onTauriMouseDown = (event: MouseEvent<HTMLElement>): void => {
+    if (!isDragSurface(event)) return
+    if (event.detail === 2 && window.api.platform !== 'darwin') {
+      event.preventDefault()
+      toggleMaximized()
+    } else if (event.detail === 1) {
+      event.preventDefault()
+      void invoke<void>('launcher_start_titlebar_drag').catch(() => { /* 原生窗口已关闭或无法移动。 */ })
+    }
+  }
+
+  const onTauriDoubleClick = (event: MouseEvent<HTMLElement>): void => {
+    // 与 Tauri 的 macOS 手势时序一致：双击动作等到释放鼠标。
+    if (window.api.platform === 'darwin' && isDragSurface(event)) toggleMaximized()
+  }
 
   // 与 useAutoTranslate 的判定保持一致：设置开启、非本地模式时即视为启用（英语界面也启用）。
   const translateEnabled = !!settings.autoTranslateResources && settings.mode !== 'local'
@@ -44,7 +105,12 @@ export function TitleBar({ onLogoDoubleClick }: { onLogoDoubleClick?: () => void
   const light = TRANSLATE_LIGHT[translateState]
 
   return (
-    <header className="titlebar-drag fixed top-0 left-0 right-0 z-50 flex h-12 items-center px-3">
+    <header
+      className="titlebar-drag fixed top-0 left-0 right-0 z-50 flex h-12 items-center px-3"
+      data-hc-tauri-titlebar={tauriDesktop ? '' : undefined}
+      onMouseDown={tauriDesktop ? onTauriMouseDown : undefined}
+      onDoubleClick={tauriDesktop ? onTauriDoubleClick : undefined}
+    >
       <div className="flex items-center gap-2 opacity-90">
         <img
           src={logo}
@@ -79,10 +145,7 @@ export function TitleBar({ onLogoDoubleClick }: { onLogoDoubleClick?: () => void
         </WinButton>
         <WinButton
           label={maximized ? t('titlebar.restore') : t('titlebar.maximize')}
-          onClick={() => {
-            void window.api.window.maximize()
-            setMaximized((v) => !v)
-          }}
+          onClick={toggleMaximized}
         >
           {maximized ? (
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">

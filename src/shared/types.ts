@@ -31,7 +31,24 @@ export interface MinecraftAccount {
   siteName?: string
   /** Yggdrasil 客户端令牌（用于刷新令牌）。 */
   clientToken?: string
+  /** 外部微软账号必须沿用原授权的客户端和 scope，缺省使用 HCMCL 登录参数。 */
+  microsoftAuth?: { clientId: string; scope: string; endpoint: 'live' | 'consumers' }
 }
+
+export type AccountImportSource = 'pcl2' | 'hmcl' | 'official'
+export type AccountImportStatus = 'ready' | 'temporary' | 'refresh' | 'relogin' | 'duplicate'
+export interface AccountImportEntry {
+  key: string
+  name: string
+  type: 'microsoft' | 'offline' | 'yggdrasil'
+  status: AccountImportStatus
+}
+export interface AccountImportPreview {
+  sessionId: string
+  entries: AccountImportEntry[]
+  warnings: Array<'protected' | 'unsupported' | 'invalid'>
+}
+export interface AccountImportResult { imported: number; skipped: number; failed: number }
 
 /** 第三方（Yggdrasil）登录时，供「多角色选择」弹窗展示的角色项。 */
 export interface YggdrasilProfileOption {
@@ -177,12 +194,14 @@ export interface DownloadProgress {
  * 现在跑的是哪一个——尤其在排查「下载为什么没变快」时。
  */
 export interface DownloadEngineStatus {
-  /** 是否成功加载原生内核。 */
+  /** 是否成功加载 Electron 的可选 .node 原生内核。 */
   available: boolean
-  /** 解析到的 .node 绝对路径；未找到时为 null。 */
+  /** 解析到的 .node 绝对路径；未找到或使用 Tauri 内置后端时为 null。 */
   path: string | null
   /** 当前平台目录名（如 win32-x64），用于说明为何没有该平台产物。 */
   platform: string
+  /** Tauri 直接使用内置 Rust 下载后端，不依赖 Electron 的可选 .node 模块。 */
+  backend?: 'tauri-rust'
 }
 
 export interface JavaRuntime {
@@ -427,6 +446,11 @@ export interface LauncherSettings {
    * 取值含义同 `downloadSource`。
    */
   versionListSource: 'mirror-first' | 'auto' | 'official-first'
+  /**
+   * CurseForge 官方 API 密钥（应用内嵌公共客户端密钥；留空则 CurseForge 源不可用）。
+   * 与 Lite / Electron 版设置页的「CurseForge API Key」同一字段。
+   */
+  curseforgeApiKey: string
   /**
    * **社区资源来源**策略（模组 / 资源包 / 光影的搜索与元数据）。
    *
@@ -1250,6 +1274,8 @@ export interface ResourceUpdateInfo {
 /** 更新检测的增量推送：每判定完一项推送一次；update 为 null 表示该项无更新 / 无法判断。 */
 export interface ResourceUpdateEvent {
   versionId: string
+  /** Tauri 检测绑定的真实游戏根；旧 Electron 事件可省略。 */
+  scopeRoot?: string
   path: string
   kind: UpdateKind
   update: ResourceUpdateInfo | null
@@ -1801,6 +1827,10 @@ export interface LauncherApi {
     remove: (id: string) => Promise<{ accounts: MinecraftAccount[]; selected: MinecraftAccount | null }>
     select: (id: string) => Promise<MinecraftAccount | null>
     addOffline: (name: string) => Promise<MinecraftAccount>
+    /** 主进程弹出来源文件选择器；PCL2 支持读取当前 Windows 用户注册表。 */
+    previewImport: (source: AccountImportSource, local?: boolean) => Promise<AccountImportPreview | null>
+    commitImport: (sessionId: string, keys: string[]) => Promise<AccountImportResult>
+    cancelImport: (sessionId: string) => Promise<void>
     /** 第三方登录：单角色直接返回账号；多角色返回待选角色列表。 */
     addYggdrasil: (server: string, email: string, password: string) => Promise<YggdrasilLoginOutcome>
     /** 提交多角色选择结果，批量创建账号（返回新建的账号列表）。 */
@@ -1954,6 +1984,10 @@ export interface LauncherApi {
   }
   manage: {
     mods: (versionId: string, dirId?: string) => Promise<ModEntry[]>
+    /** 后台联网补齐已安装模组的名称/图标/slug（逐项 manage:mods-updated 推送）；本地模式或「仅识别资源元数据」时不发起。 */
+    enrichMods: (versionId: string, dirId?: string) => Promise<boolean>
+    /** 后台联网补齐已安装资源包/光影的名称/图标（逐项 resources:updated 推送）；同上受限。 */
+    enrichResources: (versionId: string, kind: 'resourcepacks' | 'shaderpacks', dirId?: string) => Promise<boolean>
     onModsUpdated: (cb: (e: { versionId: string; mod: ModEntry }) => void) => () => void
     toggleMod: (path: string) => Promise<void>
     deleteMod: (path: string) => Promise<void>
@@ -2004,7 +2038,7 @@ export interface LauncherApi {
     /** 联网核对编号 + SHA256；无编号或服务端不可达时回落本地流程。 */
     verify: (id: string) => Promise<HomepageVerifyResult>
     /** 记录用户对当前脚本内容的确认（network=true 表示同时授权联网）。 */
-    confirm: (id: string, network: boolean) => Promise<HomepageEntry>
+    confirm: (id: string, network: boolean, expectedSha?: string) => Promise<HomepageEntry>
     /** 设置当前启用的主页脚本，空串表示回到内置界面。 */
     setActive: (id: string) => Promise<void>
     /**

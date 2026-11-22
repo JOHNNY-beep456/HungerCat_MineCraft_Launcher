@@ -19,6 +19,15 @@ resources/easytier
 resources/native
 # Rust 构建缓存与产物。
 native/*/target
+/src-tauri/target/
+/src-tauri/gen/schemas/
+/src-tauri/gen/android/.gradle/
+/src-tauri/gen/android/.kotlin/
+/src-tauri/gen/android/**/build/
+/src-tauri/gen/android/local.properties
+/src-tauri/gen/android/keystore.properties
+/src-tauri/gen/android/*.jks
+/src-tauri/gen/android/*.keystore
 # 本地草稿/临时文件：打包产物、调试页、截图与调试日志。
 *.zip
 homepage-debug.html
@@ -33,3 +42,10 @@ scripts/_*.out.txt
 # 本地会话记录草稿（历次排障 / 实现的对话日志，非项目文档）。
 /修复资源下载与实例匹配问题.md
 *.binlog
+# Electron 归档版与 Lite 版：仅本地保留作对照，不入库。
+/HCMCL_old/
+/HungerCat MineCraft Launcher Lite/
+# 项目内 AI 协作数据、根目录误建的零字节占位文件与会话草稿。
+/.workbuddy/
+/nul
+/session.md

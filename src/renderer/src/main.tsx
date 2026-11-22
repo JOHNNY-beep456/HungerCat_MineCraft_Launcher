@@ -1,13 +1,14 @@
 import React from 'react'
 import ReactDOM from 'react-dom/client'
 import './index.css'
+import { installRendererLogForwarding } from './log-forwarding'
 
 const windowKind = new URLSearchParams(window.location.search).get('window')
 
 /**
  * 渲染层日志 / 错误统一转发到主进程。
  *
- * 主进程在 Debug 模式或填了调试密钥时会把日志缓冲上传到服务端，方便站长排查问题。
+ * 此处只把日志交给宿主缓冲，不触发网络上传；诊断上传由用户另行主动提交并确认同意。
  * 这里做三件事：
  *   1) 转发 console 的 warn/error（保留原生行为，仅旁路一份给主进程）；
  *   2) 捕获 window 的 error / unhandledrejection 全局错误；
@@ -15,45 +16,21 @@ const windowKind = new URLSearchParams(window.location.search).get('window')
  * 日志窗口自身不转发，避免噪音。
  */
 function installLogForwarding(): void {
+  // 独立受限 AI 页同日志页不旁路发送日志，不为日志扩大业务窗口的权限。
+  if (windowKind === 'debug' || windowKind === 'devtools' || (windowKind === 'mini' && '__TAURI_INTERNALS__' in window) || ((windowKind === 'ai-hud' || windowKind === 'ai-ball') && '__TAURI_INTERNALS__' in window && ['win32', 'darwin', 'linux'].includes(window.api.platform))) return
   const report = window.api?.debug?.reportLog
   if (typeof report !== 'function') return
-  if (windowKind === 'debug') return
-  const send = (level: 'info' | 'warn' | 'error', message: string): void => {
-    try {
-      report(level, message)
-    } catch {
-      // 转发失败不能影响渲染层本身。
-    }
-  }
-  const stringify = (value: unknown): string => {
-    if (value instanceof Error) return value.stack ?? `${value.name}: ${value.message}`
-    if (typeof value === 'string') return value
-    try {
-      return JSON.stringify(value)
-    } catch {
-      return String(value)
-    }
-  }
-  for (const level of ['warn', 'error'] as const) {
-    const original = console[level].bind(console)
-    console[level] = (...args: unknown[]): void => {
-      original(...args)
-      send(level, args.map(stringify).join(' '))
-    }
-  }
-  window.addEventListener('error', (e) => {
-    if (e.error) send('error', stringify(e.error))
-    else send('error', `${e.message} (${e.filename}:${e.lineno}:${e.colno})`)
-  })
-  window.addEventListener('unhandledrejection', (e) => {
-    send('error', `未处理的 Promise 拒绝: ${stringify(e.reason)}`)
-  })
+  installRendererLogForwarding(window, report)
 }
-
-installLogForwarding()
 
 async function mount(): Promise<void> {
   const container = document.getElementById('root') as HTMLElement
+  if (windowKind === 'mini') {
+    // 小窗需要先完成受限原生握手，再由自己的入口创建唯一 React root。
+    const { mountMiniWindow } = await import('./mini-bootstrap')
+    await mountMiniWindow(new AbortController().signal)
+    return
+  }
   const root = ReactDOM.createRoot(container)
   if (windowKind === 'debug') {
     // 独立日志窗口：只挂载极简日志视图，不加载完整启动器界面。
@@ -63,12 +40,6 @@ async function mount(): Promise<void> {
     // 开发模式：独立「开发者工具（F12）」窗口，与主界面分开，避免内容挤乱。
     const { DevToolsWindow } = await import('./components/DevToolsWindow')
     root.render(<DevToolsWindow />)
-  } else if (windowKind === 'mini') {
-    // 联机板块：大厅悬浮窗（无边框置顶小窗，类似 MCTier 的迷你窗）。
-    // MiniWindow 内部用 useApp() 取文案，这里必须补上 AppProvider，
-    // 否则 useApp() 抛错会导致整个悬浮窗渲染失败（看起来像「打不开」）。
-    const { mountMiniWindow } = await import('./mini-bootstrap')
-    mountMiniWindow()
   } else if (windowKind === 'hud') {
     // 联机板块：游戏内 HUD 浮层（透明穿透，显示成员与说话状态）。
     const { GameHud } = await import('./components/GameHud')
@@ -77,6 +48,15 @@ async function mount(): Promise<void> {
     // 联机板块：消息弹幕浮层（透明穿透，滚动显示聊天消息）。
     const { DanmakuOverlay } = await import('./components/DanmakuOverlay')
     root.render(<DanmakuOverlay />)
+  } else if (windowKind === 'ai-hud' && '__TAURI_INTERNALS__' in window && ['win32', 'darwin', 'linux'].includes(window.api.platform)) {
+    // Windows 独立页额外挂载语音命令消费者，卡片 JSX/CSS 与移动只读消费者不变。
+    if (window.api.platform === 'win32') {
+      const { TauriAiHudDesktop } = await import('./components/TauriAiHudDesktop')
+      root.render(<TauriAiHudDesktop />)
+    } else {
+      const { TauriAiHud } = await import('./components/TauriAiHud')
+      root.render(<TauriAiHud />)
+    }
   } else if (windowKind === 'ai-ball') {
     // AI 助手：桌面悬浮球（可拖动的小窗，点开展开成聊天面板）。
     // 刻意不挂 AppProvider：它要能独立于主窗口瞬间出现，不该背上账号 / 主页 / 更新检查的启动开销。
@@ -84,12 +64,35 @@ async function mount(): Promise<void> {
     root.render(<AiBall />)
   } else {
     const { default: App } = await import('./App')
+    const mobileTauri = '__TAURI_INTERNALS__' in window && ['android', 'ios'].includes(window.api.platform)
+    const MobileDebugHost = mobileTauri
+      ? (await import('./components/TauriMobileDebugHost')).TauriMobileDebugHost
+      : null
+    const MobileAiHudHost = mobileTauri
+      ? (await import('./components/TauriAiHudHost')).TauriAiHudHost
+      : null
     root.render(
       <React.StrictMode>
         <App />
+        {MobileDebugHost && <MobileDebugHost />}
+        {MobileAiHudHost && <MobileAiHudHost />}
       </React.StrictMode>
     )
   }
 }
 
-void mount()
+async function bootstrap(): Promise<void> {
+  // Electron 继续使用 preload；Tauri 在加载业务组件前安装相同的公开接口。
+  if ('__TAURI_INTERNALS__' in window) {
+    const { installTauriApi } = await import('../../tauri/bridge')
+    await installTauriApi().ready
+  }
+  installLogForwarding()
+  await mount()
+}
+
+void bootstrap().catch((error: unknown) => {
+  console.error('启动器界面初始化失败', error)
+  const root = document.getElementById('root')
+  if (root) root.textContent = error instanceof Error ? error.message : '启动器初始化失败'
+})

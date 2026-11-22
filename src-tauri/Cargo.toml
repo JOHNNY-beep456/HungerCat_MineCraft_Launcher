@@ -1,0 +1,59 @@
+[package]
+name = "hcmcl-tauri"
+version = "0.8.0-beta5"
+description = "HungerCat MineCraft Launcher Tauri v2"
+edition = "2021"
+rust-version = "1.77.2"
+
+[lib]
+name = "hcmcl_tauri"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+# get_window / get_webview 用于销毁回执后的双表核验；Tauri 将这两个 Rust 查询 API 放在 unstable 特性下。
+# 不因此开放前端窗口管理 capability；升级 Tauri 时需复核这两项 API。
+tauri = { version = "2", features = ["tray-icon", "devtools", "unstable"] }
+tauri-plugin-dialog = "2"
+# 原生确认前显式核验主窗口及显示句柄，不依赖 parent 的静默回退。
+raw-window-handle = "=0.6.2"
+tauri-plugin-opener = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+url = "=2.5.8"
+reqwest = { version = "0.12", default-features = false, features = ["json", "multipart", "rustls-tls", "stream"] }
+tokio = { version = "1", features = ["sync", "time", "macros", "rt-multi-thread", "fs", "io-util", "net"] }
+zip = { version = "0.6", default-features = false, features = ["deflate"] }
+regex = "1"
+# 完整解析 Forge / NeoForge 的 JAR 元数据，不用正则模拟 TOML。
+toml = "=0.8.2"
+sha1 = "0.10"
+sha2 = "0.10"
+flate2 = "1"
+# 壁纸原生解码与超限缩放；限制格式并保留 GIF 原始动画字节。
+image = { version = "=0.24.9", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp"] }
+tar = { version = "0.4", default-features = false }
+uuid = { version = "1", features = ["v4"] }
+md5 = "0.7"
+# 仅兼容用户主动选择的 HMCL/PCL 旧格式；本机凭据仍交给系统安全存储。
+chacha20poly1305 = "0.10"
+des = "0.8"
+cbc = { version = "0.1", features = ["alloc", "block-padding"] }
+base64 = "0.22"
+chrono = { version = "0.4", default-features = false, features = ["std"] }
+
+[target.'cfg(windows)'.dependencies]
+# 使用当前 Tauri 相同版本的 WebView2 事件接口，限制主页 iframe 自行导航。
+webview2-com = "=0.39.1"
+windows-core = "=0.62.2"
+# 只读取系统公开媒体会话与来源名称，版本与现有 Tauri 依赖相同。
+windows = { version = "=0.62.2", features = ["Foundation", "Media_Control", "ApplicationModel", "Win32_Security_Cryptography"] }
+keyring = { version = "3.6.3", features = ["windows-native"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+keyring = { version = "3.6.3", features = ["apple-native"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+keyring = { version = "3.6.3", features = ["sync-secret-service", "crypto-rust"] }

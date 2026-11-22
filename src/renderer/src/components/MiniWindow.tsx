@@ -29,6 +29,7 @@ function clampHeight(h: number): number {
 export function MiniWindow(): JSX.Element {
   const { t } = useApp()
   const [state, setState] = useState<MpMiniState | null>(null)
+  const eventRevision = useRef(0)
   /** 折叠态：只留一条标题栏，节省屏幕空间。 */
   const [collapsed, setCollapsed] = useState(false)
   const [copiedIp, setCopiedIp] = useState<string | null>(null)
@@ -39,10 +40,15 @@ export function MiniWindow(): JSX.Element {
 
   useEffect(() => {
     let alive = true
-    void window.api.mp.miniState().then((s) => {
-      if (alive) setState(s)
+    const off = window.api.mp.onMiniState((s) => {
+      if (!alive) return
+      eventRevision.current += 1
+      setState(s)
     })
-    const off = window.api.mp.onMiniState((s) => setState(s))
+    const requested = eventRevision.current
+    void window.api.mp.miniState().then((s) => {
+      if (alive && eventRevision.current === requested) setState(s)
+    }).catch(() => undefined)
     return () => {
       alive = false
       off()
@@ -60,10 +66,11 @@ export function MiniWindow(): JSX.Element {
     if (!inLobby) return
     let alive = true
     const timer = setInterval(() => {
+      const requested = eventRevision.current
       void window.api.mp
         .miniState()
         .then((s) => {
-          if (alive) setState(s)
+          if (alive && eventRevision.current === requested) setState(s)
         })
         .catch(() => undefined)
     }, 2000)
@@ -89,7 +96,9 @@ export function MiniWindow(): JSX.Element {
     setLeaving(true)
     try {
       await window.api.mp.leaveLobby()
-      setState(await window.api.mp.miniState())
+      const requested = eventRevision.current
+      const snapshot = await window.api.mp.miniState()
+      if (eventRevision.current === requested) setState(snapshot)
       const hasMain = await window.api.mp.hasMainWindow()
       if (!hasMain) await window.api.mp.closeMiniWindow()
     } finally {
@@ -155,6 +164,7 @@ export function MiniWindow(): JSX.Element {
       {/* 拖拽区 + 标题栏 */}
       <div
         className="flex shrink-0 items-center gap-2 px-3 py-2.5"
+        data-mini-drag
         style={{ WebkitAppRegion: 'drag' } as React.CSSProperties}
       >
         <Icon name="wifi" size={15} style={{ color: 'var(--fill-success)' }} />

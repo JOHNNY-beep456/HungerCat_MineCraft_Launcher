@@ -142,7 +142,7 @@ function Shell(): JSX.Element {
 
   // 本地模式：资源下载 / 进度 / 关于均不展示，切换后自动退回首页
   useEffect(() => {
-    if (settings.mode === 'local' && (page === 'resources' || page === 'downloads' || page === 'about')) {
+    if (settings.mode === 'local' && (page === 'resources' || page === 'downloads' || page === 'about' || page === 'chat')) {
       setManagingId(null)
       setPage('home')
     }
@@ -256,7 +256,7 @@ function Shell(): JSX.Element {
                           onRename={setManagingId}
                         />
                       ) : (
-                        renderPage(page, setManagingId, resourcePreset, navigate, settings.enableMultiplayer)
+                        renderPage(page, setManagingId, resourcePreset, navigate, settings.enableMultiplayer, settings.aiEnabled)
                       )}
                     </div>
                   </motion.div>

@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "mini-window",
+  "description": "联机迷你窗只订阅和取消事件；页面来源、精确实例和业务白名单由 Rust 单独核验。",
+  "windows": ["mini"],
+  "permissions": ["core:event:allow-listen", "core:event:allow-unlisten"]
+}

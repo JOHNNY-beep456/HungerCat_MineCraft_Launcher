@@ -1,0 +1,10 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "debug-window",
+  "description": "只允许受限日志窗口订阅专用启动器日志事件。",
+  "windows": ["debug"],
+  "permissions": [
+    "core:event:allow-listen",
+    "core:event:allow-unlisten"
+  ]
+}

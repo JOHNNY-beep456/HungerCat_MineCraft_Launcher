@@ -1,0 +1,10 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "devtools-window",
+  "description": "仅开发模式授权后的受限开发工具窗口订阅状态与日志事件。",
+  "windows": ["devtools"],
+  "permissions": [
+    "core:event:allow-listen",
+    "core:event:allow-unlisten"
+  ]
+}

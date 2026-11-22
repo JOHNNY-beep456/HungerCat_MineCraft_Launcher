@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "ai-ball-window",
+  "description": "仅允许自有 AI 悬浮球订阅事件；固定来源、实例与业务通道由 Rust 单独核验。",
+  "windows": ["ai-ball"],
+  "permissions": ["core:event:allow-listen", "core:event:allow-unlisten"]
+}

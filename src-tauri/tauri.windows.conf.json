@@ -1,0 +1,15 @@
+{
+  "bundle": {
+    "resources": {
+      "../resources/easytier/easytier-core.exe": "easytier/easytier-core.exe",
+      "../resources/easytier/easytier-cli.exe": "easytier/easytier-cli.exe"
+    },
+    "windows": {
+      "nsis": {
+        "installMode": "both",
+        "template": "installer.nsi",
+        "installerHooks": "installer-hooks.nsh"
+      }
+    }
+  }
+}

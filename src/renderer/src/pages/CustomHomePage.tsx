@@ -18,8 +18,12 @@
 // 脚本执行（sandbox）、渲染容器（frame）分居 customhome/ 下各司其职。
 // ---------------------------------------------------------------------------
 
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { isTauri } from '@tauri-apps/api/core'
+import { listen } from '@tauri-apps/api/event'
+import { nativeInvoke } from '../../../tauri/native-invoke'
 import type { HomepageEntry } from '@shared/types'
+
 import { useApp } from '../store'
 import { useRuntime } from '../runtime'
 import { HomePage } from './HomePage'
@@ -29,6 +33,9 @@ import { homepageOrigins, httpOrigin, useSecurityGuard } from './customhome/secu
 import { useHostBridge } from './customhome/bridge'
 import { buildFrameSrcDoc } from './customhome/sandbox'
 import { HomepageFrame } from './customhome/frame'
+
+// 同一宿主串行签发与撤销；旧请求不能晚于新请求覆盖后端票据。
+let nativeFrameQueue: Promise<void> = Promise.resolve()
 
 /** 「启动游戏」板块的替代界面：有自定义主页时顶替内置启动页。 */
 export function HomeRoute({
@@ -48,16 +55,29 @@ export function CustomHomePage({ id }: { id: string }): JSX.Element {
   // 而 GitHub（Primer）皮肤的配色子主题独立于明暗设置（可以在「主题 = 浅色」下
   // 选 Dark / Dark dimmed / Dark High Contrast）。传 theme 会让深色启动器里嵌进
   // 一块浅色主页（iframe 本身透明，白底全是脚本自己按浅色模式画的）。
-  const { settings, selectedAccount, effectiveTheme, updateSettings, reloadSettings, raiseSecurityAlert } = useApp()
+  const { settings, selectedAccount, effectiveTheme, updateSettings, reloadSettings, raiseSecurityAlert, t } = useApp()
   const { launchState, launchLog, launchPid, busy, launch, stopLaunch } = useRuntime()
 
   /** 装载主页条目、启动器版本号、内存、版本目录、选中版本与账号信息。 */
   const data = useHomepageData({ id, selectedAccount, settings, updateSettings, reloadSettings })
   /** 运行时安全命中的三档处置。 */
-  const { securityMode, securityHit } = useSecurityGuard({ id, settings, raiseSecurityAlert, reloadSettings })
+  const { securityMode, securityHit: reportSecurityHit } = useSecurityGuard({ id, settings, raiseSecurityAlert, reloadSettings })
+  const [blocked, setBlocked] = useState(false)
+  const securityHit = useCallback((reason: string, detail: string): boolean => {
+    const stop = reportSecurityHit(reason, detail)
+    if (stop) setBlocked(true)
+    return stop
+  }, [reportSecurityHit])
 
-  /** 本次会话已通过安全闸门。 */
-  const [passed, setPassed] = useState(false)
+  /** 会话授权只属于闸门实际检查过的那份内容。 */
+  const [passedSha, setPassedSha] = useState('')
+  const nativeDocument = isTauri()
+  const aliveRef = useRef(true)
+  const approvalSequence = useRef(0)
+  useEffect(() => {
+    aliveRef.current = true
+    return () => { aliveRef.current = false; approvalSequence.current++ }
+  }, [id])
 
   const starting =
     launchState === 'starting' || launchState === 'downloading' || launchState === 'launching'
@@ -80,10 +100,47 @@ export function CustomHomePage({ id }: { id: string }): JSX.Element {
   )
 
   const frameRef = useRef<HTMLIFrameElement>(null)
+  const approved = !blocked && !!data.entry && data.entry.risk.level !== 'reject'
+    && (passedSha === data.entry.sha256 || data.entry.confirmed)
+    && (data.entry.risk.level !== 'warn' || data.entry.networkApproved)
+  const frameGeneration = useMemo(
+    () => crypto.randomUUID().replace(/-/g, ''),
+    [id, data.entry?.sha256, data.entry?.networkApproved, avatarOrigin, skinOrigin, approved]
+  )
+  const [nativeFrame, setNativeFrame] = useState<{ generation: string; url: string } | null>(null)
+  const frameUrl = nativeFrame?.generation === frameGeneration ? nativeFrame.url : ''
+  const frameReady = approved && (!nativeDocument || !!frameUrl) && !data.error
+
+  useEffect(() => {
+    if (!nativeDocument || !approved || !data.entry) return
+    let alive = true
+    const expected = data.entry.sha256
+    nativeFrameQueue = nativeFrameQueue.then(async () => {
+      if (!alive) return
+      try {
+        const next = await nativeInvoke<{ url: string; sha256: string; generation: string }>('launcher_homepage_frame', {
+          id, expected, generation: frameGeneration, avatar: avatarOrigin, skin: skinOrigin
+        })
+        if (!alive) return
+        if (next.generation !== frameGeneration || next.sha256 !== expected) throw new Error(t('ch.loadFailed'))
+        setNativeFrame({ generation: frameGeneration, url: next.url })
+      } catch (error) {
+        if (alive) data.setError(error instanceof Error ? error.message : t('ch.loadFailed'))
+      }
+    }).catch(() => undefined)
+    return () => {
+      alive = false
+      nativeFrameQueue = nativeFrameQueue.then(async () => {
+        await nativeInvoke('launcher_homepage_revoke', { generation: frameGeneration })
+      }).catch(() => undefined)
+    }
+  }, [nativeDocument, approved, frameGeneration, id, data.entry?.sha256, avatarOrigin, skinOrigin, t])
 
   /** SDK 桥接：宿主能力分发与 postMessage 消息分发。 */
-  const { helloRef } = useHostBridge({
+  const { helloRef, securityHit: frameSecurityHit } = useHostBridge({
     frameRef,
+    frameGeneration,
+    enabled: frameReady,
     settings,
     securityMode,
     securityHit,
@@ -115,52 +172,65 @@ export function CustomHomePage({ id }: { id: string }): JSX.Element {
   })
 
   const srcDoc = useMemo(
-    () => buildFrameSrcDoc(data.entry, approvedOrigins, avatarOrigin, skinOrigin),
-    [data.entry, approvedOrigins, avatarOrigin, skinOrigin]
+    () => nativeDocument ? '' : buildFrameSrcDoc(data.entry, approvedOrigins, avatarOrigin, skinOrigin, frameGeneration),
+    [nativeDocument, data.entry, approvedOrigins, avatarOrigin, skinOrigin, frameGeneration]
   )
-
-  // 闸门放行的脚本在本会话内直接运行；已验证的联网脚本不写 confirmed，
-  // 所以需要单独记住「本次已通过」，否则会在闸门与运行之间来回抖动。
-  const approved = !!data.entry && (passed || (data.entry.risk.level !== 'reject' && data.entry.confirmed))
 
   // 安全组件握手看门狗：SDK 会在解析期同步发一条 hello。迟迟收不到，说明注入点被
   // 注释 / 畸形结构劫持（F-02）——CSP 与 window.hc 都可能没生效。无法确认隔离就一律封锁，
   // 绝不带着未知状态继续跑。
   useEffect(() => {
-    helloRef.current = false
-  }, [srcDoc])
-  useEffect(() => {
-    if (!approved || !srcDoc) return
+    if (!frameReady) return
     if (securityMode === 'off') return
     const timer = window.setTimeout(() => {
       if (helloRef.current) return
-      securityHit(
+      frameSecurityHit(
         '主页安全组件未生效，已拒绝运行',
         '未收到沙箱内安全检查 SDK 的握手（window.hc 缺失，CSP 也可能未注入）'
       )
     }, 6000)
     return () => window.clearTimeout(timer)
-  }, [approved, srcDoc, securityMode, securityHit])
+  }, [frameReady, frameGeneration, securityMode, frameSecurityHit])
 
   // 主进程在导航发生「前」拦下沙箱主页的对外跳转（F-05 / D01 / D02）：meta refresh 由 SDK
   // 就地摘除、location 赋值由主进程阻断。这类导航不受 connect-src 管辖，命中即视为外泄，
   // 这里负责把全屏封锁遮罩弹出来。
   useEffect(() => {
-    return window.api.homepage.onNavBlocked((url) => {
-      securityHit('沙箱主页尝试跳转到外部地址（导航外泄）', url)
+    if (!nativeDocument) return window.api.homepage.onNavBlocked((url) => {
+      frameSecurityHit('沙箱主页尝试跳转到外部地址（导航外泄）', url)
     })
-  }, [securityHit])
+    let alive = true
+    const registered = listen<{ generation: string; message: string }>('homepage-frame-blocked', ({ payload }) => {
+      if (alive && payload?.generation === frameGeneration && typeof payload.message === 'string') {
+        frameSecurityHit('沙箱主页尝试跳转到外部地址（导航外泄）', payload.message)
+      }
+    })
+    void registered.catch(() => { if (alive) data.setError(t('ch.loadFailed')) })
+    return () => { alive = false; void registered.then((unlisten) => unlisten(), () => undefined) }
+  }, [nativeDocument, frameGeneration, frameSecurityHit, t])
 
   return (
     <HomepageFrame
       entry={data.entry}
       error={data.error}
       srcDoc={srcDoc}
+      frameUrl={frameUrl}
+      frameGeneration={frameGeneration}
+      loadingDocument={nativeDocument && approved && !frameUrl && !data.error}
       approved={approved}
       frameRef={frameRef}
       onApproved={(next: HomepageEntry) => {
-        data.setEntry((prev) => (prev ? { ...prev, ...next } : prev))
-        setPassed(true)
+        const sequence = ++approvalSequence.current
+        // 必须重读整份正文，不能把新授权元数据拼到先前加载的旧内容上。
+        void window.api.homepage.read(id).then((current) => {
+          if (!aliveRef.current || sequence !== approvalSequence.current) return
+          data.setEntry(current)
+          setPassedSha(current.sha256 === next.sha256 ? current.sha256 : '')
+        }, (error: unknown) => {
+          if (aliveRef.current && sequence === approvalSequence.current) {
+            data.setError(error instanceof Error ? error.message : t('ch.loadFailed'))
+          }
+        })
       }}
       // 关闭 / 取消：停用该主页并刷新设置，让外层 HomeRoute 退回内置「启动游戏」界面
       //（只调 setActive('') 而不刷新，界面会一直停在闸门弹窗上，表现为「关闭无效」）。

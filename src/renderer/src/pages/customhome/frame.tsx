@@ -16,6 +16,10 @@ export interface HomepageFrameProps {
   error: string | null
   /** 已组装好的 iframe 源码。 */
   srcDoc: string
+  /** Tauri 使用独立原生响应，避免继承主文档 CSP。 */
+  frameUrl?: string
+  frameGeneration: string
+  loadingDocument?: boolean
   /** 是否已通过安全闸门、可直接运行脚本。 */
   approved: boolean
   /** 承载脚本的 iframe 元素 ref（由组合根持有并共享给能力桥）。 */
@@ -31,6 +35,9 @@ export function HomepageFrame({
   entry,
   error,
   srcDoc,
+  frameUrl,
+  frameGeneration,
+  loadingDocument,
   approved,
   frameRef,
   onApproved,
@@ -47,16 +54,18 @@ export function HomepageFrame({
     )
   }
 
-  if (!entry) return <LoadingState text={t('ch.loading')} />
+  if (!entry || loadingDocument) return <LoadingState text={t('ch.loading')} />
 
   return (
     <div className="relative h-full">
       {approved ? (
         <iframe
+          key={frameGeneration}
           ref={frameRef}
           title={entry.meta.name || t('ch.frameTitle')}
           sandbox="allow-scripts"
-          srcDoc={srcDoc}
+          src={frameUrl || undefined}
+          srcDoc={frameUrl ? undefined : srcDoc}
           className="h-full w-full border-0 no-drag"
           style={{ background: 'transparent' }}
         />

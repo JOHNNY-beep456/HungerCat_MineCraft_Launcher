@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "ai-hud-window",
+  "description": "仅允许 AI 悬浮窗订阅事件；业务读取由宿主单独校验来源。",
+  "windows": ["ai-hud"],
+  "permissions": ["core:event:allow-listen", "core:event:allow-unlisten"]
+}

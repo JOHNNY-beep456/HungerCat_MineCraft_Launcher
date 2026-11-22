@@ -2,7 +2,7 @@ import type { DragEvent } from 'react'
 import type { ResourceFile, ResourceUpdateInfo } from '@shared/types'
 import { useApp } from '../../store'
 import { modListTitles } from '../../mod-title'
-import { Button, Icon } from '../../components/ui'
+import { Button, Checkbox, Icon } from '../../components/ui'
 import { formatBytes } from './shared'
 import { OnlineInstaller } from './OnlineInstaller'
 
@@ -29,7 +29,11 @@ export function ResourcesPanel({
   onApplyUpdate,
   onReload,
   onInstalled,
-  onInstallLocal
+  onInstallLocal,
+  selectable,
+  selected,
+  batchBusy,
+  onToggleSelect
 }: {
   variant: 'resourcepack' | 'shader'
   versionId: string
@@ -48,6 +52,11 @@ export function ResourcesPanel({
   onReload: () => void
   onInstalled: (message: string, ok: boolean) => void
   onInstallLocal: (paths: string[], kind: 'resourcepacks' | 'shaderpacks') => void
+  /** 「可更新」分栏下每行出现勾选框，供批量更新。 */
+  selectable: boolean
+  selected: ReadonlySet<string>
+  batchBusy: boolean
+  onToggleSelect: (path: string) => void
 }): JSX.Element {
   const { t, settings, openFileManager } = useApp()
   const isShader = variant === 'shader'
@@ -128,6 +137,13 @@ export function ResourcesPanel({
           const pair = modListTitles(p, settings.modTitleStyle)
           return (
             <div key={p.path} className="glass-soft flex items-center gap-2 rounded-xl px-3 py-2">
+              {selectable && (
+                <Checkbox
+                  checked={selected.has(p.path)}
+                  onChange={() => onToggleSelect(p.path)}
+                  disabled={batchBusy || busyId !== null}
+                />
+              )}
               {p.iconUrl ? (
                 <img
                   src={p.iconUrl}
@@ -155,7 +171,7 @@ export function ResourcesPanel({
               {up && (
                 <button
                   onClick={() => void onApplyUpdate(up, true)}
-                  disabled={busyId === p.path}
+                  disabled={batchBusy || busyId === p.path}
                   className="mica no-drag shrink-0 rounded-lg px-2 py-1 text-[12px] font-medium"
                   style={{ color: 'var(--fill-primary)' }}
                 >
@@ -182,6 +198,7 @@ export function ResourcesPanel({
                   else await window.api.resources.remove(p.path)
                   void onReload()
                 }}
+                disabled={batchBusy}
                 className="no-drag opacity-50 hover:opacity-100"
               >
                 <Icon name="trash" size={15} />

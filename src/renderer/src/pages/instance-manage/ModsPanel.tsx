@@ -2,7 +2,7 @@ import type { DragEvent } from 'react'
 import type { ModEntry, ModrinthProject, ResourceUpdateInfo } from '@shared/types'
 import { useApp } from '../../store'
 import { modListTitles } from '../../mod-title'
-import { Button, Icon, LoadingState, Segmented, Spinner } from '../../components/ui'
+import { Button, Checkbox, Icon, LoadingState, Segmented, Spinner } from '../../components/ui'
 import { formatBytes } from './shared'
 import type { ResFilter } from './types'
 
@@ -31,7 +31,11 @@ export function ModsPanel({
   onToggleMod,
   onDeleteMod,
   onApplyUpdate,
-  onOpenDetail
+  onOpenDetail,
+  selectable,
+  selected,
+  batchBusy,
+  onToggleSelect
 }: {
   mods: ModEntry[]
   loadingMods: boolean
@@ -57,6 +61,11 @@ export function ModsPanel({
   onDeleteMod: (m: ModEntry) => void
   onApplyUpdate: (up: ResourceUpdateInfo, enabled: boolean) => void
   onOpenDetail: (m: ModEntry) => void
+  /** 「可更新」分栏下每行出现勾选框，供批量更新。 */
+  selectable: boolean
+  selected: ReadonlySet<string>
+  batchBusy: boolean
+  onToggleSelect: (path: string) => void
 }): JSX.Element {
   const { t, settings } = useApp()
   return (
@@ -171,6 +180,13 @@ export function ModsPanel({
               const up = updates[m.path]
               return (
                 <div key={m.path} className="glass-soft flex items-center gap-2 rounded-xl px-3 py-2">
+                  {selectable && (
+                    <Checkbox
+                      checked={selected.has(m.path)}
+                      onChange={() => onToggleSelect(m.path)}
+                      disabled={batchBusy || busyId !== null}
+                    />
+                  )}
                   {m.iconUrl ? (
                     <img
                       src={m.iconUrl}
@@ -213,7 +229,7 @@ export function ModsPanel({
                   {up && (
                     <button
                       onClick={() => void onApplyUpdate(up, m.enabled)}
-                      disabled={busyId === m.path}
+                      disabled={batchBusy || busyId === m.path}
                       className="mica no-drag shrink-0 rounded-lg px-2 py-1 text-[12px] font-medium"
                       style={{ color: 'var(--fill-primary)' }}
                     >
@@ -222,13 +238,17 @@ export function ModsPanel({
                   )}
                   <button
                     onClick={() => void onToggleMod(m)}
-                    disabled={busyId === m.path}
+                    disabled={batchBusy || busyId === m.path}
                     className="mica no-drag rounded-lg px-2 py-1 text-[12px] font-medium"
                     style={{ opacity: m.enabled ? 1 : 0.7 }}
                   >
                     {busyId === m.path ? '…' : m.enabled ? t('ins.disable') : t('ins.enable')}
                   </button>
-                  <button onClick={() => void onDeleteMod(m)} className="no-drag opacity-50 hover:opacity-100">
+                  <button
+                    onClick={() => void onDeleteMod(m)}
+                    disabled={batchBusy}
+                    className="no-drag opacity-50 hover:opacity-100"
+                  >
                     <Icon name="trash" size={15} />
                   </button>
                 </div>

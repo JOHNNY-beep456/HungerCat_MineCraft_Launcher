@@ -6,7 +6,7 @@ import { Icon } from './ui'
 /**
  * 大厅聊天面板（消息收发 UI）。
  *
- * 消息来自主进程：启动时拉一次历史，之后订阅 `onChat` 增量追加。
+ * 消息来自主进程：启动时先订阅 `onChat`，再拉一次历史且不让迟到历史覆盖新消息。
  * 悬浮窗与主界面都能发消息 —— 两条路径最终都走主进程 `mp:sendChat`，
  * 再广播回来，保证所有界面看到同一份消息流。
  */
@@ -16,15 +16,19 @@ export function MultiplayerChat(): JSX.Element {
   const [draft, setDraft] = useState('')
   const [sending, setSending] = useState(false)
   const listRef = useRef<HTMLDivElement | null>(null)
+  const eventRevision = useRef(0)
 
   useEffect(() => {
     let alive = true
-    void window.api.mp.getMessages().then((m) => {
-      if (alive) setMessages(m)
-    })
     const off = window.api.mp.onChat((msg) => {
+      if (!alive) return
+      eventRevision.current += 1
       setMessages((prev) => (prev.some((x) => x.id === msg.id) ? prev : [...prev, msg]))
     })
+    const requested = eventRevision.current
+    void window.api.mp.getMessages().then((m) => {
+      if (alive && eventRevision.current === requested) setMessages(m)
+    }).catch(() => undefined)
     return () => {
       alive = false
       off()

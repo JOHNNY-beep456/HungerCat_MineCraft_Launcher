@@ -17,6 +17,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import type { AiToolRequest, LauncherSettings } from '@shared/types'
 import { createTranslator, isLocale, type TFunction } from '../i18n'
 import { Button, Icon } from './ui'
+import { createAiVoiceRecorder, isTauriVoiceDesktop, watchAiVoiceEnabled, type AiVoiceOptions } from './ai-voice-toggle'
 
 /** 本地消息（只用于展示，真实历史在主进程）。 */
 interface Bubble {
@@ -25,11 +26,8 @@ interface Bubble {
   failed?: boolean
 }
 
-/** 录音最长时长：防止误触后一直录（也避免转写接口收到超大文件）。 */
-const MAX_RECORD_MS = 60_000
-
 export function AiBall(): JSX.Element {
-  const [settings, setSettings] = useState<LauncherSettings | null>(null)
+  const [settings, setSettings] = useState<Pick<LauncherSettings, 'language' | 'aiVoiceEnabled'> | null>(null)
   const [expanded, setExpanded] = useState(false)
   const [bubbles, setBubbles] = useState<Bubble[]>([])
   const [input, setInput] = useState('')
@@ -37,12 +35,16 @@ export function AiBall(): JSX.Element {
   const [recording, setRecording] = useState(false)
   const [toolReq, setToolReq] = useState<AiToolRequest | null>(null)
   const [notice, setNotice] = useState('')
+  const [nativeVoiceEnabled, setNativeVoiceEnabled] = useState(false)
+  const voiceAllowed = isTauriVoiceDesktop() ? nativeVoiceEnabled : !!settings?.aiVoiceEnabled
 
   const tRef = useRef<TFunction>((k: string) => k)
   const listRef = useRef<HTMLDivElement | null>(null)
-  const recorderRef = useRef<MediaRecorder | null>(null)
-  const chunksRef = useRef<Blob[]>([])
-  const recordTimerRef = useRef<number | null>(null)
+  const voiceRef = useRef<ReturnType<typeof createAiVoiceRecorder> | null>(null)
+  const voiceOptionsRef = useRef<AiVoiceOptions | null>(null)
+  const mountedRef = useRef(true)
+  const voiceAllowedRef = useRef(voiceAllowed)
+  voiceAllowedRef.current = voiceAllowed
 
   const t = tRef.current
 
@@ -74,7 +76,15 @@ export function AiBall(): JSX.Element {
    * 渲染层自己点开时也已经本地 setExpanded 过，这里再收一次是幂等的。
    */
   useEffect(() => {
-    return window.api.ai.onBallExpanded((open) => setExpanded(open))
+    let alive = true
+    const unsubscribe = window.api.ai.onBallExpanded((open) => { if (alive) setExpanded(open) })
+    // Tauri 窗口可能早于 React 订阅完成；注册后重放原生展开态，Electron 行为不变。
+    if ('__TAURI_INTERNALS__' in window) {
+      void window.api.ai.ball.sync().catch((error: unknown) => {
+        if (alive) setNotice(error instanceof Error ? error.message : String(error))
+      })
+    }
+    return () => { alive = false; unsubscribe() }
   }, [])
 
   /** 滚动到最新一条。 */
@@ -89,17 +99,11 @@ export function AiBall(): JSX.Element {
    * 麦克风指示灯会一直亮着，朗读也会继续念下去。
    */
   useEffect(() => {
+    mountedRef.current = true
     return () => {
-      if (recordTimerRef.current) {
-        window.clearTimeout(recordTimerRef.current)
-        recordTimerRef.current = null
-      }
-      try {
-        recorderRef.current?.stop()
-      } catch {
-        /* 已停止 */
-      }
-      recorderRef.current = null
+      mountedRef.current = false
+      voiceRef.current?.dispose()
+      voiceRef.current = null
       try {
         window.speechSynthesis?.cancel()
       } catch {
@@ -112,7 +116,7 @@ export function AiBall(): JSX.Element {
 
   /** 去掉 Markdown 记号再朗读，否则会把星号、反引号念出来。 */
   const speak = useCallback((text: string): void => {
-    if (!settings?.aiVoiceEnabled || !text.trim()) return
+    if (!voiceAllowedRef.current || !text.trim() || !mountedRef.current) return
     try {
       const clean = text
         .replace(/```[\s\S]*?```/g, '（代码块略）')
@@ -131,20 +135,21 @@ export function AiBall(): JSX.Element {
     } catch {
       // 无语音合成能力时静默跳过：文字回答仍然完整。
     }
-  }, [settings])
+  }, [voiceAllowed])
 
   /* -------------------- 对话 -------------------- */
 
   const send = useCallback(
-    async (raw: string): Promise<void> => {
+    async (raw: string, current: () => boolean = () => mountedRef.current): Promise<void> => {
       const text = raw.trim()
-      if (!text || busy) return
+      if (!current() || !text || busy) return
       setInput('')
       setBubbles((b) => [...b, { role: 'user', text }])
       setBusy(true)
       void window.api.ai.setHudStatus('thinking')
       try {
         const r = await window.api.ai.chat(text, '用户正在通过桌面悬浮球与我对话。')
+        if (!current()) return
         if (r.ok) {
           if (r.text) {
             setBubbles((b) => [...b, { role: 'assistant', text: r.text }])
@@ -154,13 +159,14 @@ export function AiBall(): JSX.Element {
           setBubbles((b) => [...b, { role: 'assistant', text: r.error || t('ai.analysisFailed', { msg: '' }), failed: true }])
         }
       } catch (err) {
+        if (!current()) return
         setBubbles((b) => [
           ...b,
           { role: 'assistant', text: err instanceof Error ? err.message : String(err), failed: true }
         ])
       } finally {
-        setBusy(false)
-        void window.api.ai.setHudStatus('idle')
+        if (mountedRef.current) setBusy(false)
+        if (current()) void window.api.ai.setHudStatus('idle').catch(() => undefined)
       }
     },
     [busy, speak, t]
@@ -168,65 +174,35 @@ export function AiBall(): JSX.Element {
 
   /* -------------------- 语音输入 -------------------- */
 
-  const stopRecording = useCallback((): void => {
-    if (recordTimerRef.current) {
-      window.clearTimeout(recordTimerRef.current)
-      recordTimerRef.current = null
-    }
-    recorderRef.current?.stop()
-    recorderRef.current = null
+  voiceOptionsRef.current = {
+    canStart: () => mountedRef.current && voiceAllowedRef.current && !busy,
+    recording: setRecording,
+    status: (status) => { void window.api.ai.setHudStatus(status).catch(() => undefined) },
+    notice: (kind, error) => setNotice(kind === 'clear' ? '' : kind === 'unsupported' ? tRef.current('ai.voiceUnsupported')
+      : kind === 'listening' ? tRef.current('ai.listening')
+        : tRef.current('ai.voiceError', { msg: error instanceof Error ? error.message : String(error ?? '') })),
+    transcribe: (bytes, mime) => window.api.ai.transcribe(bytes, mime),
+    send: (text, current) => send(text, current),
+  }
+  const voice = useCallback(() => {
+    if (!voiceRef.current) voiceRef.current = createAiVoiceRecorder(() => voiceOptionsRef.current!)
+    return voiceRef.current
   }, [])
+  const stopRecording = useCallback((): void => { voiceRef.current?.stop() }, [])
+  const startRecording = useCallback(async (): Promise<void> => { await voice().start() }, [voice])
 
-  const startRecording = useCallback(async (): Promise<void> => {
-    if (recording || busy) return
-    if (typeof navigator.mediaDevices?.getUserMedia !== 'function') {
-      setNotice(t('ai.voiceUnsupported'))
-      return
-    }
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
-      // 优先 webm（Chromium 全平台支持）；个别系统会抛 NotSupportedError，此时用默认格式。
-      let rec: MediaRecorder
-      try {
-        rec = new MediaRecorder(stream, { mimeType: 'audio/webm;codecs=opus' })
-      } catch {
-        try {
-          rec = new MediaRecorder(stream)
-        } catch {
-          // 两种构造都失败：自己关掉音轨，否则麦克风会一直亮着。
-          stream.getTracks().forEach((tr) => tr.stop())
-          throw new Error('无法创建录音器')
-        }
+  useEffect(() => {
+    const offToggle = window.api.ai.onVoiceToggle(() => { void voice().toggle() })
+    const offState = isTauriVoiceDesktop() ? watchAiVoiceEnabled((enabled) => {
+      voiceAllowedRef.current = enabled
+      setNativeVoiceEnabled(enabled)
+      if (!enabled) {
+        voiceRef.current?.cancel()
+        try { window.speechSynthesis?.cancel() } catch { /* 不影响文字回复 */ }
       }
-      chunksRef.current = []
-      rec.ondataavailable = (e) => {
-        if (e.data.size > 0) chunksRef.current.push(e.data)
-      }
-      rec.onstop = () => {
-        stream.getTracks().forEach((tr) => tr.stop())
-        setRecording(false)
-        void (async () => {
-          const blob = new Blob(chunksRef.current, { type: rec.mimeType || 'audio/webm' })
-          if (blob.size < 1024) return
-          setNotice(t('ai.listening'))
-          const mime = (rec.mimeType || 'audio/webm').split(';')[0]
-          const bytes = new Uint8Array(await blob.arrayBuffer())
-          const r = await window.api.ai.transcribe(bytes, mime)
-          setNotice('')
-          if (r.ok && r.text) await send(r.text)
-          else if (!r.ok) setNotice(t('ai.voiceError', { msg: r.error ?? '' }))
-        })()
-      }
-      rec.start()
-      recorderRef.current = rec
-      setRecording(true)
-      setNotice('')
-      recordTimerRef.current = window.setTimeout(stopRecording, MAX_RECORD_MS)
-    } catch (err) {
-      setRecording(false)
-      setNotice(t('ai.voiceError', { msg: err instanceof Error ? err.message : String(err) }))
-    }
-  }, [busy, recording, send, stopRecording, t])
+    }) : undefined
+    return () => { offToggle(); offState?.(); voiceRef.current?.dispose(); voiceRef.current = null }
+  }, [voice])
 
   /* -------------------- 拖动 / 点击 -------------------- */
 
@@ -500,7 +476,7 @@ export function AiBall(): JSX.Element {
           }}
           style={{ height: 'auto', minHeight: 44 }}
         />
-        {settings?.aiVoiceEnabled && (
+        {voiceAllowed && (
           <Button
             size="md"
             variant={recording ? 'danger' : 'secondary'}

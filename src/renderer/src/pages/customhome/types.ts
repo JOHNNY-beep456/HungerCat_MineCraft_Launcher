@@ -79,6 +79,8 @@ export interface HostSnapshot {
 /** 脚本 → 宿主：能力调用。 */
 export interface FrameCall {
   hc: 1
+  /** 每次装载使用独立代次，旧页面的异步消息不能影响替代页面。 */
+  generation?: string
   kind: 'call'
   id: number
   method: string
@@ -88,12 +90,16 @@ export interface FrameCall {
 /** 脚本 → 宿主：SDK 握手。 */
 export interface FrameHello {
   hc: 1
+  /** 每次装载使用独立代次，旧页面的异步消息不能影响替代页面。 */
+  generation?: string
   kind: 'hello'
 }
 
 /** 沙箱内运行时探针上报：新增元素 / 动态写入的源码，需要宿主再查一遍。 */
 export interface FrameProbe {
   hc: 1
+  /** 每次装载使用独立代次，旧页面的异步消息不能影响替代页面。 */
+  generation?: string
   kind: 'probe'
   batch?: Array<{ where?: string; text?: string }>
 }
@@ -101,6 +107,8 @@ export interface FrameProbe {
 /** 沙箱内鼠标移动上报：iframe 内的坐标，宿主换算成窗口坐标后驱动光标光晕。 */
 export interface FrameCursor {
   hc: 1
+  /** 每次装载使用独立代次，旧页面的异步消息不能影响替代页面。 */
+  generation?: string
   kind: 'cursor'
   x: number
   y: number

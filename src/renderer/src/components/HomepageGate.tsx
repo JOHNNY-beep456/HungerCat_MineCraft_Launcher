@@ -110,7 +110,8 @@ export function HomepageGate({
   const approve = async (network: boolean): Promise<void> => {
     setBusy(true)
     try {
-      const next = await window.api.homepage.confirm(id, network)
+      if (!entry) throw new Error(t('ch.loadFailed'))
+      const next = await window.api.homepage.confirm(id, network, entry.sha256)
       onApproved(next)
     } catch (err) {
       setMessage(err instanceof Error ? err.message : String(err))

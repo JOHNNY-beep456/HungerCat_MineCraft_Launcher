@@ -597,8 +597,8 @@ textarea.input {
   height: 0;
 }
 
-/* --- Drag region for frameless window --- */
-.titlebar-drag {
+/* Electron 由 CSS 交给系统拖动；Tauri 保留鼠标事件给当前主窗口的原生拖动命令。 */
+.titlebar-drag:not([data-hc-tauri-titlebar]) {
   -webkit-app-region: drag;
 }
 .no-drag {
@@ -4307,6 +4307,17 @@ textarea.input {
    * 1.02 太弱几乎看不出。
    */
   --control-hover-brightness: 1.06;
+  /*
+   * 弹簧手感缓动（Apple 弹簧参数的 Web 映射，见 WWDC 流体交互规范）：
+   *   - standard：临界阻尼（damping 1.0），响应约 0.4s —— 无弹跳、趋近干脆，
+   *     用于普通控件的状态过渡（hover / press / 焦点）；
+   *   - momentum：阻尼 0.8、响应约 0.3s —— 释放时允许轻微过冲，
+   *     只用于带速度感的位移（开关滑块、分段选珠的回弹）。
+   * 与全局 ease 固定时长相比，standard 起步更快、收尾更柔，
+   * 更接近「物体趋近目标」而非「插值到目标」。
+   */
+  --lg-ease-standard: cubic-bezier(0.25, 1, 0.5, 1);
+  --lg-ease-momentum: cubic-bezier(0.34, 1.3, 0.64, 1);
 }
 
 /*
@@ -4341,6 +4352,40 @@ textarea.input {
  */
 [data-skin='mac'] .btn:active:not(:disabled) {
   filter: brightness(0.97);
+}
+
+/*
+ * 控件状态过渡换用弹簧手感缓动（令牌见上方 [data-skin='mac'] 定义）：
+ * 全局 .btn 是 ease 固定时长，起步慢、收尾顿；液态玻璃的 hover「浮起」与
+ * press 回弹应该用临界阻尼弹簧曲线（起步快、收尾柔、无弹跳）。
+ * 只改 timing-function 与 transform 时长（压下去的位移要更快、更跟手），
+ * 其余时长不动，避免拖慢表单类控件的连击手感。
+ * （.chip / .mica / .input 未定义 transition，无需覆盖。）
+ */
+[data-skin='mac'] .btn {
+  transition:
+    transform 120ms var(--lg-ease-standard),
+    background 160ms var(--lg-ease-standard),
+    opacity 160ms ease,
+    box-shadow 160ms var(--lg-ease-standard),
+    filter 120ms var(--lg-ease-standard);
+}
+
+/*
+ * 减弱动效（WWDC 无障碍要求）：系统开「减少动态效果」或应用内设置打开时，
+ * 把玻璃控件的状态过渡压到近零时长（保留即时状态切换，去掉动画过程）。
+ * JS 侧的弹簧位移由 MotionConfig reducedMotion 统一降级为 crossfade，
+ * 这里补齐 CSS 侧的 hover / press / 焦点过渡——两条路径都要可达。
+ * 用时长而非 transition: none，避免状态本身的即时性丢失。
+ */
+@media (prefers-reduced-motion: reduce) {
+  [data-skin='mac'] :is(.btn, .chip, .mica, .input, button[role='switch'], .mica-well .mica) {
+    transition-duration: 1ms !important;
+  }
+}
+[data-reduced-motion='true'][data-skin='mac']
+  :is(.btn, .chip, .mica, .input, button[role='switch'], .mica-well .mica) {
+  transition-duration: 1ms !important;
 }
 
 /*
@@ -4590,4 +4635,174 @@ textarea.input {
 @media (min-width: 1024px) {
   [data-skin='pcl2'] .launch-grid { grid-template-columns: minmax(350px, 0.85fr) minmax(0, 1.4fr); }
   [data-skin='pcl2'] .launch-controls:only-child { grid-column: 1 / -1; max-width: 640px; width: 100%; }
+}
+
+/* 移动日志原生模态层：独立命名空间、安全区与触控尺寸，不引入动效。 */
+.hc-mobile-debug {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  height: 100dvh;
+  max-width: none;
+  max-height: none;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  color: #f3f5fa;
+  background: #0b0d14;
+  overflow: hidden;
+  color-scheme: dark;
+  overscroll-behavior: contain;
+}
+.hc-mobile-debug[open] { display: flex; flex-direction: column; }
+.hc-mobile-debug::backdrop { background: #0b0d14; }
+.hc-mobile-debug__header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-shrink: 0;
+  padding: calc(8px + env(safe-area-inset-top, 0px)) calc(16px + env(safe-area-inset-right, 0px)) 8px calc(12px + env(safe-area-inset-left, 0px));
+  border-bottom: 1px solid #ffffff24;
+}
+.hc-mobile-debug__header h1 { margin: 0; font-size: 16px; font-weight: 600; }
+.hc-mobile-debug button {
+  min-width: 44px;
+  min-height: 44px;
+  touch-action: manipulation;
+  animation: none;
+  transition: none;
+}
+.hc-mobile-debug__back {
+  padding: 8px 14px;
+  border: 1px solid #ffffff40;
+  border-radius: 10px;
+  color: inherit;
+  background: #ffffff0f;
+}
+.hc-mobile-debug button:active { background: #ffffff24; }
+.hc-mobile-debug button:focus-visible { outline: 2px solid #85c8ff; outline-offset: 2px; }
+.hc-mobile-debug__content { flex: 1 1 0; height: auto; min-height: 0; min-width: 0; }
+.hc-mobile-debug__toolbar {
+  flex-wrap: wrap;
+  flex-shrink: 0;
+  padding-left: calc(16px + env(safe-area-inset-left, 0px));
+  padding-right: calc(16px + env(safe-area-inset-right, 0px));
+}
+.hc-mobile-debug__list {
+  overscroll-behavior: contain;
+  padding-left: calc(16px + env(safe-area-inset-left, 0px));
+  padding-right: calc(16px + env(safe-area-inset-right, 0px));
+  padding-bottom: calc(12px + env(safe-area-inset-bottom, 0px));
+}
+.hc-mobile-debug__error, .hc-mobile-debug__notice {
+  padding: 12px 16px;
+  color: #ffb4a9;
+  background: #311c22;
+  font-size: 14px;
+}
+.hc-mobile-debug__error { flex-shrink: 0; }
+.hc-mobile-debug__notice {
+  position: fixed;
+  z-index: 10000;
+  top: calc(12px + env(safe-area-inset-top, 0px));
+  left: calc(12px + env(safe-area-inset-left, 0px));
+  right: calc(12px + env(safe-area-inset-right, 0px));
+}
+
+/* Tauri 专用 AI HUD：独立桌面页可透明穿透，移动端只在启动器内显示。 */
+body.hc-tauri-ai-hud--page,
+body.hc-tauri-ai-hud--page #root {
+  background: transparent !important;
+  color-scheme: dark;
+}
+.hc-tauri-ai-hud {
+  position: fixed;
+  top: auto;
+  right: calc(16px + env(safe-area-inset-right, 0px));
+  bottom: calc(16px + env(safe-area-inset-bottom, 0px));
+  left: auto;
+  z-index: 1;
+  width: min(420px, calc(100vw - 32px - env(safe-area-inset-left, 0px) - env(safe-area-inset-right, 0px)));
+  max-height: min(42vh, 300px);
+  overflow: hidden;
+  padding: 12px 14px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 10px;
+  color: #f4f6fa;
+  background: rgba(15, 18, 27, 0.9);
+  box-shadow: 0 8px 26px rgba(0, 0, 0, 0.22);
+  font: 14px/1.45 system-ui, sans-serif;
+  pointer-events: none;
+  user-select: none;
+  overflow-wrap: anywhere;
+}
+.hc-tauri-ai-hud--embedded {
+  z-index: 80;
+  top: calc(12px + env(safe-area-inset-top, 0px));
+  right: calc(12px + env(safe-area-inset-right, 0px));
+  bottom: auto;
+  left: calc(12px + env(safe-area-inset-left, 0px));
+  width: auto;
+  max-width: 560px;
+  max-height: 32vh;
+  margin-left: auto;
+  pointer-events: none;
+}
+.hc-tauri-ai-hud__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+}
+.hc-tauri-ai-hud__title { font-weight: 650; }
+.hc-tauri-ai-hud__status {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  color: rgba(244, 246, 250, 0.72);
+  font-size: 12px;
+}
+.hc-tauri-ai-hud__dot {
+  width: 7px;
+  height: 7px;
+  flex: 0 0 7px;
+  border-radius: 50%;
+  background: #8a91a0;
+}
+.hc-tauri-ai-hud[data-status='thinking'] .hc-tauri-ai-hud__dot { background: #78aaff; }
+.hc-tauri-ai-hud[data-status='speaking'] .hc-tauri-ai-hud__dot { background: #55d6a4; }
+.hc-tauri-ai-hud[data-status='listening'] .hc-tauri-ai-hud__dot { background: #e7c36d; }
+.hc-tauri-ai-hud__user,
+.hc-tauri-ai-hud__reply,
+.hc-tauri-ai-hud__scope { margin: 8px 0 0; }
+.hc-tauri-ai-hud__user {
+  color: rgba(244, 246, 250, 0.68);
+  font-size: 12px;
+}
+.hc-tauri-ai-hud__reply {
+  max-height: 8.7em;
+  overflow: auto;
+  white-space: pre-wrap;
+  overscroll-behavior: contain;
+}
+.hc-tauri-ai-hud__scope {
+  color: rgba(244, 246, 250, 0.52);
+  font-size: 11px;
+}
+.hc-tauri-ai-hud, .hc-tauri-ai-hud * {
+  pointer-events: none;
+  animation: none !important;
+  transition: none !important;
+}
+@media (max-width: 480px) {
+  .hc-tauri-ai-hud {
+    right: calc(12px + env(safe-area-inset-right, 0px));
+    left: calc(12px + env(safe-area-inset-left, 0px));
+    width: auto;
+    max-height: 35vh;
+  }
+  .hc-tauri-ai-hud--embedded { max-height: 28vh; }
 }

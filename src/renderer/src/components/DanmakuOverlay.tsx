@@ -26,20 +26,18 @@ export function DanmakuOverlay(): JSX.Element {
   const [screenH, setScreenH] = useState(600)
   const trackCursor = useRef(0)
 
-  // 初始配置（轨道数决定容器高度分配）。
   useEffect(() => {
-    void window.api.mp
-      .danmakuConfig()
-      .then((c) => setTracks(Math.max(1, Math.min(8, c.tracks))))
-      .catch(() => undefined)
+    let active = true
+    let received = false
+    const timers = new Set<number>()
     const onResize = (): void => setScreenH(window.innerHeight)
     onResize()
     window.addEventListener('resize', onResize)
-    return () => window.removeEventListener('resize', onResize)
-  }, [])
 
-  useEffect(() => {
+    // 同步订阅先于配置调用；Tauri 桥接会等待原生监听器注册后发送就绪请求。
     const off = window.api.mp.onDanmaku((d) => {
+      if (!active) return
+      received = true
       setTracks(Math.max(1, Math.min(8, d.tracks)))
       // 轨道轮转分配，避免所有弹幕挤在同一条线上。
       const track = trackCursor.current % Math.max(1, d.tracks)
@@ -56,11 +54,22 @@ export function DanmakuOverlay(): JSX.Element {
         return next.length > MAX_DANMAKU ? next.slice(next.length - MAX_DANMAKU) : next
       })
       // 动画结束后回收（时长 + 1s 余量）。
-      window.setTimeout(() => {
-        setItems((prev) => prev.filter((x) => x.id !== item.id))
+      const timer = window.setTimeout(() => {
+        timers.delete(timer)
+        if (active) setItems((prev) => prev.filter((x) => x.id !== item.id))
       }, item.durationMs + 1000)
+      timers.add(timer)
     })
-    return off
+    void window.api.mp.danmakuConfig()
+      .then((c) => { if (active && !received) setTracks(Math.max(1, Math.min(8, c.tracks))) })
+      .catch(() => undefined)
+    return () => {
+      active = false
+      off()
+      window.removeEventListener('resize', onResize)
+      timers.forEach((timer) => window.clearTimeout(timer))
+      timers.clear()
+    }
   }, [])
 
   const lineHeight = Math.max(28, Math.min(64, screenH / tracks))

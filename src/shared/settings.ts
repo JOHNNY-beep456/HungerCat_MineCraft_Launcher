@@ -297,6 +297,9 @@ export const SETTINGS_DEFS: SettingsDefs = {
   debugKey: { default: '', ui: { section: 'dev', control: 'custom' } },
 
   /* ============ 下载（板块 id：download） ============ */
+  // CurseForge 官方 API 密钥：应用内嵌的公共客户端密钥（CF 控制台按应用签发），
+  // 用户在设置页不可见；失效时在这里更换。留空则 CurseForge 源整体不可用。
+  curseforgeApiKey: { default: '$2a$10$X3Oi59zph7PyOAEO/0kyxuQmxAOJxOunNaDT3LJmw2jPzUzZaFCr.' },
   downloadSource: {
     default: 'auto',
     ui: {

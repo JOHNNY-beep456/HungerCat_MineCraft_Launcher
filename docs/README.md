@@ -11,6 +11,7 @@ Electron + React + TypeScript 的 Minecraft 启动器。原生下载内核为 Ru
 | [STRUCTURE.md](./STRUCTURE.md) | 目录结构与各板块职责（逐个模块说明） |
 | [SETTINGS.md](./SETTINGS.md) | 设置注册表（单一真源）与跨板块联动、语言自动发现 |
 | [I18N.md](./I18N.md) | 语言系统规范（JSON 分片、键命名、三语一致性） |
+| [account-import.md](./account-import.md) | 外部账号导入方式、凭据迁移边界与格式来源 |
 | [DEVELOPMENT.md](./DEVELOPMENT.md) | 开发、构建、调试、打包与硬性约定 |
 
 ## 常用命令

@@ -9,9 +9,12 @@
  * 沙箱内 SDK。写在字符串里以免被构建工具包装或改名。
  * 只暴露白名单能力；所有调用都是异步 Promise，10 秒无响应即超时。
  */
+import { isTauri } from '@tauri-apps/api/core'
+
 export const SDK = [
   '(function () {',
   "  'use strict'",
+  '  var frameGeneration = window.__HC_FRAME_GENERATION__ || ""',
   '  // 先按引用抓住原生 API：脚本随后可能覆盖 window.requestAnimationFrame / String /',
   '  // MutationObserver 等，让运行时探针彻底瘫痪（F-03）。此处早于任何脚本执行，',
   '  // 拿到的必然是原生实现，探针从此不受覆盖影响。',
@@ -50,7 +53,7 @@ export const SDK = [
   '    return new Promise(function (resolve, reject) {',
   '      var id = ++seq',
   '      pending.set(id, { resolve: resolve, reject: reject })',
-  '      parent.postMessage({ hc: 1, kind: "call", id: id, method: method, params: params || {} }, "*")',
+  '      parent.postMessage({ hc: 1, generation: frameGeneration, kind: "call", id: id, method: method, params: params || {} }, "*")',
   '      // 用原生定时器：脚本覆盖 window.setTimeout 也不能让 SDK 的超时保护失效（F-03）。',
   '      nativeSetTimeout(function () {',
   '        if (pending.has(id)) { pending.delete(id); reject(new Error("调用超时：" + method)) }',
@@ -67,8 +70,9 @@ export const SDK = [
   '  }',
   '',
   '  window.addEventListener("message", function (e) {',
+  '    if (e.source !== parent) return',
   '    var d = e.data',
-  '    if (!d || d.hc !== 1) return',
+  '    if (!d || d.hc !== 1 || (frameGeneration && d.generation !== frameGeneration)) return',
   '    if (d.kind === "result") {',
   '      var p = pending.get(d.id)',
   '      if (!p) return',
@@ -363,7 +367,7 @@ export const SDK = [
   '    for (var k = 0; k < batch.length; k++) probeChars -= batch[k].text.length',
   '    if (probeDropped) { probeDropped = false; batch.push({ where: "element-flood", text: "" }) }',
   '    if (probeQueue.length) scheduleProbe()',
-  '    parent.postMessage({ hc: 1, kind: "probe", batch: batch }, "*")',
+  '    parent.postMessage({ hc: 1, generation: frameGeneration, kind: "probe", batch: batch }, "*")',
   '  }',
   '',
   '  function probe(where, text) {',
@@ -680,7 +684,7 @@ export const SDK = [
   '    var cursorY = 0',
   '    var flushCursor = function () {',
   '      cursorPending = false',
-  '      parent.postMessage({ hc: 1, kind: "cursor", x: cursorX, y: cursorY }, "*")',
+  '      parent.postMessage({ hc: 1, generation: frameGeneration, kind: "cursor", x: cursorX, y: cursorY }, "*")',
   '    }',
   '    document.addEventListener("mousemove", function (e) {',
   '      cursorX = e.clientX',
@@ -691,7 +695,7 @@ export const SDK = [
   '      else nativeSetTimeout(flushCursor, 16)',
   '    }, { passive: true })',
   '  } catch (e) {}',
-  '  parent.postMessage({ hc: 1, kind: "hello" }, "*")',
+  '  parent.postMessage({ hc: 1, generation: frameGeneration, kind: "hello" }, "*")',
   '  emit("ready", snapshot)',
   '})()'
 ].join('\n')
@@ -739,4 +743,5 @@ function checkSdkSyntax(): void {
   }, 50)
 }
 
-checkSdkSyntax()
+// Tauri 主文档不运行内联脚本；同一份 SDK 由原生响应注入，并在构建回归中解析校验。
+if (!isTauri()) checkSdkSyntax()

@@ -8,7 +8,7 @@
 //   - call 时先做安全检查再调用宿主能力，并把结果 / 错误回写。
 // ---------------------------------------------------------------------------
 
-import { useCallback, useEffect, useMemo, useRef } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef } from 'react'
 import type { MutableRefObject, RefObject } from 'react'
 import type {
   HomepageSource,
@@ -24,6 +24,7 @@ import { activeGameDir } from '../../store'
 import { emitCursor } from '../../cursor'
 import { FLOOD_WHERE, TOKENS } from './constants'
 import { httpOrigin } from './security'
+import { boundedParams, FrameSession } from './session'
 import type {
   AccountInfo,
   FrameCall,
@@ -39,6 +40,8 @@ import type {
 export interface HostBridgeOptions {
   /** 承载脚本的 iframe 元素 ref。 */
   frameRef: RefObject<HTMLIFrameElement>
+  frameGeneration: string
+  enabled: boolean
   settings: LauncherSettings
   /** 当前界面明暗模式。 */
   theme: 'light' | 'dark'
@@ -77,6 +80,7 @@ export interface HostBridgeOptions {
 export interface HostBridge {
   /** 沙箱内 SDK 是否已握手（收到 hello）。用于判定 CSP/SDK 注入是否真的生效。 */
   helloRef: MutableRefObject<boolean>
+  securityHit: (reason: string, detail: string) => boolean
 }
 
 /**
@@ -85,10 +89,12 @@ export interface HostBridge {
 export function useHostBridge(options: HostBridgeOptions): HostBridge {
   const {
     frameRef,
+    frameGeneration,
+    enabled,
     settings,
     theme,
     securityMode,
-    securityHit,
+    securityHit: reportSecurityHit,
     entry,
     memInfo,
     accountInfo,
@@ -115,18 +121,33 @@ export function useHostBridge(options: HostBridgeOptions): HostBridge {
     skinOrigin
   } = options
 
-  const dispatchRef = useRef<(method: string, params: Record<string, unknown>) => Promise<unknown>>(
+  const dispatchRef = useRef<(method: string, params: Record<string, unknown>, current: () => boolean) => Promise<unknown>>(
     async () => null
   )
+  const sessionRef = useRef<FrameSession | null>(null)
   const sentLogRef = useRef(0)
-  /** 沙箱内 SDK 是否已握手（收到 hello）。用于判定 CSP/SDK 注入是否真的生效。 */
   const helloRef = useRef(false)
-
-  /**
-   * 运行时探针批次的串行链：探针扫描已异步化（分片让出事件循环），用一条 Promise 链
-   * 保证批次按到达顺序处理——既不会乱序，也不会因为让出事件循环而漏掉任何一批。
-   */
   const probeChainRef = useRef<Promise<void>>(Promise.resolve())
+
+  // DOM 提交后、浏览器投递 iframe 消息前完成新旧代次交接。
+  useLayoutEffect(() => {
+    helloRef.current = false
+    sentLogRef.current = 0
+    probeChainRef.current = Promise.resolve()
+    if (!enabled) return
+    const session = new FrameSession(frameGeneration)
+    sessionRef.current = session
+    return () => {
+      session.close()
+      if (sessionRef.current === session) sessionRef.current = null
+    }
+  }, [enabled, frameGeneration])
+
+  const securityHit = useCallback((reason: string, detail: string): boolean => {
+    const stop = reportSecurityHit(reason, detail)
+    if (stop) sessionRef.current?.close()
+    return stop
+  }, [reportSecurityHit])
 
   const clampMemory = useCallback(
     (raw: unknown): number => {
@@ -157,7 +178,8 @@ export function useHostBridge(options: HostBridgeOptions): HostBridge {
   )
 
   const dispatch = useCallback(
-    async (method: string, params: Record<string, unknown>): Promise<unknown> => {
+    async (method: string, params: Record<string, unknown>, current: () => boolean): Promise<unknown> => {
+      if (!current()) return null
       // 每条指令运行前都过一遍安全检查：脚本可能把危险代码藏进参数交给宿主执行。
       // 「完全关闭」档位下跳过扫描，便于开发者自由调试。
       // log.write 由宿主推送（Minecraft 进程输出），参数来自宿主而非脚本，
@@ -172,12 +194,14 @@ export function useHostBridge(options: HostBridgeOptions): HostBridge {
         }
         // 异步扫描（分片让出事件循环），避免拖长指令响应；判定与同步版完全一致。
         const hits = await scanHomepageCodeAsync(probeText, 'payload')
+        if (!current()) return null
         if (hits.length > 0) {
           if (securityHit(hits[0], `指令 ${method}：${hits.join('；')}`)) {
             throw new Error('该指令被安全策略拦截，已停用该主页')
           }
         }
       }
+      if (!current()) return null
       switch (method) {
         case 'system.memory':
           return memInfo
@@ -329,8 +353,8 @@ export function useHostBridge(options: HostBridgeOptions): HostBridge {
     ]
   )
 
-  // 每次渲染后刷新，保证消息处理器始终调用最新的能力实现。
-  useEffect(() => {
+  // 与消息监听同在 layout 阶段更新，首条请求也使用当前代次的能力实现。
+  useLayoutEffect(() => {
     dispatchRef.current = dispatch
   })
 
@@ -396,26 +420,36 @@ export function useHostBridge(options: HostBridgeOptions): HostBridge {
     ]
   )
 
-  const postToFrame = useCallback((payload: unknown): void => {
-    frameRef.current?.contentWindow?.postMessage(payload, '*')
-  }, [])
+  const postToFrame = useCallback((payload: Record<string, unknown>): void => {
+    if (!sessionRef.current?.current(frameGeneration)) return
+    frameRef.current?.contentWindow?.postMessage({ ...payload, generation: frameGeneration }, '*')
+  }, [frameGeneration])
 
   // 宿主 → 脚本：hello 时回 init，之后每次快照变化推 update。令牌在 rAF 里读，
   // 确保主题切换后的计算结果样式已经生效。
   useEffect(() => {
-    const frame = frameRef.current
-    if (!frame) return
+    const session = sessionRef.current
+    if (!session?.current(frameGeneration)) return
     const handle = requestAnimationFrame(() => {
-      frame.contentWindow?.postMessage(
-        { hc: 1, kind: 'update', data: { tokens: readTokens(), snapshot } },
-        '*'
-      )
+      if (sessionRef.current === session && session.current(frameGeneration)) {
+        postToFrame({ hc: 1, kind: 'update', data: { tokens: readTokens(), snapshot } })
+      }
     })
     return () => cancelAnimationFrame(handle)
-  }, [snapshot, readTokens])
+  }, [snapshot, readTokens, frameGeneration, enabled, postToFrame])
 
-  // 脚本 → 宿主：只接受本 iframe 发来的消息。
-  useEffect(() => {
+  // 脚本 → 宿主：窗口代理、文档代次和活动会话必须同时匹配。
+  // 在 layout 阶段订阅，避免本地文档解析很快时首条 hello 早于被动 effect。
+  useLayoutEffect(() => {
+    const session = sessionRef.current
+    const frame = frameRef.current
+    const frameWindow = frame?.contentWindow
+    if (!session || !frame || !frameWindow || !session.current(frameGeneration)) return
+    const current = (): boolean => sessionRef.current === session && session.current(frameGeneration)
+      && frameRef.current === frame && frame.contentWindow === frameWindow
+    const reply = (payload: Record<string, unknown>): void => {
+      if (current()) frameWindow.postMessage({ ...payload, generation: frameGeneration }, '*')
+    }
     /**
      * 处理一批运行时探针（新增元素 / 动态写入的源码）。
      *
@@ -426,6 +460,7 @@ export function useHostBridge(options: HostBridgeOptions): HostBridge {
      */
     const handleProbeBatch = async (batch: NonNullable<FrameProbe['batch']>): Promise<void> => {
       for (const item of batch) {
+        if (!current()) return
         const where = String(item?.where ?? 'element')
         const text = String(item?.text ?? '')
         if (where === FLOOD_WHERE) {
@@ -477,6 +512,7 @@ export function useHostBridge(options: HostBridgeOptions): HostBridge {
         // 不截断：截断会让危险关键字落在被砍掉的部分而漏检（F-01 / B01）。
         // 异步扫描（分片让出事件循环）与同步版判定完全一致，只改变何时出结论。
         const hits = await scanHomepageCodeAsync(text, 'code', { maxLength: 0 })
+        if (!current()) return
         if (hits.length > 0) {
           if (securityHit(hits[0], `${where}：${hits.join('；')}`)) return
         }
@@ -484,63 +520,82 @@ export function useHostBridge(options: HostBridgeOptions): HostBridge {
     }
 
     const onMessage = (e: MessageEvent): void => {
-      const frame = frameRef.current
-      if (!frame || e.source !== frame.contentWindow) return
+      if (!current() || e.source !== frameWindow) return
       const data = e.data as FrameCall | FrameHello | FrameProbe | FrameCursor | null
-      if (!data || typeof data !== 'object' || data.hc !== 1) return
+      if (!data || typeof data !== 'object' || data.hc !== 1 || !session.current(data.generation)) return
 
       // 沙箱内鼠标移动：换算成宿主窗口坐标，驱动跟随光标的光晕（iframe 会吞掉 mousemove）。
       if (data.kind === 'cursor') {
+        if (typeof data.x !== 'number' || typeof data.y !== 'number' || !Number.isFinite(data.x) || !Number.isFinite(data.y)) return
         const rect = frame.getBoundingClientRect()
-        emitCursor(rect.left + Number(data.x || 0), rect.top + Number(data.y || 0))
+        emitCursor(rect.left + Math.min(rect.width, Math.max(0, data.x)), rect.top + Math.min(rect.height, Math.max(0, data.y)))
         return
       }
 
       // 沙箱内「每个元素加载」后的探针：把新增元素 / 动态写入的源码再查一遍。
       if (data.kind === 'probe') {
-        if (!Array.isArray(data.batch)) return
+        if (!Array.isArray(data.batch) || data.batch.length > 201) {
+          securityHit('主页运行时探针参数无效', '探针批次类型或数量不合法')
+          return
+        }
         const batch = data.batch
-        // 串行排队：保证批次顺序，且不让「让出事件循环」影响「每一批迟早都会被检查」。
+        let chars = 0
+        for (const item of batch) {
+          if (!item || typeof item !== 'object' || typeof item.where !== 'string' || item.where.length > 1024 || typeof item.text !== 'string') {
+            securityHit('主页运行时探针参数无效', '探针项结构不合法')
+            return
+          }
+          chars += item.where.length + item.text.length
+        }
+        if (!session.reserveProbe(chars)) {
+          securityHit('主页运行时探针队列超过限制', '拒绝未扫描的超额批次')
+          session.close()
+          return
+        }
+        // 同一代次内串行处理，保留全文；旧代次退出后不扫描或影响替代页面。
         probeChainRef.current = probeChainRef.current
-          .then(() => handleProbeBatch(batch))
+          .then(() => current() ? handleProbeBatch(batch) : undefined)
           .catch(() => {
-            /* 单批异常不阻断后续批次 */
+            if (current()) { securityHit('主页运行时探针检查失败', '无法确认该批次已完成'); session.close() }
           })
+          .finally(() => session.releaseProbe(chars))
         return
       }
 
       if (data.kind === 'hello') {
+        if (helloRef.current) return
         helloRef.current = true
         sentLogRef.current = 0
-        postToFrame({ hc: 1, kind: 'init', data: { tokens: readTokens(), snapshot } })
+        reply({ hc: 1, kind: 'init', data: { tokens: readTokens(), snapshot } })
         if (settings.debugMode && launchLog.length > 0) {
           const lines = launchLog.slice(-200)
           sentLogRef.current = launchLog.length
-          postToFrame({ hc: 1, kind: 'log', data: { lines } })
+          reply({ hc: 1, kind: 'log', data: { lines } })
         }
         return
       }
 
       if (data.kind !== 'call') return
       const call = data
+      const params = call.params ?? {}
+      if (typeof call.method !== 'string' || call.method.length > 80 || !boundedParams(params) || !session.beginCall(call.id)) {
+        securityHit('主页 SDK 请求无效或并发超过限制', '拒绝无效请求，未执行宿主操作')
+        return
+      }
       void (async () => {
         try {
-          const result = await dispatchRef.current(call.method, call.params ?? {})
-          postToFrame({ hc: 1, kind: 'result', id: call.id, ok: true, data: result ?? null })
+          const result = await dispatchRef.current(call.method, params, current)
+          reply({ hc: 1, kind: 'result', id: call.id, ok: true, data: result ?? null })
         } catch (err) {
-          postToFrame({
-            hc: 1,
-            kind: 'result',
-            id: call.id,
-            ok: false,
-            error: err instanceof Error ? err.message : String(err)
-          })
+          reply({ hc: 1, kind: 'result', id: call.id, ok: false, error: err instanceof Error ? err.message : String(err) })
+        } finally {
+          session.endCall(call.id)
         }
       })()
     }
     window.addEventListener('message', onMessage)
     return () => window.removeEventListener('message', onMessage)
-  }, [postToFrame, readTokens, snapshot, settings.debugMode, launchLog, securityHit, entry?.networkApproved, approvedOrigins, avatarOrigin, skinOrigin])
+  }, [frameGeneration, enabled, readTokens, snapshot, settings.debugMode, launchLog, securityHit, entry?.networkApproved, approvedOrigins, avatarOrigin, skinOrigin])
 
   // 运行日志：仅在 Debug 模式推送给脚本，且只推增量。
   useEffect(() => {
@@ -554,5 +609,5 @@ export function useHostBridge(options: HostBridgeOptions): HostBridge {
     postToFrame({ hc: 1, kind: 'log', data: { lines } })
   }, [launchLog, settings.debugMode, postToFrame])
 
-  return { helloRef }
+  return { helloRef, securityHit }
 }

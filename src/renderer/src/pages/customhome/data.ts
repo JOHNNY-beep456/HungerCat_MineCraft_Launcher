@@ -35,6 +35,7 @@ export interface HomepageData {
   setEntry: Dispatch<SetStateAction<HomepageSource | null>>
   /** 主页条目读取失败时的错误信息。 */
   error: string | null
+  setError: Dispatch<SetStateAction<string | null>>
   memInfo: SystemMemoryInfo | null
   installed: InstalledVersion[]
   /** 版本目录列表（默认目录在最前）。 */
@@ -271,6 +272,7 @@ export function useHomepageData({
     entry,
     setEntry,
     error,
+    setError,
     memInfo,
     installed,
     dirs,

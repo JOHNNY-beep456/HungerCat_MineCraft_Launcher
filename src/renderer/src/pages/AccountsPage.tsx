@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { motion } from 'motion/react'
 import type { AuthStatus, DeviceCodeInfo, YggdrasilProfileOption } from '@shared/types'
+import { AccountImportView } from './AccountImportView'
 import { useApp } from '../store'
 import { Avatar, Button, GlassCard, Icon, Segmented, Spinner, yggdrasilSiteLabel } from '../components/ui'
 
 /** 账号页视图状态：账号列表，或某一种登录整页。 */
-type AccountView = 'list' | 'microsoft' | 'yggdrasil' | 'offline'
+type AccountView = 'list' | 'microsoft' | 'yggdrasil' | 'offline' | 'import'
 
 // 第三方认证服务器：界面只需填域名，主进程会自动补全 /api/yggdrasil。
 const LITTLESKIN_DOMAIN = 'littleskin.cn'
@@ -246,7 +247,8 @@ export function AccountsPage(): JSX.Element {
         <div>
           <h1 className="display">{t('acc.title')}</h1>
         </div>
-        <div className="flex gap-2">
+        <div className="flex flex-wrap justify-end gap-2">
+          <Button icon="download" onClick={() => setView('import')}>{t('acc.importTitle')}</Button>
           <Button onClick={() => setView('offline')}>{t('acc.offlineAccount')}</Button>
           <Button
             onClick={openYgg}
@@ -330,6 +332,15 @@ export function AccountsPage(): JSX.Element {
         })}
       </div>
         </motion.div>
+      )}
+
+      {view === 'import' && (
+        <AccountImportView
+          t={t}
+          platform={window.api.platform}
+          onBack={() => setView('list')}
+          onImported={() => void reloadAccounts()}
+        />
       )}
 
       {view === 'microsoft' && (

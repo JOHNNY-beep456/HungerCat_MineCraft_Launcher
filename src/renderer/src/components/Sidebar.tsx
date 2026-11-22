@@ -9,6 +9,7 @@ export type PageId =
   | 'resources'
   | 'instances'
   | 'multiplayer'
+  | 'chat'
   | 'downloads'
   | 'accounts'
   | 'settings'
@@ -23,6 +24,7 @@ export const NAV: Array<{ id: PageId; label: string; icon: string }> = [
   { id: 'resources', label: '资源下载', icon: 'cube' },
   { id: 'instances', label: '实例', icon: 'box' },
   { id: 'multiplayer', label: '联机', icon: 'globe' },
+  { id: 'chat', label: '对话', icon: 'message' },
   { id: 'downloads', label: '进度', icon: 'download' },
   { id: 'accounts', label: '账号', icon: 'user' },
   { id: 'settings', label: '设置', icon: 'settings' },
@@ -38,18 +40,22 @@ export const NAV: Array<{ id: PageId; label: string; icon: string }> = [
  *   - 本地模式：隐藏依赖联网的「资源下载 / 进度 / 关于」；
  *   - 联机：实验性功能，默认隐藏，仅在设置里主动开启后才出现。
  */
-export function visibleNav(settings: { mode: string; enableMultiplayer: boolean }): typeof NAV {
+export function visibleNav(settings: { mode: string; enableMultiplayer: boolean; aiEnabled: boolean }): typeof NAV {
   return NAV.filter((n) => {
-    if (settings.mode === 'local' && (n.id === 'resources' || n.id === 'downloads' || n.id === 'about')) {
+    if (settings.mode === 'local' && (n.id === 'resources' || n.id === 'downloads' || n.id === 'about' || n.id === 'chat')) {
       return false
     }
     if (n.id === 'multiplayer' && !settings.enableMultiplayer) return false
+    if (n.id === 'chat' && !settings.aiEnabled) return false
     return true
   })
 }
 
 /** 某个页面当前是否可见（供路由兜底：不可见时退回主页）。 */
-export function isPageVisible(settings: { mode: string; enableMultiplayer: boolean }, page: PageId): boolean {
+export function isPageVisible(
+  settings: { mode: string; enableMultiplayer: boolean; aiEnabled: boolean },
+  page: PageId
+): boolean {
   return visibleNav(settings).some((n) => n.id === page)
 }
 

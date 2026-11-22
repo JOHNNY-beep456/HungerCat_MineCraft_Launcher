@@ -1,5 +1,4 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { createPortal } from 'react-dom'
 import { AnimatePresence, motion } from 'motion/react'
 import type { ModEntry, ModrinthProject, ModrinthProjectDetail, ModrinthType, ModrinthVersion, SourceFilter, VersionDirInstance, VersionManifest } from '@shared/types'
 import { useRuntimeActions } from '../runtime'
@@ -9,6 +8,9 @@ import { useAutoTranslate } from '../translate'
 import { compileMarkdown } from '../markdown-translate'
 import { allVersionDirs, useApp, versionDirLabel } from '../store'
 import { modTitlePair } from '../mod-title'
+import { formatInstallError } from '../mod-install-error'
+import { findMissingDependencies, type DepMissing } from './shared/mod-dependencies'
+import { DependencyPromptDialog } from './shared/DependencyPromptDialog'
 import type { TFunction } from '../i18n'
 
 /** 实例在「跨目录」列表里的唯一键：同名实例可能同时存在于多个版本目录。 */
@@ -711,80 +713,10 @@ function LoaderDrawer({
   )
 }
 
-/** 安装到实例时发现的缺失前置。 */
-interface DepMissing {
-  projectId: string
-  title: string
-  version: ModrinthVersion
-}
-
 /** 依赖确认弹窗要用的上下文（缺哪个前置、装到哪个实例）。 */
 interface DepPrompt {
   target: VersionDirInstance
   missing: DepMissing[]
-}
-
-/**
- * 找出该版本「必需、但目标实例中尚未安装」的前置模组。
- *
- * 判据（两者任一命中即视为已装，避免重复下载）：
- *   1. 实例中已装模组的 Modrinth slug 与依赖项目 slug 相同（最准，但需已富化）；
- *   2. 依赖版本的主文件名与实例 mods 目录中的文件名相同（兜底）。
- * 读不到实例模组列表时直接返回空数组——宁可放行安装，也不误报「缺前置」阻断用户。
- * 资源包 / 光影没有前置概念，直接跳过。
- */
-async function findMissingDependencies(
-  version: ModrinthVersion,
-  target: VersionDirInstance,
-  type: ModrinthType
-): Promise<DepMissing[]> {
-  if (type !== 'mod' && type !== 'modpack') return []
-  const deps = (version.dependencies ?? []).filter((d) => d.dependency_type === 'required' && d.project_id)
-  if (deps.length === 0) return []
-
-  let names = new Set<string>()
-  let slugs = new Set<string>()
-  try {
-    const mods = await window.api.manage.mods(target.id, target.dirId)
-    names = new Set(mods.map((m) => m.name.toLowerCase()))
-    slugs = new Set(
-      mods
-        .map((m) => m.slug)
-        .filter((s): s is string => typeof s === 'string' && s.length > 0)
-        .map((s) => s.toLowerCase())
-    )
-  } catch {
-    return []
-  }
-
-  const missing: DepMissing[] = []
-  for (const d of deps) {
-    const pid = d.project_id
-    if (!pid) continue
-    let proj: ModrinthProjectDetail | null = null
-    try {
-      proj = await window.api.mods.project(pid)
-    } catch {
-      /* 取不到项目信息时用 id 兜底展示 */
-    }
-    const slug = proj?.slug?.toLowerCase() ?? ''
-    if (slug && slugs.has(slug)) continue
-
-    // 取适配当前实例（MC 版本 + 加载器）的依赖版本。
-    let pick: ModrinthVersion | null = null
-    try {
-      const vs = await window.api.mods.versions(pid, target.loader ? [target.loader] : [], [target.mcVersion])
-      pick = vs[0] ?? null
-    } catch {
-      /* 查询失败：无法判断，跳过该项而不误报 */
-    }
-    if (!pick) continue
-    const f = pick.files.find((x) => x.primary) ?? pick.files[0]
-    if (f && names.has(f.filename.toLowerCase())) continue
-
-    missing.push({ projectId: pid, title: proj?.title || pid, version: pick })
-  }
-  return missing
 }
 
 function VersionEntry({
@@ -870,7 +802,7 @@ function VersionEntry({
       setExpanded(false)
     } catch (err) {
       // 以前这里静默失败：用户只看到面板收回去、以为「点了没反应」。
-      setError(err instanceof Error ? err.message : String(err))
+      setError(formatInstallError(err instanceof Error ? err.message : String(err), t))
     } finally {
       setBusy(false)
     }
@@ -895,7 +827,7 @@ function VersionEntry({
       await Promise.all(jobs)
       setExpanded(false)
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
+      setError(formatInstallError(err instanceof Error ? err.message : String(err), t))
     } finally {
       setBusy(false)
     }
@@ -972,43 +904,16 @@ function VersionEntry({
         </div>
       )}
 
-      {/* 缺前置确认：列出缺失的必需前置，由用户决定是否一并下载。
-          必须 portal 到 body：本组件位于带 transform 的入场动画容器内，
-          那种祖先会让 fixed 定位改为相对该容器解析，遮罩会盖住整个结果区（看起来「变黑」）。 */}
-      {depPrompt &&
-        createPortal(
-          <div className="fixed inset-0 z-[130] flex items-center justify-center p-6">
-            <div className="absolute inset-0" style={{ background: 'var(--scrim)' }} onClick={() => setDepPrompt(null)} />
-            <div className="glass-strong relative z-10 w-full max-w-md rounded-[28px] p-6">
-              <div className="mb-2 flex items-center gap-2">
-                <Icon name="info" size={20} style={{ color: 'var(--fill-primary)' }} />
-                <span className="title">{t('res.dep.title')}</span>
-              </div>
-              <p className="caption mt-2">{t('res.dep.desc', { target: depPrompt.target.id })}</p>
-              <ul className="mt-3 max-h-56 space-y-1 overflow-y-auto">
-                {depPrompt.missing.map((m) => (
-                  <li
-                    key={m.projectId}
-                    className="truncate rounded-lg px-3 py-1.5 text-[13px]"
-                    style={{ background: 'var(--chip-bg)' }}
-                    title={m.title}
-                  >
-                    {m.title}
-                  </li>
-                ))}
-              </ul>
-              <div className="mt-5 flex gap-2">
-                <Button className="flex-1" onClick={() => setDepPrompt(null)}>
-                  {t('res.dep.cancel')}
-                </Button>
-                <Button variant="primary" className="flex-1" icon="download" onClick={() => void installWithDependencies()}>
-                  {t('res.dep.confirm')}
-                </Button>
-              </div>
-            </div>
-          </div>,
-          document.body
-        )}
+      {/* 缺前置确认：列出缺失的必需前置，由用户决定是否一并下载。 */}
+      {depPrompt && (
+        <DependencyPromptDialog
+          targetLabel={`${depPrompt.target.id} - ${dirLabelOf(depPrompt.target.dirId)}`}
+          missing={depPrompt.missing}
+          busy={busy}
+          onCancel={() => setDepPrompt(null)}
+          onConfirm={() => void installWithDependencies()}
+        />
+      )}
     </div>
   )
 }

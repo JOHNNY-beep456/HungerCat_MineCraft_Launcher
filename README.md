@@ -6,15 +6,14 @@
 
 ---
 
-## 当前版本：0.7.6-dev1
+## 当前版本：0.7.6-dev2
 
-- 新增 **PCL2 主题**：蓝色顶栏、白色侧栏、浅蓝渐变背景、小圆角卡片与描边控件，支持浅色和深色模式。可在「设置」的皮肤主题选项中切换。
-- 主题复用现有 Electron / React 页面和 HCMCL 业务接口，保留账号、下载、实例管理、内存调节及启动功能；导航位置仍遵循用户设置。
-- 修复启动面板中长版本名称挤压按钮的问题，版本选择与管理操作支持窄面板布局。
-- 移除旧 PCCL2 原生组件、组件安装入口和专用桥接接口；当前 PCL2 主题无需安装 WPF 组件或 .NET Framework。
-- 已生成 Windows x64 安装版与便携版：`HCMCL0.7.6-dev1-win-x64-setup.exe`、`HCMCL0.7.6-dev1-win-x64-portable.exe`。本地产物位于 `release/`，不随源码提交；公开发布以 [Releases](https://github.com/JOHNNY-beep456/HungerCat_MineCraft_Launcher/releases) 中实际上传的文件为准。
+- 新增 **账号导入**：在「账号 → 导入账号」选择 PCL2、HMCL 或官方启动器，先预览名称、类型和状态，再导入所选账号。
+- 支持 HMCL 新旧账号格式及新版配套私密数据文件；PCL2 可读取注册表导出文件，Windows 上也可只读访问本机当前用户的账号设置。
+- 在线账号导入时验证角色身份，已有 UUID 跳过；缺少源授权参数的账号仅临时可用或要求重新登录。普通 PCL 发行版的加密数据不能保证恢复，详见 [账号导入说明](./docs/account-import.md)。
+- 保留已有 **PCL2 主题**、全部业务功能和导航位置设置，无需 WPF 组件或 .NET Framework。
 
-本版本类型检查、生产构建、12 项自动回归脚本及 Windows 产物完整性检查通过。本机 Electron 存在启动即退出的环境限制，最新主题的实机外观、安装包安装和启动效果尚未验证；Windows 产物未签名。
+本次更新源码版本，尚未生成 0.7.6-dev2 安装包；公开发布以 [Releases](https://github.com/JOHNNY-beep456/HungerCat_MineCraft_Launcher/releases) 中实际上传的文件为准。本机 Electron 存在启动即退出的环境限制，账号导入界面和真实账号端到端迁移尚未实机验证。
 
 ## 功能特性
 

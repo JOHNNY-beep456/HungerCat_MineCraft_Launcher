@@ -40,6 +40,8 @@ export function DownloadsPage(): JSX.Element {
     }
   }, [])
 
+  const usesTauriRust = engine?.backend === 'tauri-rust'
+
   return (
     <div className="flex h-full flex-col gap-5">
       <div>
@@ -165,18 +167,20 @@ export function DownloadsPage(): JSX.Element {
             label={t('downloads.concurrency')}
             value={t('downloads.concurrencyUnit', { n: settings.maxDownloadConcurrency })}
           />
-          {/* 下载器内核：原生（Rust）或内置 TS。用状态点 + 文案区分，便于排查速度问题。 */}
+          {/* Tauri 内置 Rust 后端与 Electron 的可选原生模块分别展示，保留旧版本状态兼容。 */}
           <InfoRow
             label={t('downloads.engine')}
             value={
               engine === null
                 ? t('downloads.engine.detecting')
-                : engine.available
-                  ? t('downloads.engine.native')
-                  : t('downloads.engine.ts')
+                : usesTauriRust
+                  ? t('downloads.engine.tauriRust')
+                  : engine.available
+                    ? t('downloads.engine.native')
+                    : t('downloads.engine.ts')
             }
-            tone={engine === null ? 'muted' : engine.available ? 'ok' : 'warn'}
-            hint={engine?.available ? undefined : t('downloads.engine.tsHint')}
+            tone={engine === null ? 'muted' : usesTauriRust || engine.available ? 'ok' : 'warn'}
+            hint={usesTauriRust ? t('downloads.engine.tauriRustHint') : engine && !engine.available ? t('downloads.engine.tsHint') : undefined}
           />
           <InfoRow
             label={t('downloads.connections')}

@@ -456,7 +456,7 @@ export function Win10Desktop(): JSX.Element {
                 onRename={(id) => renameManage(w.key, id)}
               />
             ) : (
-              renderPage(w.page, openManage, null, undefined, settings.enableMultiplayer)
+              renderPage(w.page, openManage, null, undefined, settings.enableMultiplayer, settings.aiEnabled)
             )}
           </div>
         </section>

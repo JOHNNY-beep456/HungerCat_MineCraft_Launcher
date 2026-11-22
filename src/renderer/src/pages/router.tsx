@@ -14,6 +14,7 @@ import { FeedbackPage } from './FeedbackPage'
 import { AboutPage } from './AboutPage'
 import { InstancesPage } from './InstancesPage'
 import { MultiplayerPage } from './MultiplayerPage'
+import { AiChatPage } from './AiChatPage'
 
 /** 资源下载页的预置定位（引导安装时使用）。 */
 export type ResourcePreset = { tab: Extract<Tab, 'versions'>; search: string } | null
@@ -30,7 +31,13 @@ export function renderPage(
    * 去设置里把它关掉）。这里做兜底：不允许时直接回落主页，避免出现
    * 「入口没了、页面却还停着」的半死状态。
    */
-  multiplayerEnabled = false
+  multiplayerEnabled = false,
+  /**
+   * 是否允许进入「对话」板块：仅在设置里开启 AI 助手后出现。
+   *
+   * 与联机一样做路由兜底，避免用户停在对话页时关闭 AI 开关出现「入口没了、页面还在」。
+   */
+  aiEnabled = false
 ): JSX.Element {
   switch (page) {
     case 'home':
@@ -46,6 +53,10 @@ export function renderPage(
       if (!multiplayerEnabled) return <HomeRoute />
       // onExit：拒绝 MCTier 许可协议时返回主界面（onNavigate 缺省时不显示「拒绝」）
       return <MultiplayerPage onExit={onNavigate ? () => onNavigate('home') : undefined} />
+    case 'chat':
+      // 未开启 AI 助手：不渲染对话页，回落主页。
+      if (!aiEnabled) return <HomeRoute />
+      return <AiChatPage />
     case 'accounts':
       return <AccountsPage />
     case 'downloads':

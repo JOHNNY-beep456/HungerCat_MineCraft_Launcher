@@ -6,8 +6,10 @@
  * 会被判为无效 —— 大图（base64 后动辄好几 MB）设了却不生效就是这个原因。
  * 改挂一个只有几十字节的 blob: 地址即可绕开长度限制，且不损失画质。
  *
- * 实现用 `fetch(dataUrl)` 交给浏览器解码，避免旧写法里 `atob` + 逐字节 charCodeAt 的
- * 大循环 —— 数 MB 的壁纸会在渲染线程产生明显的同步 CPU 尖峰，拖慢启动首帧。
+ * 注意 fetch(dataUrl) 本身也受同一 ~2MB URL 解析上限约束：壁纸超过约 1.5MB（base64 后）
+ * 时 fetch 会抛 "Failed to fetch"，壁纸静默失效（实测 9.3MB data URL 必现）。
+ * 因此小图走 fetch 快速路径；大图退回手动 base64 解码（单次线性扫描，实测 7MB 约几十 ms，
+ * 仅在换壁纸 / 启动应用壁纸时发生一次，不向事件循环分片以避免复杂度）。
  */
 export async function dataUrlToBlobUrl(dataUrl: string): Promise<string> {
   if (!dataUrl) return ''
@@ -15,6 +17,18 @@ export async function dataUrlToBlobUrl(dataUrl: string): Promise<string> {
     const res = await fetch(dataUrl)
     const blob = await res.blob()
     return URL.createObjectURL(blob)
+  } catch {
+    /* 超过 Chromium data: URL 解析上限的大壁纸走手动解码。 */
+  }
+  try {
+    const comma = dataUrl.indexOf(',')
+    if (comma < 0 || !dataUrl.startsWith('data:')) return ''
+    const media = dataUrl.slice(5, comma)
+    const mime = media.replace(/;base64$/, '') || 'application/octet-stream'
+    const binary = atob(dataUrl.slice(comma + 1))
+    const bytes = new Uint8Array(binary.length)
+    for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i)
+    return URL.createObjectURL(new Blob([bytes], { type: mime }))
   } catch {
     return ''
   }
