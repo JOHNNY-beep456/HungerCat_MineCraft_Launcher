@@ -20,6 +20,8 @@ resources/native
 # Rust 构建缓存与产物。
 native/*/target
 /src-tauri/target/
+# `npx tauri icon` 的临时输出目录（正式图标已复制到 icons/ 根下）。
+/src-tauri/icons/generated/
 /src-tauri/gen/schemas/
 /src-tauri/gen/android/.gradle/
 /src-tauri/gen/android/.kotlin/

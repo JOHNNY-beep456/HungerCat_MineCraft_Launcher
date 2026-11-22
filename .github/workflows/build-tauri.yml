@@ -69,8 +69,8 @@ jobs:
     name: macOS (x86_64 + aarch64)
     # 本仓库拿不到 macOS arm64 托管运行器（macos-14 会报
     # "configuration 'macos-14-arm64-us-default' is not supported"），
-    # 因此固定在 Intel 运行器上交叉编译两个 target。
-    runs-on: macos-13
+    # macos-13 已退役排队不动，因此固定在 Intel 运行器上交叉编译两个 target。
+    runs-on: macos-15-intel
     steps:
       - uses: actions/checkout@v4
 
