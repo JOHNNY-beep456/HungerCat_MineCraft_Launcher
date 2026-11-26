@@ -155,6 +155,14 @@ node scripts/fix-artifact-integrity.mjs --check   # 只检查，有 Low 则退�
   `gh api` 走 Go 的 TLS 栈，通常不受影响，可用它判断「网络通、只是 git 的 schannel 不行」。
 - **Linux / macOS 由 `.github/workflows/build-tauri.yml` 构建**（本机只有 Windows 工具链）：
   - Linux：`ubuntu-22.04`（x86_64）+ `ubuntu-24.04-arm`（aarch64），出 `deb` + `AppImage`。
+  - **Linux armv7l 只能交叉编译**（0.8.0 首次跑通，run `45819646535`）：托管运行器没有 armv7 硬件。
+    `ubuntu-22.04` 上 `dpkg --add-architecture armhf`，再把 `/etc/apt/sources.list` 里每行 `deb `
+    改写成 `deb [arch=amd64] `（否则 apt 认为 armhf 无源而静默跳过），另挂
+    `ports.ubuntu.com/ubuntu-ports` 的 jammy 三组源（main/universe/restricted/multiverse），
+    然后装 `libwebkit2gtk-4.1-dev:armhf` 等——`libc6-dev` 是 `Multi-Arch: same`，可以和 amd64 共存，
+    不会再撞文件冲突。构建时设 `PKG_CONFIG_LIBDIR` 只指向 `/usr/lib/arm-linux-gnueabihf/pkgconfig`
+    与 `/usr/share/pkgconfig`，`CC_/AR_/CARGO_TARGET_…_LINKER` 指向 `arm-linux-gnueabihf-*`。
+    **只出 `.deb`**：AppImage 的 linuxdeploy / FUSE 运行时是架构相关的，交叉打包不成立。
   - macOS：**拿不到 arm64 运行器**（`macos-14` 报 `configuration 'macos-14-arm64-us-default'
     is not supported`，`macos-13` 已退役会一直排队），因此在 `macos-15-intel` 上**交叉编译**
     `x86_64-apple-darwin` 与 `aarch64-apple-darwin` 两个 target，各出一个 dmg。

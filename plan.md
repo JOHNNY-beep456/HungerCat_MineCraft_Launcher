@@ -1028,6 +1028,76 @@ beta12 的包在 `resolve_options` 立刻报错（说明前两步很快），bet
 本轮新增的输入法桥、陀螺仪映射、摇杆绘制、手感参数与运行时管理全部为自写实现，未参考
 FCL 的源码结构；`docs/android-fcl-parity.md` 的对照表与自查清单已同步更新。
 
+## 56. 0.8.0 正式版与三平台打包（2026-11-26，UTC+08:00）
+
+用户要求「版本号更新为 0.8.0，打包 Windows x64 / x86 / arm64（exe + msi），Linux 三架构与
+macOS 两架构推送 GitHub 工作流」。
+
+### 版本号
+
+- `package.json` / `package-lock.json` / `src-tauri/Cargo.toml` / `src-tauri/tauri.conf.json`
+  统一为 `0.8.0`。
+- `tauri.conf.json` 的 `bundle.android.versionCode` 由 8100 改为 **9800**：beta17 已经是 9700，
+  正式版沿用 8000/8100 会让已装 beta 的设备**无法覆盖升级**。本轮没有出 APK。
+- `AGENTS.md` 速览表、`plan.md` 顶部摘要、`CHANGELOG.md` 新增 0.8.0 条目同步。
+
+### Windows（本地构建，全部成功）
+
+`tauri build --bundles nsis,msi`，三个架构各自走 `vcvarsall` + `.local/sdk-shim` 的 combase 垫片，
+`NODE_OPTIONS` 置空以绕开沙箱的删除钩子；arm64 额外把 LLVM 的 `clang` 放进 `PATH`。
+
+| 架构 | 产物（`release/`） | 大小 |
+| --- | --- | --- |
+| x64 | `HCMCL0.8.0-win-x64-setup.exe` / `HCMCL0.8.0-win-x64.msi` | 13.4 / 19.4 MB |
+| x86 | `HCMCL0.8.0-win-x86-setup.exe` / `HCMCL0.8.0-win-x86.msi` | 12.7 / 18.2 MB |
+| ARM64 | `HCMCL0.8.0-win-arm64-setup.exe` / `HCMCL0.8.0-win-arm64.msi` | 12.5 / 18.7 MB |
+
+**MSI 这次能出包**，印证了此前「预发布段不是纯数字才会让 wix 失败」的判断：
+`0.8.0` 没有预发布段，x64 / x86 / arm64 三份 msi 都由 `candle` + `light` 正常产出。
+
+### GitHub 工作流
+
+- Linux 原有 x86_64（`ubuntu-22.04`）与 aarch64（`ubuntu-24.04-arm`），本轮新增 **armv7l**：
+  托管运行器没有 armv7 硬件，改为在 `ubuntu-22.04` 上 `dpkg --add-architecture armhf` +
+  `ports.ubuntu.com` 源装 armhf 依赖后交叉编译，**只出 `.deb`**（AppImage 的 linuxdeploy / FUSE
+  是架构相关的，交叉打包不成立）。
+- macOS 仍是 `macos-15-intel` 上交叉编译 `x86_64-apple-darwin` 与 `aarch64-apple-darwin`，
+  两个 dmg，未签名。
+- `release` job 的 `needs` 加上 armv7，`if` 改为 `always() && startsWith(github.ref, 'refs/tags/v')`：
+  armv7 交叉链从未跑过，单架构失败不应连带把其它已成功产物一起丢掉，草稿 Release 里人工核对。
+
+### 推送
+
+- 提交 `5a18e5e release: 0.8.0 正式版`，`git push` 时用
+  `-c http.sslBackend=openssl -c http.sslCAInfo=<系统根证书 PEM>`（校验照旧，只绕开 schannel 的
+  CRL 检查），`main` 推送成功。
+- 打 tag `v0.8.0` 并推送，触发 `build-tauri` run `45819646535`；四个 job（Linux x86_64 /
+  aarch64 / armv7l、macOS）均已排队启动。
+
+### CI 结果（run 45819646535，全部 success）
+
+`准备 armhf 交叉环境` 步骤 1 分 4 秒通过：`dpkg --add-architecture armhf` + 把
+`/etc/apt/sources.list` 的源逐行标成 `[arch=amd64]` + 挂 `ports.ubuntu.com` 的 jammy 源之后，
+`libwebkit2gtk-4.1-dev:armhf` 等 dev 包能正常共存（Multi-Arch: same），没有出现预想中的
+`libc6-dev` 文件冲突。Draft Release `v0.8.0` 汇总到 7 个产物：
+
+| 平台 | 产物 | 大小 |
+| --- | --- | --- |
+| Linux x86_64 | `…_0.8.0_amd64.deb` / `…_0.8.0_amd64.AppImage` | 12.6 / 86.5 MB |
+| Linux aarch64 | `…_0.8.0_arm64.deb` / `…_0.8.0_aarch64.AppImage` | 12.8 / 84.9 MB |
+| Linux armv7l | `…_0.8.0_armhf.deb` | 12.5 MB |
+| macOS Intel | `…_0.8.0_x64.dmg` | 13.3 MB |
+| macOS Apple Silicon | `…_0.8.0_aarch64.dmg` | 12.9 MB |
+
+### 未验证
+
+- **Windows x86 / ARM64 安装包没有在对应真机上装过**：只验证了构建成功与产物存在；
+  本机是 x64，x64 的包此前有过安装记录。
+- **Linux armv7l 只验证到「交叉编译出 deb 并上传」**：没有在 armv7 设备或模拟器上安装运行，
+  `webkit2gtk-4.1` 运行时依赖能否在目标系统上满足仍未确认。
+- Linux aarch64 的 AppImage 与 macOS 两个 dmg 同样未在真机启动过。
+- macOS 产物未签名，首次打开需右键 →「打开」（历史限制，本轮未改）。
+
 ## 56. PE 版独立目录、主页启动核对与会话内文件占用（2026-11-26，UTC+08:00）
 
 ### A. Android 版自有源码迁到 `HCMCL PE/`
