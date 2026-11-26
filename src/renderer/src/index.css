@@ -232,7 +232,7 @@ body {
 }
 
 /* 背景只保留渐变底色；装饰光斑（.blob）已移除。
-   背景“模糊”由各处玻璃面板的 backdrop-filter 承担，不再靠彩色光斑造氛围。 */
+   背景"模糊"由各处玻璃面板的 backdrop-filter 承担，不再靠彩色光斑造氛围。 */
 
 /* --- 像素猫吃鱼加载动画 --- */.catfish-bob {
   animation: catfish-bob 1.4s ease-in-out infinite;
@@ -4805,4 +4805,92 @@ body.hc-tauri-ai-hud--page #root {
     max-height: 35vh;
   }
   .hc-tauri-ai-hud--embedded { max-height: 28vh; }
+}
+
+/* ------------------------------------------------------------------ */
+/* Android / iOS 移动端外壳                                            */
+/* ------------------------------------------------------------------ */
+/* 平台标识由 main.tsx 写在 <html data-platform> 上。
+   移动端没有自定义标题栏、窗口按钮与鼠标指针，导航改由底部横向条承载（见 App.tsx）；
+   这里只负责触摸语义、安全区与可用性收口，不改任何皮肤令牌，避免覆盖各皮肤的材质选择。 */
+
+html[data-platform='android'],
+html[data-platform='ios'] {
+  /* Android WebView 默认会做文本自动放大，会让固定字号的界面比例失真。 */
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
+/* 全面屏安全区：Tauri 可能以 edge-to-edge 方式铺满，避免内容压到状态栏 / 手势条。 */
+html[data-platform='android'] #root,
+html[data-platform='ios'] #root {
+  padding-top: env(safe-area-inset-top, 0px);
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+html[data-platform='android'] body,
+html[data-platform='ios'] body {
+  /* 触摸屏没有 hover，长按弹出系统菜单只会打断操作。 */
+  -webkit-tap-highlight-color: transparent;
+  overscroll-behavior: none;
+  overflow-x: hidden;
+}
+
+html[data-platform='android'] * ,
+html[data-platform='ios'] * {
+  -webkit-touch-callout: none;
+}
+
+/* 输入类控件仍需可选中 / 可长按粘贴。 */
+html[data-platform='android'] input,
+html[data-platform='android'] textarea,
+html[data-platform='ios'] input,
+html[data-platform='ios'] textarea {
+  -webkit-user-select: text;
+  user-select: text;
+}
+
+/* 底部导航条与悬浮下载球的左右安全区（刘海屏横屏时有用）。 */
+html[data-platform='android'] .app-topnav,
+html[data-platform='ios'] .app-topnav {
+  padding-left: calc(1rem + env(safe-area-inset-left, 0px));
+  padding-right: calc(1rem + env(safe-area-inset-right, 0px));
+}
+
+/* 下载球抬高到底部导航之上，否则会盖住导航项。 */
+html[data-platform='android'] .download-orb,
+html[data-platform='ios'] .download-orb {
+  right: calc(0.75rem + env(safe-area-inset-right, 0px));
+  bottom: calc(5.25rem + env(safe-area-inset-bottom, 0px));
+}
+
+/* 手机上横向空间紧张，把桌面端的 20px 内容留白收到 12px。 */
+html[data-platform='android'] main {
+  padding: 0.75rem;
+}
+
+/* 主页启动核对的提示：不弹窗，只让「启动游戏」的图标呼吸。
+   闪烁是唯一的「正在处理 / 待确认」信号，所以幅度要明显但不刺眼。 */
+@keyframes nav-blink {
+  0%,
+  100% {
+    opacity: 0.35;
+    transform: scale(0.9);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.06);
+  }
+}
+
+.nav-blink {
+  animation: nav-blink 1.15s ease-in-out infinite;
+  transform-origin: center;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .nav-blink {
+    animation: none;
+    opacity: 0.7;
+  }
 }

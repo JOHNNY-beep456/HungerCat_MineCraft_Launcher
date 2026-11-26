@@ -221,11 +221,13 @@ mod android {
     fn uuid(value: &str) -> bool { Uuid::parse_str(value).map(|parsed| parsed.to_string() == value).unwrap_or(false) }
     fn plain_path(path: &Path, locale: &str) -> Result<(), String> {
         if !path.is_absolute() || path.components().any(|part| matches!(part, Component::ParentDir | Component::CurDir)) { return Err(denied(locale)); }
-        for parent in path.ancestors() {
+        // 末级（index 0）必须是真实文件/目录；Android 的应用私有目录祖先由系统维护成
+        // 别名软链接（`/data/user/0` ↔ `/data/data`），不能当作越界处理。
+        for (index, parent) in path.ancestors().enumerate() {
             let metadata = fs::symlink_metadata(parent).map_err(|_| denied(locale))?;
-            if metadata.file_type().is_symlink() { return Err(denied(locale)); }
+            if metadata.file_type().is_symlink() && crate::path_alias::link_is_fatal(index == 0) { return Err(denied(locale)); }
         }
-        if fs::canonicalize(path).map_err(|_| denied(locale))? != path { return Err(denied(locale)); }
+        if !crate::path_alias::ancestor_alias_allowed() && fs::canonicalize(path).map_err(|_| denied(locale))? != path { return Err(denied(locale)); }
         Ok(())
     }
     fn validate_root(path: &Path, session: &str, locale: &str) -> Result<PathBuf, String> {

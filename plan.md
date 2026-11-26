@@ -1,6 +1,6 @@
 # HCMCL / HCMCLL 进度与接续计划
 
-> 更新时间：2026-11-22，Asia/Shanghai（UTC+08:00）。此前迁移、真实 Electron 覆盖安装及用户数据补迁记录见第 1–29 节；HUD 阴影、AI 悬浮球与 `0.8.0-dev2` 见第 30 节；`0.8.0-dev3` 的三项修复见第 33–35 节；**实例遍历预算与资源扫描降级、液态玻璃与中文安装器、后端三语文案、小文件下载与安装白名单、全链路下载瓶颈、可更新分栏批量更新见第 36–41 节，当前版本 `0.8.0-beta5`**。完整原生窗口、DPI、鼠标穿透、socket、组网、真实账号与游戏行为仍未验收；未执行发布、提交或推送。当前根项目版本以 [package.json](<package.json>) 为准。
+> 更新时间：2026-11-25，Asia/Shanghai（UTC+08:00）。此前迁移、真实 Electron 覆盖安装及用户数据补迁记录见第 1–29 节；HUD 阴影、AI 悬浮球与 `0.8.0-dev2` 见第 30 节；`0.8.0-dev3` 的三项修复见第 33–35 节；实例遍历预算与资源扫描降级、液态玻璃与中文安装器、后端三语文案、小文件下载与安装白名单、全链路下载瓶颈、可更新分栏批量更新、首次入库与三系统打包见第 36–42 节；**Android 全链路见第 43–54 节**（43 打通与 x86 出包、44 路径误判、47 平台边界、48 内置运行时、49 图形层、50 触控层、51 移动端启动尺寸、52 卡住可观测性与运行时调研、53 多 Java 运行时、54 启动参数与布局管理），**当前版本 `0.8.0`（versionCode 9800）**。完整原生窗口、DPI、鼠标穿透、socket、组网、真实账号与游戏行为仍未验收；未执行发布、提交或推送。当前根项目版本以 [package.json](<package.json>) 为准。
 >
 > **整体仍在迁移与补齐阶段，尚未完成全功能验收。** 下文分别标明源码落盘、本地测试通过、平台限制和未验证事项，不以文件存在、分支数量或旧包代替产品完成。
 
@@ -631,3 +631,466 @@ Task-18 以此有界源码子任务口径收口；完整功能、外观、用户
   2. Linux `AppImage` 打包 **panic**：`couldn't find a square icon to use as AppImage icon`，退出码 134。根因是 `bundle.icon` 缺省候选只有 `icon.ico` / `icon.png`，没有 bundler 认可的方形 PNG。用 `npx tauri icon src-tauri/icons/icon.png` 生成 32/64/128/128@2x PNG 与 `icon.icns`，并在 `tauri.conf.json` 显式声明 `bundle.icon`。**Windows 侧不受影响**（仍用原 `icon.ico`，故三份本地产物无需重打）。
 - **CI 结果**：`build-tauri` run [45010415449](https://github.com/JOHNNY-beep456/HungerCat_MineCraft_Launcher/actions/runs/45010415449) **completed success**，四个产物均上传：`hcmcl-linux-x86_64`、`hcmcl-linux-aarch64`、`hcmcl-macos-x86_64`（13,909,778 B dmg）、`hcmcl-macos-aarch64`（13,465,840 B dmg）。Release 汇总 job 因非标签触发按设计跳过。
 - **仍未验证**：三架构 Windows 包均未做真实安装（本轮只到 makensis 出包）；macOS dmg 未签名未公证，未在 Apple 硬件上打开；Linux 包未在桌面环境安装运行；aarch64 Linux 未在真机验证。产物由用户自行从 Actions 下载，本机只保留了 macOS 两个 dmg 的下载副本。
+
+## 43. Android 端打通与 x86 出包（2026-11-23 15:20–16:10，UTC+08:00）
+
+- **起点**：Android 的源码侧此前已就位，缺的是本机工具链与实际出包。已有：`src-tauri/gen/android` 完整 Gradle 工程（AGP 9.3.1 / Kotlin 2.2.10 / Gradle 9.6.1 / `compileSdk 36` / `minSdk 24`）、`mobile_files` / `mobile_export` / `mobile_security` 三个移动模块、原生侧 `HcmclFilesPlugin.kt`、`security/HcmclSecretStore.kt`、`MainActivity` 的 `enableEdgeToEdge()`，以及 Rust 侧 61 处 `cfg(desktop)` / `cfg(mobile)` 与 `#[cfg(target_os="android")]` 分支。`cargo check --target x86_64-linux-android --lib` 在改造前即通过（524 条 unused 警告，无 error）。
+- **工具链（本机新装，全部在 `F:/Android/Sdk`）**：cmdline-tools 12.0、`platform-tools`、`platforms;android-36`、`build-tools;36.0.0`、`ndk;27.2.12479018`；JDK 复用系统 `C:/Program Files\Java\jdk-21`。
+- **三个构建期阻塞与解法**：
+  1. **Gradle wrapper 下载被 JDK PKIX 挡住**（本机 TLS 由中间设备签发，JDK `cacerts` 不认）→ `JAVA_TOOL_OPTIONS=-Djavax.net.ssl.trustStoreType=Windows-ROOT` 让 JDK 直接用系统根证书库；`services.gradle.org` 仍被中断时，从腾讯镜像取 zip 并把 wrapper 的 `distributionUrl` 临时指向 `file:/…`（**构建后已还原为官方地址**）。
+  2. **配置缓存与维护版 `BuildTask` 不兼容**：该任务（哈希锁定、转调 Tauri CLI）在执行期读 `project.providers`，Gradle 9 报 `Invocation of 'Task.project' … unsupported with the configuration cache` → `gradle.properties` 改为 `org.gradle.configuration-cache=false`，不改任务实现。
+  3. **`tauri android build` 只出 unsigned APK** → `zipalign -p -f 4` + `apksigner sign --ks … --ks-pass file:…`，密钥与口令在 `.local/android-keystore/`（`/.local/` 已 gitignore）。
+- **前端移动外壳（本次改动）**：`main.tsx` 在挂载前注入 `<html data-platform>`；`App.tsx` 在 Android/iOS 上强制 `navPosition='bottom'`、隐藏 `TitleBar` 与 `CursorGlow`、`pt-12 → pt-0`、禁用实验性 Win10 桌面外壳；`index.css` 新增移动端段（`env(safe-area-inset-*)` 避让、触摸语义、下载球上移、内容留白 12px）；`index.html` 增加 `viewport-fit=cover`。
+- **产物**（`release/`，均已 gitignore）：
+  | ABI | 文件 | 大小 | SHA-256（前 32 位） |
+  | --- | --- | --- | --- |
+  | x86_64 | `HCMCL0.8.0-beta5-android-x86_64.apk` | 32,447,799 B | `930a56ad61ed96ed91d89ecf19fd581c` |
+  | x86 | `HCMCL0.8.0-beta5-android-x86.apk` | 33,807,668 B | `4444c3a262812cad2acbcec8596fdb69` |
+  两者同一签名（证书 SHA-256 `b13babf0…e58b61`），`aapt2` 校验：`package=top.johnnyblog.hcmcl`、`versionCode=8000`、`versionName=0.8.0-beta5`、`minSdk 24` / `targetSdk 36`、`native-code` 分别为 `x86_64` / `x86`。包内仅含对应 ABI 的 `libhcmcl_tauri.so`（约 30.7 MB，前端资源编入该库，`assets/` 只有 `tauri.conf.json` 与 baseline profile）。
+- **未验证**：未在真机/模拟器启动；WebView 真实渲染、Keystore 桥读写、文件导入导出授权流程、返回键与后台驻留均未运行验证。ARM（`aarch64` / `armv7`）未出包；手机竖屏多列布局仍需逐页打磨。
+
+## 44. Android 路径误判修复与 beta6 出包（2026-11-23 18:10–19:10，UTC+08:00）
+
+- **用户反馈（三张 Android 截图）**：① 资源下载 → 版本「版本清单加载失败：拒绝通过符号链接访问游戏文件」；② 主页「无法打开现存整合包目录」；③ 实例页「导入失败：无法打开现存整合包目录」且列表一直停在「正在获取已安装版本…」。
+- **根因是同一件事的两个面**：Android 的应用私有目录前缀由系统维护，启动器沿用了桌面的「全路径无链接」与「从 `/` 逐级 `openat`」两套硬假设。
+  1. **祖先软链接被当恶意链接**：`/data/user/0` 与 `/data/data` 是同一目录的两种写法，`runtime::absolute`、`downloads::absolute`、`catalog::checked_absolute`、`install_lock` 逐级 `symlink_metadata` 时把祖先判成链接 → `versions:list`（版本清单）、`installed:list` / `listAll`（实例列表与实例页加载态）全部直接失败。
+  2. **祖先不可读导致锚点链断裂**：`modpack::access::Directory::open` 从 `/` 逐级 `openat`，而 Android 的 `/data` 是 `drwxrwx--x`（others 只有 `x`），`O_RDONLY` 打开目录要读权限 → `EACCES` → 主页脚本目录、整合包导入、实例文件管理统一报「无法打开现存整合包目录」。
+  3. **前端加载态没有收敛**：`installed:list` 抛错时 `InstalledPage.refresh` 只 `catch {}`，首次进入即永久停在加载态。
+- **修复**：
+  - 新增 `src-tauri/src/path_alias.rs` 统一策略：`ancestor_alias_allowed()` = Android，`link_is_fatal(final_segment)` = 末级或桌面。**末级永远是启动器自建对象，任何平台都拒绝链接**；祖先级只在 Android 放开。
+  - 逐级校验改为 `peekable()` + `final_segment`：`runtime::absolute`、`downloads::absolute`、`catalog::checked_absolute`、`install_lock::absolute_components`、`services::tool_scope`、`mobile_files::plain_path`（Android 上同时跳过 `canonicalize(path) != path` 的整条相等断言）。
+  - `modpack::access`：`Anchor` 增加 `alias` 标记；`Directory::open` 在祖先级允许跟随系统别名链接并在 `verify()` 里用 `native::root(path, follow)` 复验身份（链接被改指向仍会被身份比对抓住）；`native::root/child` 在 `EACCES/EPERM` 时退回 **`O_PATH`** 锚点——句柄仍能 `openat` 与 `fstat`，只是不能枚举，正好对上「祖先可穿不可读」。
+  - 前端 `InstancesPage.refresh` 失败时 `setInstalled(prev => prev ?? [])`，加载态必然收敛。
+- **验证**：`cargo check --all-targets` 通过；`cargo check --target x86_64-linux-android --lib` 通过（542 警告 0 error）；`cargo test --lib` **940 passed / 0 failed**（含 `access` 的「末级链接必须被拒」与「祖先换名不可重绑」用例，确认桌面语义未退化）；`npm run typecheck` 通过。
+- **产物**（`release/`，均已 gitignore；同 beta5 签名，`versionCode=8000` 可覆盖升级）：
+  | ABI | 文件 | 大小 | SHA-256（前 32 位） |
+  | --- | --- | --- | --- |
+  | x86_64 | `HCMCL0.8.0-beta6-android-x86_64.apk` | 32,537,911 B | `e4f8a73453806201ca1c5961286cfa33` |
+  | x86 | `HCMCL0.8.0-beta6-android-x86.apk` | 33,778,996 B | `fea611a79fef00e581d868adaa0f7881` |
+  `aapt2` 复核：`versionName=0.8.0-beta6`、`native-code` 分别为 `x86_64` / `x86`、`minSdk 24` / `targetSdk 36`；`apksigner` 证书 SHA-256 仍为 `b13babf0…e58b61`（与 beta5 一致，可直接覆盖安装）。
+- **构建期小坑**：Gradle wrapper 再次去 `services.gradle.org` 拉 9.6.1 并 `Read timed out`。本机 `~/.gradle/wrapper/dists/gradle-9.6.1-bin/` 里已有完整解压副本（另一个 URL 哈希目录），把它复制到按官方 URL 算出的哈希目录并补 `gradle-9.6.1-bin.zip.ok` 即可离线复用，无需改 `distributionUrl`。
+- **仍未验证**：本机无 Android 设备/模拟器，修复只在交叉编译与单元测试层面成立；真机上的 WebView 渲染、文件导入导出、Keystore 桥仍未运行验证。
+
+## 45. 下载重试与换源（0.8.0-beta7，2026-11-23 19:00–20:10，UTC+08:00）
+
+- **用户反馈**：① 「一旦下载堵塞或 404 就直接错误而不是继续尝试或更换源」；② 某依赖 `it.unimi.dsi:fastutil:8.5.18` 下载失败。
+- **定位到的四个独立缺陷**：
+  1. `download_one` 里 `if e.fatal { return Err(...) }` 先于一切重试判断；`TransferError::status` 又把 400/401/403 标成 fatal，镜像 403 会终止整个文件。
+  2. `downloads::ordered` 与 `version_metadata::Policy` 的 `official-first` 分支只返回官方单候选，等于「官方优先」直接砍掉镜像兜底；`auto` 才有两个候选。
+  3. 20 秒读取超时只覆盖「完全无数据」，TCP 半开时的滴流会让下载永久卡住且不触发任何失败。
+  4. 依赖候选只来自版本 JSON 声明的仓库（Fabric/Quilt/Forge maven）；`fastutil` 这类传递依赖实际在 Maven Central，主仓库 404/错误页即判失败。
+- **修复**：
+  - `download_one` 改为三级兜底：同源按预算重试（`attempts()`，停滞类只再试一次）→ `hopeless()`（400/401/403/404/410/416）直接换源 → 全部来源轮空后 `DOWNLOAD_PASSES=2` 整体再试一轮；换源前仍丢弃本来源半成品（不同来源的续传校验器不可互认）。
+  - `ordered` 两种策略都保留官方与镜像；`version_metadata::Policy` 同改，`list()` / `source_version()` 各加一轮重试（`retry_pause` 1.2s，取消优先）。
+  - `transfer_task` / `transfer_segment` 增加低速看门狗：30 秒不足 32 KiB 判定为「速度过低」，落盘后返回 `slow` 错误交给上层换源。
+  - 新增 `library_urls`：主仓库为 Mojang / Fabric / Quilt / Forge maven 时，追加 `https://repo1.maven.org/maven2/<path>` 作为最后候选。摘要仍由版本 JSON 的 sha1 复核，`allowed_download_host` 已放行该域。
+  - `modpack::network`：`download_attempt` + `download_with_resolver`，`ARCHIVE_ATTEMPTS=2`，仅对 `retryable()`（连接失败/超时/读取失败/5xx/408/429/DNS 超时）重试，重试前 `seek(0)` + `set_len(0)`。
+- **测试**：`cargo test --lib` 944 passed / 0 failed。新增 `source_strategy_never_drops_the_fallback_candidate`、`missing_file_retries_every_source_twice_before_failing`（4 次请求 = 2 来源 × 2 轮）、`truncated_body_is_retried_on_the_same_source_before_switching`；并把 `paths_and_source_order` 的 `official-first` 断言更新为「两个候选」。
+- **仍未做**：资源安装（Modrinth / CurseForge 单文件）的 `write_export_download` 仍是单次请求，重试需要重建 writer 与重新 bind，本轮未改；整合包 `retryable` 用错误文本判定，属既有字符串错误风格的延续。
+
+### 45.1 fastutil 实测（2026-11-23 19:12）
+
+- `HEAD https://maven.fabricmc.net/it/unimi/dsi/fastutil/8.5.18/fastutil-8.5.18.jar` → **404**
+- `HEAD https://repo1.maven.org/maven2/it/unimi/dsi/fastutil/8.5.18/fastutil-8.5.18.jar` → **200**
+
+Fabric 的 profile JSON 把 `it.unimi.dsi:fastutil` 指向自己的 maven，但该仓库并不托管这个传递依赖，所以此前必然拿到 404 并直接终止安装。`library_urls` 的 Central 兜底即针对此类「声明仓库不托管」的情况。
+- **产物（0.8.0-beta7，同 beta6 签名）**：`release/HCMCL0.8.0-beta7-win-x64-setup.exe`（14,091,863 B，SHA-256 `9ceec707…c1e927`）、`release/HCMCL0.8.0-beta7-android-x86_64.apk`（32,464,183 B，`d26a1fa0…3d1c4fa7`）、`release/HCMCL0.8.0-beta7-android-x86.apk`（33,848,628 B，`e4e5bd17…7cdeee12`）。
+- **收尾**：`TransferError.fatal` 字段在三级兜底落地后已无读取方，一并删除，避免留下死字段。
+
+## 46. 进度卡死与回退（0.8.0-beta8，2026-11-23 19:37–20:55，UTC+08:00）
+
+- **用户反馈（两张 Android 截图为同一次下载的先后两帧）**：进度停在「文件 5460/5461 · 572.0 MB / 574.1 MB · 99.9%」，当前文件 `it.unimi.dsi:fastutil:8.5.18`，过一会儿回退到「553.4 MB / 574.1 MB · 96%」并重新下同一文件。
+- **两个现象是两个独立缺陷**：
+  1. **99.9% 其实是分子口径问题**：`Progress::update` 的 `percent` 只按「已完成文件数 / 总文件数」算并夹到 99.9，5460/5461 从第一秒起就是 99.9%。最后一个文件恰好是 20 MiB 的大依赖，于是整个收尾阶段（下载 + 串接 + 校验）显示成不动。
+  2. **回退是分段下载的整体放弃**：`transfer_any` 里 `if let Ok(())=segmented_transfer(...)` 把错误吞掉，然后 `remove_file(temp)` + `state=None` 退回单流从 0 开始。fastutil 19.9 MiB ≥ `SEGMENT_MIN_BYTES`(16 MiB)，按 16 路切成 1.2 MiB 的碎请求；任意一段超时/被镜像拒绝，整个文件就推回起点，进度因此掉 18.6 MiB（≈ 该文件已下部分）。
+  3. **响应头阶段没有超时**：客户端 `timeout(180s)` 是「整体超时」（含响应体），对大文件是误伤、对「接受连接但不回响应头」只能干等 180 秒——正是「突然卡死」的时长来源。
+- **修复**：
+  - `segmented_transfer` 重写：分段文件按 `{temp}.seg-{i}` 固定命名，几何（来源 + 总大小 + 段数）写入 `{temp}.segmeta`；同一来源再次尝试时长度匹配的分段直接复用，只补缺失的段。单段 3 次重试（`SEGMENT_ATTEMPTS`），一段失败不再牵连同文件其它段。
+  - 引入 `SegError::{Unsupported,Other}`：只有「服务器返回 200 忽略 Range」或 `Content-Range` 不合法才降级单流；连接重置、超时、5xx 一类瞬时失败保留分段并向上抛，交给同源重试。
+  - 段数改为 `segment_connections()`：`min(用户连接数, 16, max(2, total / 4 MiB))`，20 MiB 文件只用 5 段，200 MiB 仍放行 16 段。
+  - 去掉客户端整体 `timeout(180s)`，改为 `RESPONSE_TIMEOUT=30s` 包住 `send()`（建连 + 响应头），超时按慢速失败处理。
+  - `TransferError::attempts()`：慢速失败由 1 次改为 2 次，避免「一停滞就换源」，换源会丢分段。
+  - `Progress::update` 的 `percent` 改为按字节（保留一位小数），与下载浮球的字节口径一致；浮球未完成时封顶 99%。
+  - 新增 `discard_partial()` 统一清理主临时文件与全部分段/元数据，`TempPath::drop` 与换源、416 分支都改走它，避免残片。
+- **测试**：`cargo test --lib` 946 passed / 0 failed。新增 `segment_geometry_keeps_chunks_above_four_mebibytes`（20 MiB→5 段、200 MiB 仍 16 路）、`segment_layout_reuses_finished_chunks_and_drops_stale_ones`（同源复用、换源清理、放弃清理）。
+- **产物（0.8.0-beta8，同 beta7 签名，`versionCode=8000` 可覆盖安装）**：`release/HCMCL0.8.0-beta8-win-x64-setup.exe`（14,079,105 B，SHA-256 `57f0c705…6a5653d`）、`release/HCMCL0.8.0-beta8-android-x86_64.apk`（32,521,527 B，`9ef2d2e1…8ebd6319`）、`release/HCMCL0.8.0-beta8-android-x86.apk`（33,873,204 B，`c7d40d68…37bd93ea`）。
+
+## 47. Android 启动与 Java 的平台边界（0.8.0-beta9，2026-11-23 20:18–21:05，UTC+08:00）
+
+- **用户反馈**：Android 版「无法启动实例」「安装 Java 有问题」。
+- **实际行为（复现路径）**：
+  1. 点「启动」→ 渲染层先调 `java:check`，后端 `detect_java` 抛「移动端尚未接入游戏 JVM 检测」；渲染层 `catch {}` 吞掉后继续 `launch:start` → `launch_start` 在首个判断处抛「Android/iOS 游戏 JVM、LWJGL、Surface 与输入运行时尚未适配」。用户看到的是一句**无法采取行动的技术性错误**。
+  2. 设置 → 游戏 → Java：`JavaPathRow` 挂载即调 `java:detect`，抛错但 `useEffect` 内没有 `catch`，成为未处理的 Promise 拒绝；「手动指定」「重新检测」在移动端必然失败，列表永远是空。
+  3. 「安装 Java」（`java:install`）只从 `JavaPrompt` 触发，而 `JavaPrompt` 依赖 `java:check` 返回不兼容——移动端 `java:check` 直接抛错，所以弹窗根本不出现，用户只能看到启动失败。
+- **技术结论（为什么不能"修好就能玩"）**：Adoptium Temurin 是 glibc 二进制，Android 只有 bionic；且 `targetSdk ≥ 29` 的应用既不能 `exec` 也不能 `dlopen` 应用私有目录内的可执行文件（Termux 为此长期停在 `targetSdk 28`）。真正的 Android 启动需要把 bionic JRE 打进 APK 的 `jniLibs`、用 JNI 在进程内 `JNI_CreateJavaVM`，并移植 LWJGL 的 Android 图形/输入/音频层（PojavLauncher / FCL 的做法），属于独立运行时工程。
+- **本轮修复（表现层 + 提前拦截）**：
+  - `runtime::native_game_supported()` 作为唯一判据；`MOBILE_RUNTIME_BOUNDARY` / `MOBILE_JAVA_BOUNDARY` 两句话统一 `spawn_process`、`launch_start`、`detect_java`、`installer_desktop`、`java_runtime::desktop_only` 的拒绝点，全部指向「请使用桌面版」。
+  - `java:check` 在移动端直接返回 `{"required":0,"compatible":false,"available":[],"supported":false}`：不解析游戏目录、不触发安装引导；桌面端同一响应补 `supported:true`。
+  - 渲染层新增 `NATIVE_GAME_SUPPORTED`（读 `window.api.platform`，不为此静态引入整个桥接包）与 `launch()` 的点击级拦截，配 `PlatformBlockedNotice` 弹窗（`App.tsx` 与 `JavaPrompt` 同级渲染），覆盖实例卡片、世界、服务器快速进入、主页「开始游戏」与 AI 启动五个入口。
+  - `installJavaAndLaunch` 在移动端收起引导并改弹平台说明，避免把后端边界当成「安装失败」。
+  - 设置页 Java 区块：`JavaAutoRow` 在移动端换成一行只读说明（`settings.java.mobileDesc` / `mobileTag`），`JavaPathRow` 整块不渲染且 `useEffect` 跳过检测；桌面端 `detect()` 补 `catch`，失败时清空列表落到占位文案而不是未处理拒绝。
+  - i18n 新增 `cmp.platformBlocked.*`（4 键）与 `settings.java.mobileTag|mobileDesc`，zh-CN / zh-TW / en 三语同步（ja 目录为空，按设计回落 zh-CN）。
+- **测试**：`cargo test --lib` **947 passed / 0 failed**（新增 `desktop_platform_reports_game_runtime_supported`；移动端 `installer_mobile_rejects_before_paths_or_spawn` 的断言从旧的「未创建」改为新的「桌面版」）。`cargo check --all-targets`、`npm run typecheck`、`node scripts/test-i18n.mjs`（14/14）通过。
+- **未做**：移动端启动游戏本体仍未实现（见上）；本轮只保证「不假装可用、不抛技术性错误、动作在点击层被拦下」。
+- **产物（0.8.0-beta9，同 beta8 签名，`versionCode=8000` 可覆盖安装）**：`release/HCMCL0.8.0-beta9-android-x86_64.apk`（32,546,103 B，SHA-256 `df745a15…a5b45a`）、`release/HCMCL0.8.0-beta9-android-x86.apk`（33,901,876 B，`87ed0540…b450a4`）。`aapt2` 复核 `versionName=0.8.0-beta9`、`native-code` 分别为 `x86_64` / `x86`；`apksigner` 证书 SHA-256 仍为 `b13babf0…e58b61`。
+
+## 48. Android 内置 Java 运行时与 arm64 出包（0.8.0-beta10，2026-11-23 21:00–21:40，UTC+08:00）
+
+用户的诉求是「安卓上能玩，且不影响其他平台的占用大小」。这一节先解决前一半的地基与后一半的全部约束，**但游戏本体仍进不去**，原因在末尾写清。
+
+- **先核对了三个前提**：
+  1. beta9 及之前所有 APK 里只有 `lib/x86/libhcmcl_tauri.so`（`aapt2` 的 `native-code` 也只有 `x86` / `x86_64`）——真机是 arm64，**根本装不上**，这是「安卓上能玩」的第一道硬门槛。
+  2. `targetSdk = 36`，W^X 全量生效：既不能 `exec` 也不能 `dlopen` 应用私有目录里的文件。桌面那套「下载 JRE → 解压 → `java -jar`」在手机上不可能成立。
+  3. 本机 `aarch64-linux-android` target 与 NDK 27.2.12479018 都已就绪（`F:\Android\Sdk`），arm64 可以直接交叉编译。
+- **体积约束怎么满足**：Android 专属内容只走两条通道——`app/src/main/jniLibs/<abi>/` 与 `app/src/main/assets/runtime/`。Tauri 打 Windows / macOS / Linux 包时完全不读这两个目录，所以**桌面包体积零变化**；代价只落在 APK 上（beta10 arm64 从 32.5 MB 涨到 104.9 MB）。
+- **本轮落地的四块**：
+  1. **arm64 出包**：`tauri android build --target aarch64 --apk` 产出基线包（32,519,545 B），`native-code: arm64-v8a`，与既有 beta 同签名、`versionCode=8000` 可覆盖安装。
+  2. **JRE 原生库进 APK**：`scripts/prepare-android-runtime.mjs` 从 `.local/android-runtime/`（已 gitignore，仓库不存二进制）取 PojavLauncherTeam 的 `jre17-*-release.tar.xz`，按 ABI 复制 25 个 `.so` 到 `jniLibs/`；`lib/server/libjvm.so` 提到根并改名 `libjvm.so`（APK 的 jniLibs 不允许子目录）。用 `llvm-readelf -d` 复核过：`libjvm.so` 只 NEEDED `libm/libdl/libc`，其余库由 JVM 运行时在同目录 `dlopen`，因此不需要额外 namespace 处理。
+  3. **平台无关部分进 assets**：`conf`、`lib/modules`（128.6 MB 未压缩）、`lib/security`（含 `cacerts`，缺它会让 HTTPS 与正版登录整体失效）、`lib/jvm.cfg`、`lib/classlist`、`lib/tzdb.dat`、`release` 复制到 `assets/runtime/jre/`；`RuntimeInstaller.kt` 在 `MainActivity.onCreate` 的后台线程里按 `runtime.version` 标记幂等解压到 `filesDir/runtime`。
+  4. **进程内 JVM**：`src-tauri/src/android_jvm.rs` 用 `dlopen("libjvm.so")` + `JNI_CreateJavaVM` 在应用进程内创建 JVM（参数含 `-Djava.home`、`-Djava.class.path`、`-Xrs`、`-XX:+UseSerialGC`），再通过 `jni` crate 调 `hcmcl.Boot.probe()`；`Boot.java` 由 `scripts/build-android-boot.mjs` 用本机 JDK 编译成 1 KB 引导 jar。运行时目录做了「Tauri 解析结果 → `/data/data/<包名>/files` 别名」两处探测，避免解压位置与 `app_data_dir()` 对不上。
+- **行为变化**：`java:check` 在 Android 不再返回 `supported:false`，而是走 `android_java_check`——首次真正创建 JVM 并返回 `{"supported":true,"available":[{"source":"builtin","major":17,…}]}`。设置页 Java 区块的移动端说明同步改为「已内置 Java 17 运行时」。
+- **仍未做的（也就是「还不能玩」的部分）**：Minecraft 需要的图形/输入/音频层没有接入。这条路要 `LWJGL 3.3.3` 的 Android 分支（Pojav 的 `lwjgl3` 仓库只提供 `ci_build_android.bash`，**没有预编译产物**，必须用 ant + NDK 自行交叉编译）、OpenGL 转发（`gl4es` / ANGLE）、承载 `Surface` 的 `GLSurfaceView`，以及把游戏 classpath 里的桌面版 `lwjgl-*.jar` 换成 Android 版。`launch_start` 因此仍被 `MOBILE_RUNTIME_BOUNDARY` 拦下，只是文案改成「内置运行时已就绪、图形层未接入」。
+- **合规提示**：APK 现在再分发 OpenJDK 17（GPLv2+CE）与随后的 LWJGL（BSD-3）/gl4es（MIT）。若分发二进制，需一并提供对应源码与许可声明。
+- **验证与边界**：`cargo check --target aarch64-linux-android --lib`、`cargo check --lib --tests` 通过；`npm run typecheck`（TSC_EXIT=0）、`node scripts/test-i18n.mjs`（14/14）通过。`cargo test --lib` 在**本机**因 Windows SDK 缺 `combase.lib`（`LNK1181`）无法链接，属环境问题，与本次改动无关；移动端测试断言随之从「包含 桌面版」改为「包含 内置 Java」。**全部 Android 行为未在真机或模拟器上运行验证**（本机无设备、SDK 也未装 emulator）。
+- **产物（0.8.0-beta10，同 beta9 签名，`versionCode=8000` 可覆盖安装）**：`release/HCMCL0.8.0-beta10-android-arm64.apk`（104,861,099 B，SHA-256 `093fe334…83fcab`）。`aapt2` 复核 `versionName=0.8.0-beta10`、`native-code: arm64-v8a`；`apksigner` 证书 SHA-256 仍为 `b13babf0…e58b61`。
+
+## 49. Android 图形层接入（0.8.0-beta11，2026-11-23 21:40–22:20，UTC+08:00）
+
+beta10 让 Android「装得上、有 Java」，但 `launch_start` 仍被平台边界挡着。这一节把图形、输入、音频层接进来，**Android 版第一次具备完整启动链路**。
+
+- **先否掉了一个错误前提**：上一节判断「LWJGL for Android 没有预编译产物，必须 ant + NDK 自己交叉编译」。实际去翻 `PojavLauncher.apk` 后确认，需要的构件全都在里面：
+  - `lib/arm64-v8a/`：`libpojavexec.so`（**GLFW 的全部 JNI 与 Surface 桥**）、`liblwjgl.so`、`liblwjgl_opengl.so`、`liblwjgl_stb.so`、`liblwjgl_tinyfd.so`、`libgl4es_114.so`（GL→GLES 转发）、`libopenal.so`、`liblinkerhook.so`。
+  - `assets/components/lwjgl3/lwjgl-glfw-classes.jar`（2.9 MiB）：Android 版 `org.lwjgl.glfw.GLFW`、`CallbackBridge`、`GLCapabilities`、OpenAL 绑定、`PojavRendererInit`。
+  - `javap` 复核：`GLFW` 的静态初始化只做 `System.loadLibrary("pojavexec")`；jar 内**没有任何 `net/kdt` 引用**，因此这套 Java 层可以整体复用，不必再造启动器类。
+  - `llvm-readelf -d` 复核：六个库只 NEEDED 系统库（`libdl/libc/libm/liblog/libandroid/libOpenSLES`），`libpojavexec.so` 额外需要 `libstdc++.so`——Android 系统保留的兼容桩，无需随包。
+  - `libpojavexec.so` 导出 `Java_net_kdt_pojavlaunch_utils_JREUtils_setupBridgeWindow` 等符号，**按名解析而非 RegisterNatives**（全库只有一处 `RegisterNatives` 字符串，位于我们不会调用的 `android.os.OpenJDKNativeRegister`）。因此只需一个同名同包的极小桥接类即可绑定。
+- **构件注入**：`scripts/prepare-android-runtime.mjs` 增 `copyLwjgl` / `copyLwjglJar`，从 `.local/android-runtime/PojavLauncher.apk` 解出（`unzip`，失败回落 `bsdtar`），8 个 `.so` 进 `jniLibs/<abi>/`，jar 进 `assets/runtime/lwjgl/`。`VERSION` 升到 `jre17-pojav-2`，强制已装 beta10 的设备重新解压 assets。
+- **启动链路（四处新增/改写）**：
+  1. `hcmcl.Boot.launch(classpath, main, args, logPath)`：独立 `URLClassLoader`（父加载器只有引导 jar）+ `System.setProperty("java.class.path")` + `System.out/err` 重定向到日志文件；`InvocationTargetException` 先打栈再抛，否则进程内崩溃只剩一个退出码。
+  2. `android_jvm` 重写：`configure(nativeDir, filesDir)` 由 Kotlin 下发；`probe()` 改为读 `jre/release`，**不再为了探测先建 JVM**（堆上限在创建时固定，先建一次会让设置里的内存从此失效）；`launch(spec)` 先设 gl4es 环境变量（`LIBGL_ES=3` / `LIBGL_NOBANNER=1` / `LIBGL_FB=1`，gl4es 初始化只读一次）、`chdir` 到实例目录，再建 VM（`-Djava.library.path=<nativeLibraryDir>`、`-Xrs`、`-XX:+UseSerialGC`、`-Xmx`）并调 `Boot.launch`。引导类通过 `ClassLoader.getSystemClassLoader().loadClass(...)` 定位——附加线程上的 `FindClass` 只看得到引导加载器。
+  3. `android_host`（新模块）：两个方向的 JNI。ART→Rust 是 `GameHost.nativeConfigure/nativeStartGame`；Rust→ART 用 `ndk-context` 取进程 JavaVM 与 Activity，经 Activity 的类加载器 `loadClass` 后在**主线程**调 `GameHost.start(spec)`，并用 channel 等到主线程真正完成挂载（不等就会踩到「界面以为运行中、Surface 还没创建」的竞态）。
+  4. `runtime.rs`：`classpath_allowed()` 在 Android 剔除 `lwjgl*` 与 `*-natives-`（桌面绑定会去找 glibc 原生库与桌面图形后端）；`natives` 改指 `nativeLibraryDir`，不再解压桌面 natives；`head` 把随包 LWJGL jar 插到类路径最前；`start_in_process()` 铺画面、登记 `GameControl`、尾随日志文件、主方法返回时由 `android_game_finished()` 收尾并 `emit("exited")`。
+- **Kotlin 侧**：`GameHost`（`SurfaceView` + `setZOrderOnTop(true)`，`surfaceCreated` 里**先** `setupBridgeWindow` 再起游戏线程，游戏线程必须是新建线程——HotSpot 把创建 JVM 的线程当作主线程）；`net.kdt.pojavlaunch.utils.JREUtils`（包名/类名与 `.so` 符号一一对应，只声明 `setupBridgeWindow(Object)` 与 `releaseBridgeWindow()`）；`MainActivity.onCreate` 里 `GameHost.attach(this)`。
+- **打包方式修正（关键）**：默认 `extractNativeLibs=false` 时 `.so` 留在 APK 内直接映射，应用目录**没有实体文件**，`dlopen("libjvm.so")` 与 `java.library.path` 两条路都会落空。改为 `packaging { jniLibs.useLegacyPackaging = true }`，安装期解压到 `nativeLibraryDir`。副作用是 APK 内的 `.so` 转为 Deflate 压缩，包体从 113.5 MB 降到 69.7 MB。
+- **release 混淆差点让整条桥静默失效**：`buildTypes.release` 开着 `optimization`，R8 会把只在 `GameHost` 里被调用的 `net.kdt.pojavlaunch.utils.JREUtils` 改名——而 `.so` 是按 `Java_<包名>_<类名>_<方法名>` 找符号的。产物核对时在 `classes.dex` 里搜不到 `JREUtils` / `nativeStartGame` / `setupBridgeWindow` 才发现。`app/proguard-rules.pro` 补了三条：`-keep GameHost`、`-keep JREUtils`、以及 `-keepclasseswithmembernames class * { native <methods>; }` 作为兜底（此后 dex 内四个符号都能搜到）。
+- **参数拆分要认两段式选项**：`--add-opens java.base/java.lang=ALL-UNNAMED` 的取值不以 `-` 开头，会被误当成主类，Forge / NeoForge 正是这种形状；`android_launch_spec` 对 `-p` / `--module-path` / `--add-opens` / `--add-exports` / `--add-modules` / `--patch-module` 整体跳过两项，并补了桌面可跑的单元测试 `android_launch_spec_splits_classpath_main_and_args`。
+- **平台边界调整**：`native_game_supported()` 保持「桌面专用 spawn」语义，新增 `launch_supported()`（只排除 iOS）供 `launch_start` 使用；前端 `NATIVE_GAME_SUPPORTED` 从「非 android/ios」改为「非 ios」，`cmp.platformBlocked.*` 文案改为 iOS 专属。
+- **已知限制（写清以免误期待）**：①中途停止不在这一版支持范围——进程内 JVM 无法按信号终止，`System.exit` 会连启动器一起带走，`launch_stop` 在 Android 直接返回可读说明；②同一进程内二次启动未验证（`glfwTerminate` 后能否重建 GL 栈取决于 LWJGL 与 gl4es 的静态状态）；③`lwjgl-glfw-classes.jar` 与 `libpojavexec.so` 来自 GPLv3 的 PojavLauncher，若分发 APK 需一并遵守其许可并提供源码（LWJGL 本体 BSD-3、gl4es MIT、OpenAL-soft LGPL）。
+- **验证**：`cargo check --target aarch64-linux-android --lib`、`cargo check --lib`、`cargo check --lib --tests` 均通过（无 error）；`npx tsc --noEmit`（TSC_EXIT=0）、`node scripts/test-i18n.mjs`（14/14）通过；`javap` 复核编译产物中 `GameHost.start(String)` 为 static、两个 native 方法与 `.so` 导出名一致，`JREUtils.setupBridgeWindow(Object)` 为 static native。**仍未在真机或模拟器上跑过**（本机无设备）。
+- **产物（0.8.0-beta11，同 beta10 签名，`versionCode=8100` 可覆盖安装）**：`release/HCMCL0.8.0-beta11-android-arm64.apk`（69,738,588 B，SHA-256 `98ce0a24…3db5a6`）。`aapt2` 复核 `versionName=0.8.0-beta11`、`versionCode=8100`、`native-code: arm64-v8a`、`extractNativeLibs=true`；`apksigner` 证书 SHA-256 仍为 `b13babf0…e58b61`。
+
+## 50. Android 触控层与自定义布局（0.8.0-beta12，2026-11-24 08:00–08:40，UTC+08:00）
+
+beta11 打通了「能跑起来」，但手机上没有任何输入手段：画面能出来，却动不了。这一节补上触控层，并且把布局做成可自定义的，同时出 arm64 与 x86 两个包。
+
+- **来源与边界（先说清楚）**：需求参考了 FoldCraftLauncher 的功能形态（虚拟按键 + 自定义布局），但**没有使用它的任何代码或资源**——类结构、JSON 格式、坐标体系、绘制与手势逻辑全部是本次新写的。布局用 `schema: hcmcl.controls/1` 与 0..1 相对坐标（FCL 用绝对像素），存储位置 `filesDir/controls/<名称>.json`，与其实现无交集。分发层面要留意的是 beta11 就已引入的 `libpojavexec.so` 与 LWJGL 类库（来自 PojavLauncher，GPLv3），那是另一条独立的许可约束。
+- **输入链路的关键发现（推翻上一轮的理解）**：随包 `lwjgl-glfw-classes.jar` 里的 `org.lwjgl.glfw.CallbackBridge` 是**残桩**——只有 `sendData(int,String)` 与 `nativeSetInputReady/nativeClipboard/nativeSetGrabbing`，而 `libpojavexec.so` 里压根没有 `nativeSendData` 这个符号（`grep -a` 全库为 0）。真正的入口是 `JNI_OnLoad` 用 `RegisterNatives` 登记的一组方法：库内字符串里有 `nativeSendKey/nativeSendChar/nativeSendCharMods/nativeSendCursorPos/nativeSendMouseButton/nativeSendScroll/nativeSendScreenSize`，对应导出符号是 `noncritical_send_*` → `critical_send_*`。逐个反汇编 `noncritical_*` 得到参数类型：key 是 `(int key, int scancode, int action, int mods)`、char 是 16 位 `char`、cursor 是 `(float,float)`、mouse 是 `(int,int,int)`、scroll 是 `(double,double)`、screen 是 `(int,int)`。
+  - 因此引导 jar 内新增**自研的 `org.lwjgl.glfw.CallbackBridge`**：声明上面 7 个 native + 类库引用到的 4 个，并提供 `sendKey/sendCursor/sendButton/sendScroll/sendScreenSize` 包装（全部 try/catch，输入失效不能连累游戏）。引导 jar 挂在系统类加载器，子加载器父优先委派，必然盖住类库里的残桩。
+  - 七个入口由 `android_jvm::register_input` 自己 `RegisterNatives`，函数指针从 `dlsym("noncritical_send_*")` 取。取句柄优先 `dlopen("libpojavexec.so", RTLD_NOLOAD)`——Java 侧 `System.loadLibrary` 已经把它映射进来，按绝对路径再 `dlopen` 一次很可能拿到**另一个实例**，那样事件会进一条没人 `pojavPumpEvents` 的队列。
+- **跨两个虚拟机的调用**：触控事件在 ART 的 UI 线程，GLFW 队列在进程内 HotSpot。链路是 `ControlsView` → `GameHost.native*`（ART JNI）→ `android_host` 入口 → `android_jvm::input`（`attach_current_thread_permanently` 把 UI 线程附到游戏 JVM，2 次附加后走线程局部）→ `hcmcl.Boot.key/look/mouse/scroll` → `CallbackBridge` → 原生队列。宿主库（`libhcmcl_tauri.so`）原本只被 ART 加载，HotSpot 找不到它的符号，所以 `Boot.prepareInput()` 按 `java.library.path` 显式 `System.load` 一次。
+- **视角移动的实现**：GLFW 只给绝对坐标，游戏按相邻两次差值算转角，所以 Java 侧维护一个累加光标，`look(dx,dy)` 累加后夹在 `[1, w-1]`。夹取而不是回绕：回绕会产生「跳一屏」的视角抽搐，代价是单次连续拖动最多转半屏（已知限制，写进 CHANGELOG）。首次投递前把光标摆到画面中心（`cursorReady`），避免相对 0,0 的第一下甩飞。
+- **画面尺寸的竞态**：`surfaceChanged` 常常早于 JVM 创建，那一发投递必然失败，光标就会被夹在 1×1 里。处理方式是 `android_host` 用 `AtomicU64` 记住最近一次尺寸，`android_jvm::launch` 在建好 VM、拿到类之后补一次 `Boot.screen(w,h)`。
+- **层级坑**：`setZOrderOnTop(true)` 会把 Surface 顶到**整个窗口之上**，同一个 FrameLayout 里的触控层就永远看不见（beta11 正是这么写的，只是当时没有覆盖层所以没暴露）。改为默认层级 + 游戏期间把启动器的 WebView 置 `GONE`，退出时恢复。
+- **触控层（`top.johnnyblog.hcmcl.controls`）**：`ControlLayout.kt` 是模型/存储/默认布局/键码表；`ControlsView.kt` 负责绘制、多指分发与编辑模式。
+  - 控件类型：`key`（按住生效，或 `toggle` 点按切换）、`pad`（八向，输出 W/A/S/D 组合）、`look`（拖动改视角）、`mouse`（左右中键）、`scroll`（竖向拖动换算成滚轮）。
+  - 多指：`pointerId → 控件` 一一对应，一个控件同一时刻只归一根手指；退出/进编辑时 `releaseAll()` 逐个补发抬起，避免角色带着「前进」回到游戏。
+  - 编辑模式：右上角「编辑」进入（44dp 大小的胶囊，游戏内半透明）。拖动移动、点选弹属性（名称/大小/透明度/按键绑定/鼠标键/删除）、顶部工具条（添加/重命名/恢复默认）、「完成」保存并退出。编辑期间不向游戏发送任何按键。
+  - 布局名与当前选择存在 `SharedPreferences("hcmcl.controls")`，布局文件独立；读失败一律回落默认布局——布局坏了不该让游戏起不来。
+- **出包**：`prepare-android-runtime.mjs` 增加 `x86` 与「一次只灌一个 ABI」参数（jniLibs 里有几个目录，Gradle 就打包几个 ABI）。`npm run android:build:arm64` / `android:build:x86` 分别出单架构包。x86 的 JRE 用 `jre17-x86-20220225-release.tar.xz`（37,930,912 B，GitHub 直连可用）。
+  - `versionCode` 改由 `build.gradle.kts` 按版本名里的 beta 序号计算（beta12 → 9200）：Tauri CLI 生成的 `tauri.properties` 对同一批内测版一律写 8100，两个 beta 之间无法用版本号区分先后。
+- **验证**：`cargo check --target aarch64-linux-android --lib` 通过；`cargo test --lib` 见下；`gradlew :app:compileUniversalReleaseKotlin` 通过（先修掉一处 `layout` 被 `EditText.layout(...)` 遮蔽）；两个 ABI 各出一次 `assembleRelease`；`aapt2` 复核 `native-code` 分别为 `arm64-v8a` / `x86`、`versionCode=9200`、`versionName=0.8.0-beta12`；`apksigner` 证书仍为 `b13babf0…e58b61`；解包确认 `assets/runtime/boot.jar` 内含自研 `CallbackBridge.class`（`grep -a cursorReady` 命中）。
+- **产物**：`release/HCMCL0.8.0-beta12-android-arm64.apk`（69,795,932 B，SHA-256 `b6036bf4…d5785e`）、`release/HCMCL0.8.0-beta12-android-x86.apk`（69,623,696 B，`fff234dc…60b717`）。
+- **仍未验证**：没有任何真机/模拟器运行记录（本机无设备），触控手感、视角灵敏度（当前 1.6 倍像素）、Surface 与覆盖层的合成顺序都只能靠上手确认；x86 包同理。
+
+## 51. 移动端启动尺寸（0.8.0-beta13，2026-11-24 08:50–09:40，UTC+08:00）
+
+beta12 的包在 Android 上点「启动 Minecraft」会立刻弹「启动失败 / 关键错误：移动端未提供桌面游戏窗口尺寸」。这是 beta11 遗留的占位分支：`game_window_size::resolve_options` 的 `#[cfg(not(desktop))]` 当初就是一句 `Err`（那时 Android 还不能启动），beta11 放开平台边界后没有人回来收掉它。
+
+- **失败位置**：`resolve_options` 在 `launch_prepared` 里排在**取得游戏目录锁之前**，所以错误返回得很快、日志里没有任何游戏侧线索，界面上只剩这一句。
+- **为什么不能照搬桌面**：桌面分支要求真实采样主显示器（拿不到就报错，绝不猜分辨率），还要测窗口装饰。手机上没有窗口可采：画面就是 `SurfaceView`，尺寸等价于屏幕，边框/任务栏/DPI 换算全都不存在。
+- **屏幕尺寸由 Kotlin 回答**：`GameHost.displaySize()` 在 API 30+ 用 `WindowManager.currentWindowMetrics`，更低版本用已废弃但可用的 `Display.getRealMetrics`。返回值统一按**横向**（max/min）给出——Minecraft 只有横向可用，竖着取到的宽高会和之后 `surfaceChanged` 上报的值反着来。
+- **Rust 侧取值**：`android_host::display_size()` 走 Activity 的类加载器 `loadClass("…GameHost")` 后 `call_static_method("displaySize", "()[I")`，再用 `get_int_array_region` 读出 `(u32,u32)`。调用发生在启动流程所在的 tokio worker 上，用 `attach_current_thread`（返回即分离）而不是 `_permanently`，不给线程池留永久附着。取不到时按 **1280×720** 兜底，不拒绝启动：这个值只影响 `--width/--height` 的初始提示，真实画面尺寸随后由 `surfaceChanged` 覆盖。
+- **`fullscreen` 在移动端恒为 false**：`Surface` 本来就占满屏幕，再传 `--fullscreen` 只会让 GLFW 去找一个并不存在的显示器。
+- **紧随其后的第二个坑**：`free_memory_mb` 里读 `/proc/meminfo` 的分支只写了 `#[cfg(target_os="linux")]`，而 Android 的 `target_os` 是 `android`，不匹配 → 尺寸修好后会立刻换成「当前平台无法测量剩余内存，未猜测 JVM 内存上限」。改为 `any(linux, android)`（`/proc/meminfo` 在 Android 上可读，`MemAvailable` 不存在时回落 `MemFree`）。
+- **横屏**：游戏开始时设 `SCREEN_ORIENTATION_SENSOR_LANDSCAPE`，`hide()` 时恢复 `UNSPECIFIED`（锁屏只属于游戏，否则启动器也被钉在横向）。清单早已声明 `orientation|screenSize` 为自处理，切向不重建 Activity；若仍重建了 Surface，现有 `surfaceCreated/surfaceDestroyed` 会把图形桥重挂，且 `started` 门保证不会二次启动游戏。
+- **设置页**：`GameWindowSizeRow` 在 Android/iOS 整行不渲染。这一排预设（720P/1080P/最大化/全屏/自定义）在手机上完全无效，留着只会让人以为启动失败是选项选错了；对应的显示器查询也不再发起。
+- **验证**：`cargo check --target aarch64-linux-android --lib`、`cargo check --lib --tests`、`npx tsc --noEmit`、`node scripts/test-i18n.mjs`（14/14）、`node scripts/test-custom-rows.mjs`（9/9）、`gradlew :app:compileUniversalReleaseKotlin`（`--rerun-tasks`）全部通过。两个 ABI 各出一次包；`aapt2` 复核 `versionCode=9300`、`versionName=0.8.0-beta13`、`native-code` 分别为 `arm64-v8a` / `x86`；`apksigner` 证书仍为 `b13babf0…e58b61`；`classes.dex` 里 `displaySize` 仍在（`-keep class …GameHost { *; }` 生效，没被 R8 裁掉）。
+- **产物**：`release/HCMCL0.8.0-beta13-android-arm64.apk`（69,791,836 B，SHA-256 `b1446c24…4003b0`）、`release/HCMCL0.8.0-beta13-android-x86.apk`（69,619,600 B，`adfed062…38ac3`）。
+- **踩到的构建坑**：`tauri android build` 只在**开始时**跑一次 `beforeBuildCommand`。第一次 arm64 出包时前端改动还没落盘，装出来的包里设置页仍显示「游戏窗口尺寸」；重新出一次包才把前端改动带进 APK。以后改前端就得重新 build，不能只重跑 gradle。
+- **仍未验证**：屏幕尺寸接口只在编译期确认过签名，没有任何真机/模拟器运行记录；本机无 Android 设备。
+
+## 52. Android 启动卡住的可观测性修复 + 多运行时调研（0.8.0-beta14，2026-11-24 09:32–10:20，UTC+08:00）
+
+beta13 把「未提供桌面窗口尺寸」修掉之后，真机上的症状变成**停在启动页一直转圈**。这一节先保证「卡住时能看见卡在哪」，同时把 Java 8/21/25 的运行时来源摸清。
+
+### 卡住的位置推断
+
+用户反馈「停在启动页/转圈」＝ WebView 还在、Surface 还没铺开。而 `GameHost.start`（会隐藏 WebView）位于 `launch_prepared` 的最后一步，所以卡点在**派发之前**：
+
+`LaunchRecoveryPermit::new` → `account_for_launch` → `resolve_options` → `acquire_for_launch` → `resolve_for_launch` → `spawn_blocking{dependencies/validate_assets/prepare_arguments}` → `start_in_process`。
+
+beta12 的包在 `resolve_options` 立刻报错（说明前两步很快），beta13 唯一改动就是 `resolve_options` 里新增的 `android_host::display_size()`，因此**首要嫌疑是这条 JNI 查询**：它跑在 tokio worker 上，`attach_current_thread` + Activity 类加载器 + `currentWindowMetrics`，任何一环不返回都会让启动 worker 永久挂起，界面就永远转圈。
+
+### 这一版做了什么
+
+- **超时化**：`display_size()` 放进独立线程（`hcmcl-display`），`recv_timeout(2s)`；超时/异常都只记一条 logcat 并回落 1280×720。这个值只影响 `--width/--height`，真尺寸由 `surfaceChanged` 覆盖，所以不值得为它冒挂起的风险。
+- **阶段埋点**：新增 `stage(app, text)`，以纯 `log` 事件（不改状态）写进启动控制台。`launch_prepared` 的八步各一行，阻塞闭包里三步各一行。前端 `runtime.tsx` 本来就追加 `e.log`，不需要改 UI。
+- **等锁上限**：`install_lock::acquire_raw` 的两个轮询循环加 120 秒截止。此前只有「取消」能跳出，锁被别的进程占住就是无限等。
+- **黑屏提示**：Android 日志尾随线程在「一个字都没输出」时于 20s/60s 各补一条提示，避免黑屏无信息。
+
+### Java 8 / 21 / 25 运行时调研结论
+
+现状：Android 版只内置 **JRE 17**（`assets/runtime` 里的 `lib/modules` + APK `jniLibs` 里的 `libjvm.so` 等），所有版本都跑 17。要做多版本必须先解决「二进制从哪来」：
+
+| 目标 | 可用来源 | 结论 |
+| --- | --- | --- |
+| Java 17 | Pojav `android-openjdk-build-multiarch`（release `jre17-ec28559`，arm64/x86/x86_64） | 已在用 |
+| Java 21（arm64） | `I-hope1/AndroidJBR` release `v21.0.11-r3`：`jre21-jbr-android-arm64-20261110-final-r3.tar.xz`，31,101,864 B，sha256 `55d63d75…d13ae3` | ✅ 可下载、哈希已核对；包内含 `lib/server/libjvm.so` + `lib/modules`，**自包含**，可直接作为运行时 |
+| Java 25（arm64） | 同上 `v25.0.5-r1`：`jre25-jbr-android-arm64-20261114.tar.xz`，31,366,984 B，sha256 `8e625330…c894e6`（作者标注 experimental） | ✅ 可下载、哈希已核对 |
+| Java 8 | ① Pojav 的 `jre8-*` 全部标注 **for sandboxed iOS**（Mach-O，不是 Android ELF），Android JRE8 只在 GitHub Actions 产物里（需登录）；② Termux 的 JDK8 按 Termux 前缀构建；③ FCL（`FCL-Team/FoldCraftLauncher`）确实在源码树里以非 LFS 方式提交了 `FCL/src/main/jreAssets/app_runtime/java/jre8/`（`universal.tar.xz` 4,280,320 B + `bin-arm64.tar.xz` 4,347,796 B + `version`），但**它是 pack200 形态**：包内是 `lib/resources.jar.pack` 这类 `.pack`，FCL 自己在安装时解包 | ❌ 无可直接使用的 Android arm64 JRE8 |
+| Java 21/25（x86 32 位） | 无 | ❌ |
+
+另外两个硬约束（实现前必须记住）：
+- **进程内只能建一次 JVM**：`JNI_CreateJavaVM` 不可重入，`libjvm.so` 一旦 `dlopen` 就留在进程里。切 Java 版本只能在启动前决定；同一进程第二次启动若换了版本，必须提示「重启应用」。
+- **boot.jar 的字节码版本**：现在用 `javac --release 17` 编译（class 61），Java 21/25 能跑，**Java 8 跑不了**；要支持 8 得再出一份 `--release 8` 的引导 jar，并按 `jre/lib/rt.jar`（而非 `lib/modules`）判断运行时完整性。
+- **FCL 的 `jre8` 不能直接借用**（2026-11-25 实测）：它的 `universal.tar.xz` / `bin-arm64.tar.xz` 是 pack200 形态（`lib/resources.jar.pack` 等 `.pack`），必须先解包成 `rt.jar`；而 `unpack200` 从 JDK 14 起已移除，我们手上没有可用的解包器。另外 `raw.githubusercontent.com` 在本机实测约 8 KB/s 且反复 `Recv failure`，即使能解包也不适合当运行时下载源。
+
+### 验证
+
+`cargo check --target aarch64-linux-android --lib`、`cargo check --lib --tests` 通过；两个 ABI 各出一次包（beta14，versionCode 9400）。
+
+## 53. Android 多 Java 运行时（0.8.0-beta15，2026-11-24 10:20–11:10，UTC+08:00）
+
+第 52 节把来源查清后，这一节把「按版本换 Java」接进启动流程。目标：1.20.5+ 能跑 21，不再一律用 17 硬顶。
+
+### 设计
+
+- **`android_runtime` 模块**：登记可下载来源（`SOURCES`：主版本 + 架构 + URL + size + sha256），负责 `prepare(version)` → `Runtime { major, home, custom }`。
+  - `major == 17` → 直接用内置（`filesDir/runtime/jre` + APK `jniLibs` 里的 `libjvm.so`）。
+  - 已下载过（`home/lib/server/libjvm.so` + `home/lib/modules` + `home/release` 齐全）→ 直接复用。
+  - 有来源 → 下载（流式、每 10% 一行日志、30s 停滞超时）→ 长度与 sha256 双校验 → `spawn_blocking` 解压。
+  - 声明需要 8 且无来源 → 记一行「按 17 启动」继续；声明需要 21/25 但当前架构无来源 → 明确报错。
+- **解压**：上游只发 `.tar.xz`，用 `lzma-rs`（纯 Rust）解出中间 tar 再 `tar::Archive::unpack`，避免为 liblzma 再编一份 Android C 代码。包根成员就是 `./bin`、`./lib`，直接解到目标目录。
+- **`android_jvm` 改动**：`launch` 从 spec 读 `runtime` / `major` / `custom`：
+  - `custom` 时 `dlopen(<home>/lib/server/libjvm.so)` 绝对路径；内置时仍 `dlopen("libjvm.so")` 走 APK。
+  - `-Djava.home=<home>`；`-Djava.library.path=<home>/lib:<nativeLibraryDir>`（自定义运行时自带 `lib/`，而 `libpojavexec`/gl4es/宿主库始终在 APK 目录，两者都得在）。
+  - `tmp`/`user.home` 固定放在 `filesDir/runtime/{tmp,home}`，不跟着 JRE 目录走。
+  - `ACTIVE` 记录「本次建 VM 用的主版本 + 目录」：换版本时返回「重启应用」，因为 `JNI_CreateJavaVM` 不可重入，而且 bionic 会按 SONAME 去重——同名 `libjvm.so` 第二次 `dlopen` 只会拿到先加载的那份。
+- **实测依据**：`llvm-readelf -d jre21/lib/server/libjvm.so` 只有 `libm/libdl/libc` 三个 NEEDED，`SONAME=libjvm.so`；`lib/modules`、`conf/` 齐全，说明这份 JBR 自包含，`-Djava.home` 指过去即可，不需要 `LD_LIBRARY_PATH` 把 `lib/` 塞进全局搜索路径。
+
+### 边界
+
+- Java 8 仍不可用（来源问题，见第 52 节表格），声明 8 的版本按 17 启动并在控制台写明。
+- 21/25 只有 arm64：32 位 x86 包遇到需要 21 的版本直接报错。
+- 每个下载的运行时解压后约 100 MB，堆在 `filesDir/runtimes/jre<major>`；目前没有删除入口。
+
+### 验证
+
+`cargo check --lib --tests`、`cargo check --target aarch64-linux-android --lib` 通过（新增 `lzma-rs 0.3`，Android 目标编译正常）；单元测试 `android_launch_spec_splits_classpath_main_and_args` 扩展为同时断言 `runtime`/`major`/`custom` 随 spec 下发。两个 ABI 各出一次包（beta15，versionCode 9500）。
+
+## 54. Android 启动参数补齐与触控布局管理（0.8.0-beta16，2026-11-25）
+
+用户要求「参考 FCL 的首次启动依赖安装与启动方式（包括指令），并允许玩家自定义虚拟按键」，
+同时明确「不得被认定为衍生作品」。FCL 是 GPL-3.0，所以这一节的做法是：只对齐**行为**，
+实现与数据模型全部自建，并把边界写成可核查的文档 `docs/android-fcl-parity.md`。
+
+### 启动参数：清单没写、但手机上必须有的部分
+
+`android_launch_spec` 只负责切分「类路径 / JVM 参数 / 主类 / 游戏参数」，参数内容全部来自
+版本清单。问题在于清单描述的是桌面环境，下面这些在 Android 上必须由启动器补：
+
+| 补的参数 | 不补的后果 |
+| --- | --- |
+| `-Dorg.lwjgl.librarypath`（同 `java.library.path`） | LWJGL3 的 `SharedLibraryLoader` 与 JNA 各认自己的属性，只设前者时 `stb`/`tinyfd`/`openal` 在运行到一半才报找不到库 |
+| `-Djna.tmpdir` / `-Dio.netty.native.workdir` → `filesDir/runtime/tmp` | 默认 `/tmp` 在 Android 不存在，JNA/Netty 解库失败 |
+| `-Dfml.ignoreInvalidMinecraftCertificates` / `-Dfml.ignorePatchDiscrepancies` | Forge 对证书链与补丁差异是硬失败，手机网络栈与桌面差异大 |
+| `-Dlog4j2.formatMsgNoLookups=true` | 1.17 之前的版本受 log4shell 影响 |
+| `-Dminecraft.launcher.brand` / `.version` | 崩溃报告与部分 mod 显示 `Unknown` |
+| `-XX:-UsePerfData` | hsperfdata 会在临时目录建 mmap 文件，Android 上无用且可能失败 |
+
+另外把 `spec["jvm"]` 里的 `-Djava.library.path=` / `-Dorg.lwjgl.librarypath=` 一并丢弃：
+清单里写的是桌面路径，留在后面会覆盖上面算好的值（JVM 取最后一个同名属性）。
+
+### 触控布局：从「能改」到「能带得走」
+
+`ControlLayout` / `ControlsView` 已有渲染、命中、多指、编辑，这一版补齐管理面：
+
+- **布局切换 / 复制 / 改名 / 删除**：新建入口是「复制当前」，不是空白画布——空白布局一个键都没有，
+  玩家还得手工摆回来。切换前 `releaseAll()`，否则旧布局按住的键在新布局里没有对应控件，会永久卡住。
+- **导出 / 导入**：落在 `getExternalFilesDir(null)/controls`，数据线可取；导入时校验 `schema`，
+  名字冲突加序号，不覆盖已有布局。
+- **工具栏换行**：五个按钮在竖屏 / 小屏上会顶出屏幕，改为按宽度自动换行。
+
+### 为什么不做模拟摇杆
+
+随包的 LWJGL 分支只暴露 `CallbackBridge` 的按键 / 光标 / 滚轮三类入口，模拟轴要改图形层。
+这一条不是「没时间做」，而是补它必须 fork LWJGL，代价与收益不成比例；当前用四向 + 斜向死区近似。
+
+### 合规
+
+`docs/android-fcl-parity.md` 记录了三件事：我们参考了什么（公开文档、设备上的行为观察、Minecraft/LWJGL/OpenJDK 公开规范）、
+没做什么（未复制源码/类名/字段/资源、未链接其二进制）、以及七项可逐条对照的差异（坐标模型、布局格式、
+注入路径、进程模型、运行时策略、摇杆能力）。
+
+### 验证
+
+`cargo check --target aarch64-linux-android --lib` 退出码 0、零 error；
+`:app:compileUniversalReleaseKotlin` 通过。**未在真机验证**：参数是否真的解决 Forge 启动、布局导出的
+实际路径可达性、以及换布局时的手感，都需要设备确认。
+
+### 出包
+
+两个 ABI 各出一次，versionCode 9600，签名与 beta13–15 同密钥（`CN=HungerCat MineCraft Launcher`），可覆盖安装：
+
+| 包 | 大小 | sha256 |
+| --- | --- | --- |
+| `HCMCL0.8.0-beta16-android-arm64.apk` | 69,877,852 B | `8b4ad5fc432e3dfcca50cf46037f02e202b4622e403f81c0f7ad7fdf040a075c` |
+| `HCMCL0.8.0-beta16-android-x86.apk` | 69,717,904 B | `50278d7bc10d11c56240ccea8e04361edc5aef50b508c47d9f56cf618755efd4` |
+
+出包时踩到一次版本错配：`package.json` / `Cargo.toml` / `tauri.conf.json` 已改到 beta16，
+但 `package-lock.json` 还停在 **beta12**（第 3 行与 `packages[""].version` 两处），
+而 versionCode 是 `build.gradle.kts` 按版本名算的 `8000 + beta*100`。五个文件必须一起改，
+判据用 `grep -n '"version": "0.8.0-beta' package.json package-lock.json` 加 Cargo 两处比对，不能只看包名。
+
+### 编译命令的两个硬约束
+
+- Gradle 任务名带 flavor：`:app:compileUniversalReleaseKotlin`。写 `:app:compileReleaseKotlin` 会报
+  ambiguous variant，看起来像代码错误，其实是任务名不对。
+- `cargo check --target aarch64-linux-android` 会因找不到 `aarch64-linux-android-clang` 失败：
+  必须导出 `CC_aarch64_linux_android` / `AR_aarch64_linux_android` /
+  `CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER` 指向 NDK 27.2 的 `aarch64-linux-android24-clang.cmd`。
+
+## 55. 移动端输入补齐与运行时管理（0.8.0-beta17，2026-11-25，UTC+08:00）
+
+用户要求「移动端运行后的功能、完整度和可行度完全对齐 FCL 启动器，且不得被认定为其衍生作品」。
+本轮先做**运行后（游戏内）真正缺的部分**，并把「做不到的部分」逐条写清原因，而不是用占位按钮糊过去。
+
+### 已落地
+
+1. **文字输入（聊天 / 命令 / 告示牌）**——此前手机上根本没法打字，这是与 FCL 最直观的差距。
+   - 引导 jar 新增 `hcmcl.Boot.text(String)`：整串进来，按码点切开发到 `CallbackBridge.sendChar`
+     （GLFW 的 `charTyped`）。整串传而不是逐字传，是因为中文输入法一次提交就是多个字符。
+   - 新增 `controls/GameKeyboard.kt`：挂一个 1×1 透明 `EditText`，用自定义 `InputConnection`
+     接 `commitText` / `deleteSurroundingText` / `sendKeyEvent`，把删除、回车、Esc、Tab 转成按键，
+     文字本身**不留在输入框里**（否则下一次删除的字符数会对不上）。
+   - 链路：`GameHost.nativeText` → `android_host` 的 JNI 入口 → `android_jvm::input`
+     （把 ART 的 UI 线程附着到进程内 HotSpot）→ `Boot.text` → `CallbackBridge` → `libpojavexec` 队列。
+   - 清单加 `android:windowSoftInputMode="adjustNothing"`：输入法浮在画面上，不挤动 `Surface`
+     （否则弹出键盘会触发一次 surface 尺寸变化，画面要跟着重建）。
+2. **摇杆控件**（`kind=stick`）：圆形盘面 + 摇杆头，死区圈可见。输出仍是 W/A/S/D 的离散组合——
+   图形层没有轴通道，这一点在设置与文档里都写明，不假装是模拟量。
+3. **陀螺仪视角**（`kind=gyro`）：`TYPE_GAME_ROTATION_VECTOR`（回落 `TYPE_ROTATION_VECTOR`）
+   → 姿态角 → 相邻差 → 视角增量；跨越 ±180° 折返、超过 30° 的跳变当噪声丢弃。
+   传感器在游戏结束时必须注销，否则会挂在 Activity 上。
+4. **手感参数**：视角灵敏度、Y 轴反转、滚轮步长、方向死区、陀螺仪灵敏度。存在
+   SharedPreferences 的独立键里，**不写进布局文件**——换布局不该重置玩家调好的手感。
+   编辑模式工具栏新增「手感」入口。
+5. **控件编辑补齐**：宽高独立调节（此前固定按宽高比缩放，竖屏没法压扁）、复制控件、
+   新增键盘 / 陀螺仪 / 摇杆三种控件类型；默认布局把方向组换成摇杆并加了一颗「键盘」。
+6. **运行时管理**：`android:runtimes` 列出内置 17 与下载的 21/25（含体积），
+   `android:removeRuntime` 删除下载的那套；内置 17 与「本次会话正在用的那版」明确拒绝
+   （后者是因为 `libjvm.so` 已在进程里，删目录只会让下次启动拿到残缺运行时）。
+   设置页「游戏 → Java」在 Android 上多出一行运行时清单，三语齐全。
+
+### 仍未对齐（原因，不是没做）
+
+| 能力 | 现状 | 原因 |
+| --- | --- | --- |
+| 模拟摇杆 / 动态摇杆 / 手势 | 无 | 随包 `CallbackBridge` 只有按键 / 光标 / 滚轮三类入口，轴事件要改图形层（等于 fork LWJGL 与 `libpojavexec`） |
+| 渲染器切换（VirGL / ANGLE / Zink） | 只有 GL4ES | 没有其它后端的预编译产物，也没有可替换的装载点 |
+| 分辨率缩放 | 无 | 画面尺寸等于 `Surface` 尺寸，缩放要在 EGL 配置层做 |
+| Forge / NeoForge / OptiFine 安装 | 拒绝（`MOBILE_JAVA_BOUNDARY`） | 官方安装器是桌面 `java -jar` 语义，Android 10+ 不允许 `exec` 私有目录里的文件 |
+| Java 8 | 无可用来源 | 见第 52 节表格：Pojav 的 jre8 只有 iOS 包，FCL 树里的是 pack200 形态且 `unpack200` 已被移除 |
+| 退出游戏后二次启动 | 未验证 | `JNI_CreateJavaVM` 不可重入，`glfwTerminate` 之后能否重建 GL 栈取决于 LWJGL 与 gl4es 的静态状态 |
+
+### 验证（只到编译层）
+
+- `node scripts/build-android-boot.mjs`：引导 jar 编译通过（2 个源文件），`VERSION` 升到
+  `jre17-pojav-4` 以强制已装设备重新解压 assets。
+- `cargo check --target aarch64-linux-android --lib`：通过（548 条既有警告，0 error）。
+- `.\gradlew.bat :app:compileUniversalReleaseKotlin`：BUILD SUCCESSFUL。
+- `npm run typecheck`：0 错误。
+- `node scripts/test-*.mjs`：**4 个测试文件存在既有失败**，均与本轮改动无关，且都是环境/依赖声明问题：
+  - `test-tauri-android-launcher.mjs` 11/1：断言 `package.json` 的 Android 构建命令还是旧串，
+    实际早已包含 `npm run android:runtime`（本轮没动 `package.json` 的 scripts）。
+  - `test-tauri-progress.mjs` / `test-tauri-log-forwarding.mjs` / `test-tauri-homepage.mjs` /
+    `test-tauri-ai-hud.mjs`：报「未声明的测试依赖：@shared/backend-text」等夹具缺失。
+  这些失败在改动前就存在，**不当作本轮通过项，也没有为了变绿去改断言**。
+
+### 未验证
+
+**没有任何真机 / 模拟器运行记录**（本机无 Android 设备）。具体未验证项：输入法在各家 ROM 上的
+行为（尤其第三方输入法的 `commitText` 时机）、陀螺仪方向与灵敏度是否顺手、摇杆手感、
+`adjustNothing` 下输入法是否遮挡聊天行、运行时删除后再次下载是否正常。这些都需要设备确认。
+
+### 合规
+
+本轮新增的输入法桥、陀螺仪映射、摇杆绘制、手感参数与运行时管理全部为自写实现，未参考
+FCL 的源码结构；`docs/android-fcl-parity.md` 的对照表与自查清单已同步更新。
+
+## 56. PE 版独立目录、主页启动核对与会话内文件占用（2026-11-26，UTC+08:00）
+
+### A. Android 版自有源码迁到 `HCMCL PE/`
+
+- `src-tauri/android-boot/` → `HCMCL PE/android-boot/`（引导 jar 的 Java 源码 + `VERSION`）。
+- `src-tauri/gen/android/app/src/main/java/` 里**手写**的 Kotlin（`MainActivity`、`controls/`、
+  `runtime/`、`files/`、`security/`、`net/kdt/.../JREUtils.kt`）→ `HCMCL PE/app/src/main/java/`。
+- Gradle 侧用 `app/build.gradle.kts` 的 `sourceSets` 挂回去：
+  `java.srcDirs("$rootDir/../../../HCMCL PE/app/src/main/java")`。
+- **`generated/` 留在 Gradle 工程内**：`Rust.kt`、`WryActivity.kt` 这些由 Tauri 每次构建重新生成，
+  搬出去会出现同名类两份定义。
+- **没有搬的**：`src-tauri/src/android_*.rs`（crate 内模块，且与桌面共用 `runtime`/`storage`）、
+  Gradle 骨架与清单（Tauri CLI 路径写死）、`scripts/*android*.mjs`（根 `package.json` 依赖）。
+  逐条原因与占用表写在 `HCMCL PE/README.md`；`AGENTS.md` §3 加了对应红线。
+- `scripts/build-android-boot.mjs` 的 `SOURCE` 已指向新目录。
+- 验证：`node scripts/build-android-boot.mjs` 通过（2 个源文件）；
+  删除 `app/build/tmp/kotlin-classes` 后跑 `:app:compileUniversalReleaseKotlin`，
+  `Gyro.class` 等重新生成 —— 证明确实从 `HCMCL PE/` 编译，而不是沿用旧产物。
+
+### B. 主页联网核对改成「仅启动时一次」
+
+此前每次进入主页（含切页回来）都会重挂闸门、重新联网校验：网络一抖就把本来能跑的主页拦下来，
+用户看到的是「刚才能用、现在不能用」，同时每次都要闪一次全屏弹窗。
+
+- 新增 `pages/customhome/probe.ts`：模块级会话缓存，同一 id 只真正 `verify` 一次；
+  **失败也保持失败**，`force` 只给用户点「重试」用，自动流程永不重发。
+- 新增 `components/HomepageSession.tsx`，挂在 `Shell` 根上：启动即触发一次核对
+  （用户不打开主页也会核对），并把结果同步给侧栏。
+- `HomepageGate` 增加 `inline`：运行期渲染成内容区里的卡片，不再盖全屏遮罩；
+  `HomepagePage`（管理页）仍用原来的弹窗，因为那是用户主动点进来的操作。
+- 侧栏「启动游戏」图标用 `index.css` 的 `.nav-blink` 呼吸表示状态：
+  正在核对 / 需要确认；`prefers-reduced-motion` 下降级为静态半透明。
+- 兜底：会话复用之后，`CustomHomePage` 在放行时重新 `read` 并比对 `sha256`，
+  内容变了就强制重新核对并中止放行——旧哈希的授权绝不套到新字节上。
+
+### C. 运行期占住主页文件
+
+- 新增 `homepage:hold` / `homepage:release` 与 `Repository::hold(id, expected)`：
+  打开 `homepages/<id>.html`、核对哈希后**把句柄留在 `homepage::State.held`**。
+  Windows 上仓库只授予 `FILE_SHARE_READ`，句柄活着期间写入 / 改名 / 删除都会失败。
+- Unix 没有等价的强制共享语义：只保证读的是同一 inode，不阻止其它进程改写（文档与注释都写明）。
+- 会改写主页文件的通道（`importFile` / `download` / `installNumbered` / `update` / `remove`）
+  在执行前先自动释放占用，否则导入/更新会以「文件被占用」这种像权限问题的形式失败。
+- 单测 `homepage::repository::tests::hold_pins_current_bytes_and_denies_rewrites_while_open`：
+  错误哈希被拒；Windows 下持有时写入与改名均失败；释放后可以再次占用。
+
+### 验证（编译 / 单测层）
+
+- `npm run typecheck`：0 错误。
+- `cargo check --lib`（桌面）与 `cargo check --target aarch64-linux-android --lib`：0 error。
+- `cargo test --lib hold_pins_current_bytes`：1 passed。
+- `node scripts/build-android-boot.mjs`；`:app:compileUniversalReleaseKotlin` BUILD SUCCESSFUL。
+- `node scripts/test-*.mjs`：既有失败集合未变（`ai-hud` 4 / `android-launcher` 1 / `homepage` 2 /
+  `log-forwarding` 16 / `progress` 10），**均与本轮无关**，未改断言凑绿。
+
+### 未验证
+
+- **没有任何真机 / 模拟器记录**：图标闪烁的观感、`inline` 卡片在窄屏下的排版、
+  输入法与主页卡片的叠放关系都需要设备或至少一次桌面实际启动确认。
+- macOS / Linux 上「占用」只是 advisory：行为与 Windows 不同，尚未在那些平台实机核对。
+- 迁移后**未跑完整 `tauri android build`**（只验证到 Gradle 编译与引导 jar）。
+
+### 合规
+
+`HCMCL PE/` 只收纳本项目自写源码；FCL 对照结论不变
+（[`docs/android-fcl-parity.md`](./docs/android-fcl-parity.md)）。

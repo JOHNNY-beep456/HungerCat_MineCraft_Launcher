@@ -215,7 +215,7 @@ async fn send_with_deadline(client: &reqwest::Client, url: reqwest::Url, deadlin
     }
 }
 
-async fn download_with_resolver(
+async fn download_attempt(
     raw_url: &str,
     file: &mut tokio::fs::File,
     cancel: Arc<Cancel>,
@@ -303,6 +303,55 @@ async fn download_with_resolver(
     if Instant::now() >= deadline { return Err("整合包下载总时限已到".into()); }
     let sha256 = format!("{:x}", digest.finalize());
     Ok((received, sha256))
+}
+
+/// 归档下载的重试预算：只重试瞬时失败，每次重试前把暂存截断到 0，绝不拼接两次响应。
+const ARCHIVE_ATTEMPTS: u32 = 2;
+
+fn retryable(message: &str) -> bool {
+    if message.contains("HTTP ") {
+        if let Some(code) = message.rsplit(' ').next().and_then(|value| value.parse::<u16>().ok()) {
+            return code >= 500 || matches!(code, 408 | 429);
+        }
+    }
+    message.contains("连接失败") || message.contains("连接超时")
+        || message.contains("读取失败") || message.contains("读取超过")
+        || message.contains("DNS 查询超时")
+}
+
+/// 单次失败不再直接上报：整合包同样是「堵塞就换口气再试」，但重试绝不续写上一次的响应体。
+async fn download_with_resolver(
+    raw_url: &str,
+    file: &mut tokio::fs::File,
+    cancel: Arc<Cancel>,
+    progress: Arc<dyn Fn(u64, Option<u64>) + Send + Sync>,
+    resolver: Resolver,
+    max_bytes: u64,
+) -> Result<(u64, String)> {
+    let mut last = String::new();
+    for attempt in 0..ARCHIVE_ATTEMPTS {
+        if attempt > 0 {
+            tokio::io::AsyncSeekExt::seek(&mut *file, std::io::SeekFrom::Start(0)).await.map_err(|_| "整合包下载暂存定位失败".to_owned())?;
+            file.set_len(0).await.map_err(|_| "整合包下载暂存重置失败".to_owned())?;
+            progress(0, None);
+            let pause = tokio::time::sleep(Duration::from_millis(800));
+            tokio::select! {
+                _ = cancel.cancelled() => return Err("整合包下载已取消".into()),
+                _ = pause => {}
+            }
+            cancel.check()?;
+        }
+        match download_attempt(raw_url, &mut *file, cancel.clone(), progress.clone(), resolver.clone(), max_bytes).await {
+            Ok(done) => return Ok(done),
+            Err(error) => {
+                cancel.check()?;
+                let again = retryable(&error);
+                last = error;
+                if !again { break; }
+            }
+        }
+    }
+    Err(last)
 }
 
 /// 每一跳重新解析并验证全部 DNS 答案，再将 reqwest 的连接固定到已验证地址。

@@ -25,8 +25,14 @@ struct State {
     serial: Mutex<()>,
     frames: Mutex<protocol::Frames>,
     guard_ready: AtomicBool,
+    /// 正在运行的主页文件句柄：活着期间内容不能被替换（见 `Repository::hold`）。
+    held: Mutex<Option<(String, std::fs::File)>>,
 }
-impl State { fn check(&self) -> Result<()> { if self.closed.load(Ordering::Acquire) { Err(cancelled()) } else { Ok(()) } } }
+impl State {
+    fn check(&self) -> Result<()> { if self.closed.load(Ordering::Acquire) { Err(cancelled()) } else { Ok(()) } }
+    /// 丢弃句柄即解除占用；旧主页卸下、新版发布前都要调它。
+    fn release_hold(&self) { if let Ok(mut held) = self.held.lock() { held.take(); } }
+}
 pub(crate) fn init(app: &AppHandle) { if app.try_state::<State>().is_none() { app.manage(State::default()); } }
 pub(crate) fn cancel_for_window(app: &AppHandle) {
     if let Some(state) = app.try_state::<State>() {
@@ -115,11 +121,28 @@ fn compare_version(left: &str, right: &str) -> std::cmp::Ordering {
 pub(crate) async fn call(app: &AppHandle, window: &WebviewWindow, channel: &str, args: &[Value]) -> Result<Option<Value>> {
     if !channel.starts_with("homepage:") { return Ok(None); }
     crate::trusted_main(window)?;
+    // 会改写主页文件的通道必须先松开占用：Windows 上持有只读共享句柄时，
+    // 改名 / 写入 / 删除都会被系统拒绝，导入与更新会莫名其妙地失败。
+    if matches!(channel, "homepage:importFile" | "homepage:download" | "homepage:installNumbered" | "homepage:update" | "homepage:remove") {
+        if let Some(state) = app.try_state::<State>() { state.release_hold(); }
+    }
     let result = match channel {
         "homepage:securityEngine" => { count(args,0,0)?; json!({"native":true}) },
         "homepage:list" => { count(args,0,0)?; in_repository(app, |_,_,repo,s| repo.list(active(s))).await? },
         "homepage:read" => { count(args,1,1)?; source(app,text(args,0,64)?.to_owned()).await? },
         "homepage:verify" => { count(args,1,1)?; verify(app,text(args,0,64)?.to_owned()).await? },
+        // 运行期占用：核对哈希后才把句柄留住，之后该文件不能再被改写（Windows 强制，Unix 仅一致性）。
+        "homepage:hold" => {
+            count(args,2,2)?; let id=text(args,0,64)?.to_owned();
+            let expected=args[1].as_str().filter(|s|sha(s)).ok_or_else(invalid)?.to_owned();
+            in_repository(app,move |_,state,repo,_| {
+                let file=repo.hold(&id,&expected)?;
+                let mut held=state.held.lock().map_err(|_| unavailable())?;
+                *held=Some((id,file));
+                Ok(Value::Null)
+            }).await?
+        },
+        "homepage:release" => { count(args,0,0)?; if let Some(state)=app.try_state::<State>(){state.release_hold();} Value::Null },
         "homepage:openDir" => { count(args,0,0)?; in_repository(app, |_,_,repo,_| Ok(json!(repo.path().to_str().ok_or_else(invalid)?))).await? },
         "homepage:confirm" => {
             count(args,2,3)?; let id=text(args,0,64)?.to_owned(); let network=args[1].as_bool().ok_or_else(invalid)?;

@@ -212,6 +212,21 @@ export interface JavaRuntime {
   vendor?: string
 }
 
+/**
+ * Android 已装 Java 运行时（内置 17 + 按需下载的 21 / 25）。
+ *
+ * 桌面没有这套目录结构，接口在非 Android 平台返回空列表，前端据此隐藏管理入口。
+ */
+export interface AndroidRuntimeEntry {
+  major: number
+  /** 随 APK 分发的内置运行时：不可删除。 */
+  builtin: boolean
+  /** 来自 `release` 文件的 JAVA_VERSION。 */
+  version: string
+  /** 目录占用字节数（有界遍历，仅用于展示量级）。 */
+  size: number
+}
+
 /** 系统内存信息（单位 MB）。 */
 export interface SystemMemoryInfo {
   total: number
@@ -1981,6 +1996,10 @@ export interface LauncherApi {
     install: (major: number) => Promise<string>
     /** 手动选择 Java 可执行文件，返回识别出的版本信息；用户取消或无法识别时为 null / 抛错。 */
     pick: () => Promise<JavaRuntime | null>
+    /** Android 已装运行时清单；非 Android 平台返回空列表。 */
+    runtimes: () => Promise<{ runtimes: AndroidRuntimeEntry[] }>
+    /** 删除下载来的 Android 运行时；内置 17 与正在使用的那套会被明确拒绝。 */
+    removeRuntime: (major: number) => Promise<{ removed: number }>
   }
   manage: {
     mods: (versionId: string, dirId?: string) => Promise<ModEntry[]>
@@ -2037,6 +2056,13 @@ export interface LauncherApi {
     remove: (id: string) => Promise<void>
     /** 联网核对编号 + SHA256；无编号或服务端不可达时回落本地流程。 */
     verify: (id: string) => Promise<HomepageVerifyResult>
+    /**
+     * 运行期占用主页文件：核对哈希后一直持有只读句柄，直到 release 或进程退出。
+     * Windows 上句柄活着期间该文件无法被写入 / 改名 / 删除。
+     */
+    hold: (id: string, sha256: string) => Promise<void>
+    /** 释放被占用的主页文件（切换主页、卸载、导入新版之前都会调用）。 */
+    release: () => Promise<void>
     /** 记录用户对当前脚本内容的确认（network=true 表示同时授权联网）。 */
     confirm: (id: string, network: boolean, expectedSha?: string) => Promise<HomepageEntry>
     /** 设置当前启用的主页脚本，空串表示回到内置界面。 */

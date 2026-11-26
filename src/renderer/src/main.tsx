@@ -87,6 +87,10 @@ async function bootstrap(): Promise<void> {
     const { installTauriApi } = await import('../../tauri/bridge')
     await installTauriApi().ready
   }
+  // 平台标识写在 <html> 上：样式层据此切换移动端外壳（见 index.css 的 [data-platform] 规则）。
+  // 必须在 mount 之前完成，否则首帧会按桌面布局绘制再跳变。
+  const platform = window.api?.platform ?? 'unknown'
+  document.documentElement.dataset.platform = platform
   installLogForwarding()
   await mount()
 }

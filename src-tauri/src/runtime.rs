@@ -1,5 +1,8 @@
 //! 桌面运行时：启动前通过后台认证刷新固定账号，逐次登记取消并复核派发快照。
-//! Android 的 JVM / Surface / 输入栈尚未接入，绝不在 Android spawn 桌面 Java。
+//! Android 走另一条路径：JVM 在应用进程内创建，画面由 `GameHost` 的 Surface 承载，
+//! 绝不在 Android spawn 桌面 Java。平台边界集中在 `native_game_supported` /
+//! `launch_supported`，前端据此决定是否允许点击。桌面与移动端的共同部分
+//! （认证、资源校验、参数拼装、取消与日志）在本模块内复用。
 use serde::Serialize;
 use serde_json::{json, Map, Value};
 use sha1::{Digest, Sha1};
@@ -11,6 +14,19 @@ mod game_window_size;
 
 type Result<T> = std::result::Result<T, String>;
 const JSON_LIMIT: u64 = 32 * 1024 * 1024;
+
+/// 是否由本进程按桌面方式拉起 Java 子进程。
+///
+/// 移动端无法使用桌面 JRE：Adoptium Temurin 是 glibc 二进制，而 Android 只有 bionic；
+/// 且 targetSdk >= 29 的应用既不能 exec 也不能 dlopen 应用私有目录中的可执行文件。
+/// 因此这条路径只在桌面成立，Android 改走 `start_in_process`。
+pub(crate) fn native_game_supported() -> bool { !cfg!(any(target_os = "android", target_os = "ios")) }
+/// 平台是否允许发起启动。Android 已有随包的 JVM 与图形层，iOS 没有。
+pub(crate) fn launch_supported() -> bool { !cfg!(target_os = "ios") }
+/// 移动端启动游戏的统一兜底说明；前端有对应本地化文案，这里只保证后端也不会静默失败。
+pub(crate) const MOBILE_RUNTIME_BOUNDARY: &str = "当前平台无法使用桌面 Java 运行时（Temurin 依赖 glibc），请在桌面版启动游戏";
+/// 移动端安装/检测桌面 JRE 的统一兜底说明。
+pub(crate) const MOBILE_JAVA_BOUNDARY: &str = "移动端使用随安装包分发的内置 Java 运行时，不支持安装桌面 Java（Temurin 依赖 glibc，无法在 Android 上运行）";
 fn now_ms() -> u64 { SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() as u64 }
 fn text<'a>(v: &'a Value, key: &str) -> &'a str { v.get(key).and_then(Value::as_str).unwrap_or("") }
 fn bool_field(v: &Value, key: &str, default: bool) -> Result<bool> { match v.get(key) { None | Some(Value::Null) => Ok(default), Some(Value::Bool(b)) => Ok(*b), _ => Err(format!("{key} 必须是布尔值")) } }
@@ -23,10 +39,13 @@ fn identifier(s: &str) -> Result<&str> {
     if matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL") || (stem.len() == 4 && (stem.starts_with("COM") || stem.starts_with("LPT")) && matches!(stem.as_bytes()[3], b'1'..=b'9')) { return Err("实例标识是系统保留名称".into()); }
     Ok(s)
 }
-fn no_link(path: &Path) -> Result<()> {
+fn no_link(path: &Path) -> Result<()> { no_link_component(path, true) }
+/// Android 的应用私有目录祖先是系统维护的别名（`/data/user/0` ↔ `/data/data`），
+/// 只对末级严格拒绝链接；桌面平台仍逐级拒绝。见 `crate::path_alias`。
+fn no_link_component(path: &Path, final_segment: bool) -> Result<()> {
     match fs::symlink_metadata(path) {
         Ok(m) => {
-            if m.file_type().is_symlink() { return Err("拒绝通过符号链接访问游戏文件".into()); }
+            if m.file_type().is_symlink() && crate::path_alias::link_is_fatal(final_segment) { return Err("拒绝通过符号链接访问游戏文件".into()); }
             #[cfg(windows)] { use std::os::windows::fs::MetadataExt; if m.file_attributes() & 0x400 != 0 { return Err("拒绝通过重解析点访问游戏文件".into()); } }
             Ok(())
         }
@@ -35,9 +54,26 @@ fn no_link(path: &Path) -> Result<()> {
     }
 }
 fn absolute(path: &Path) -> Result<PathBuf> {
+    walk_absolute(path).or_else(|error| match crate::path_alias::resolved_alias(path) {
+        // 别名落在末级时，规范化一次再复核；仍然失败则保留原始错误。
+        Some(canonical) => walk_absolute(&canonical).map_err(|_| error),
+        None => Err(error),
+    })
+}
+fn walk_absolute(path: &Path) -> Result<PathBuf> {
     if !path.is_absolute() || path.as_os_str().is_empty() { return Err("游戏目录必须是绝对路径".into()); }
     let mut current = PathBuf::new();
-    for c in path.components() { match c { Component::Prefix(prefix)=>{current.push(prefix.as_os_str());continue;}, Component::RootDir=>{current.push(c.as_os_str());no_link(&current)?;continue;}, Component::ParentDir | Component::CurDir => return Err("路径不能含相对跳转".into()), _ => current.push(c.as_os_str()) } no_link(&current)?; }
+    let mut parts = path.components().peekable();
+    while let Some(c) = parts.next() {
+        let final_segment = parts.peek().is_none();
+        match c {
+            Component::Prefix(prefix)=>{current.push(prefix.as_os_str());continue;},
+            Component::RootDir=>{current.push(c.as_os_str());no_link_component(&current, final_segment)?;continue;},
+            Component::ParentDir | Component::CurDir => return Err("路径不能含相对跳转".into()),
+            _ => current.push(c.as_os_str()),
+        }
+        no_link_component(&current, final_segment)?;
+    }
     Ok(current)
 }
 fn inside(root: &Path, relative: impl AsRef<Path>) -> Result<PathBuf> {
@@ -201,7 +237,7 @@ impl Drop for ProcessGroup { fn drop(&mut self) { self.kill(); #[cfg(windows)] w
 struct OwnedChild { child: Child, group: ProcessGroup }
 impl Drop for OwnedChild { fn drop(&mut self) { self.group.kill(); let _ = self.child.kill(); let _ = self.child.wait(); } }
 fn spawn_process(program: &Path, args: &[String], cwd: Option<&Path>) -> Result<(Child, ProcessGroup)> {
-    if cfg!(target_os = "android") || cfg!(target_os = "ios") { return Err("移动端游戏 JVM/Surface 运行时尚未适配，不能执行桌面 Java".into()); }
+    if !native_game_supported() { return Err(MOBILE_RUNTIME_BOUNDARY.into()); }
     if !program.is_absolute() || args.len() > 32_768 || args.iter().any(|a| a.contains('\0') || a.len() > 1024 * 1024) || args.iter().map(String::len).sum::<usize>() > 4 * 1024 * 1024 { return Err("Java 可执行路径或进程参数无效".into()); }
     let mut command = Command::new(program); command.args(args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()); if let Some(dir) = cwd { command.current_dir(dir); }
     #[cfg(unix)] { use std::os::unix::process::CommandExt; command.process_group(0); }
@@ -243,7 +279,7 @@ pub(crate) fn invalidate_java_cache_for_backend() {
     if let Ok(mut cache) = JAVA_CACHE.get_or_init(|| Mutex::new(None)).lock() { *cache = None; }
 }
 fn detect_java(settings: &Value) -> Result<Vec<Value>> {
-    if cfg!(target_os = "android") || cfg!(target_os = "ios") { return Err("移动端尚未接入游戏 JVM 检测，不执行桌面 Java".into()); }
+    if !native_game_supported() { return Err(MOBILE_JAVA_BOUNDARY.into()); }
     let generation = JAVA_CACHE_GENERATION.load(Ordering::Acquire);
     let dirs = roots(settings)?; let key = format!("{:?}|{:?}|{:?}", dirs, std::env::var_os("JAVA_HOME"), std::env::var_os("PATH"));
     { let guard = JAVA_CACHE.get_or_init(|| Mutex::new(None)).lock().map_err(|_| "Java 缓存不可用")?; if let Some(c) = &*guard { if c.key == key && c.generation == generation && JAVA_CACHE_GENERATION.load(Ordering::Acquire) == generation && c.at.elapsed() < Duration::from_secs(30) { return Ok(c.list.clone()); } } }
@@ -267,8 +303,8 @@ fn publish_java_cache(cache: &Mutex<Option<JavaCache>>, current: &AtomicUsize, g
     }
     Ok(())
 }
-fn required_java(version: &Value) -> Result<u64> { if let Some(v) = version.get("javaVersion") { return integer(v, "majorVersion", 8, 8, 99); } Ok(8) }
-fn suitable(java: &Value, required: u64) -> bool { java["major"].as_u64().is_some_and(|major| major == required || (required >= 16 && major > required)) }
+/// 版本清单声明需要哪个 Java 主版本；Android 用它在启动前选定运行时。
+pub(crate) fn required_java(version: &Value) -> Result<u64> { if let Some(v) = version.get("javaVersion") { return integer(v, "majorVersion", 8, 8, 99); } Ok(8) }fn suitable(java: &Value, required: u64) -> bool { java["major"].as_u64().is_some_and(|major| major == required || (required >= 16 && major > required)) }
 fn choose_java(settings: &Value, id: &str, options: &Value, required: u64) -> Result<Value> {
     if let Some(value) = options.get("javaPath") { let path = value.as_str().ok_or("javaPath 必须是字符串")?; if !path.trim().is_empty() { let java = probe_java(Path::new(path)).ok_or("指定的 Java 无法读取版本，请重新选择")?; if !suitable(&java, required) { return Err(format!("指定的 Java 不兼容，需要 Java {required}")); } return Ok(java); } }
     if let Some(pin) = settings["versionJava"].get(id).and_then(Value::as_str).filter(|s| !s.trim().is_empty()) { if let Some(java) = probe_java(Path::new(pin)) { if !suitable(&java, required) { return Err(format!("实例指定的 Java 不兼容，需要 Java {required}")); } return Ok(java); } }
@@ -287,7 +323,7 @@ pub(crate) fn pick_installer_java(settings: &Value, version_id: &str, required_m
     Ok(PathBuf::from(text(&measured, "path")))
 }
 fn installer_desktop() -> Result<()> {
-    if cfg!(target_os = "android") || cfg!(target_os = "ios") { return Err("Android/iOS 尚未接入安装器 JVM；未创建桌面 Java 进程".into()); }
+    if !native_game_supported() { return Err(MOBILE_JAVA_BOUNDARY.into()); }
     Ok(())
 }
 fn installer_paths(java: &Path, jar: &Path, staging: &Path) -> Result<(PathBuf, Vec<String>, PathBuf)> {
@@ -490,11 +526,21 @@ fn extra_args(options:&Value,key:&str)->Result<Vec<String>> { match options.get(
 
 fn free_memory_mb()->Result<u64>{
     #[cfg(windows)] { #[repr(C)] struct Memory {length:u32,load:u32,total:u64,free:u64,total_page:u64,free_page:u64,total_virtual:u64,free_virtual:u64,extended:u64} #[link(name="kernel32")]extern "system"{fn GlobalMemoryStatusEx(memory:*mut Memory)->i32;}let mut m=Memory{length:std::mem::size_of::<Memory>()as u32,load:0,total:0,free:0,total_page:0,free_page:0,total_virtual:0,free_virtual:0,extended:0};if unsafe{GlobalMemoryStatusEx(&mut m)}!=0{return Ok(m.free/1048576);}}
-    #[cfg(target_os="linux")] {let raw=fs::read_to_string("/proc/meminfo").map_err(|_|"无法读取内核剩余内存")?;let read=|key:&str|raw.lines().find_map(|l|{let(k,v)=l.split_once(':')?;if k!=key{return None;}v.split_whitespace().next()?.parse::<u64>().ok()});if let Some(kb)=read("MemAvailable").or_else(||read("MemFree")){return Ok(kb/1024);}}
+    #[cfg(any(target_os="linux", target_os="android"))] {let raw=fs::read_to_string("/proc/meminfo").map_err(|_|"无法读取内核剩余内存")?;let read=|key:&str|raw.lines().find_map(|l|{let(k,v)=l.split_once(':')?;if k!=key{return None;}v.split_whitespace().next()?.parse::<u64>().ok()});if let Some(kb)=read("MemAvailable").or_else(||read("MemFree")){return Ok(kb/1024);}}
     #[cfg(target_os="macos")] {use std::{ffi::c_void,os::raw::c_char};extern "C"{fn sysctlbyname(name:*const c_char,old:*mut c_void,length:*mut usize,new:*mut c_void,new_len:usize)->i32;fn mach_host_self()->u32;fn host_statistics(host:u32,flavor:i32,info:*mut i32,count:*mut u32)->i32;fn mach_port_deallocate(task:u32,name:u32)->i32;static mach_task_self_:u32;}let mut page=0u32;let mut len=std::mem::size_of::<u32>();let host=unsafe{mach_host_self()};let mut stats=[0i32;15];let mut count=15u32;let p=unsafe{sysctlbyname(b"hw.pagesize\0".as_ptr().cast(),(&mut page as *mut u32).cast(),&mut len,std::ptr::null_mut(),0)};let r=unsafe{host_statistics(host,2,stats.as_mut_ptr(),&mut count)};unsafe{mach_port_deallocate(mach_task_self_,host);}if p==0&&r==0&&count>=4&&page!=0{return Ok((stats[0]as u32 as u64+stats[2]as u32 as u64).saturating_mul(page as u64)/1048576);}}
     Err("当前平台无法测量剩余内存，未猜测 JVM 内存上限".into())
 }
-fn prepare_arguments(version:&Value,settings:&Value,options:&Value,account:&Value,root:&Path,run:&Path,natives:&Path,deps:&Dependencies,app_version:&str)->Result<(Vec<String>,Vec<String>)>{
+/// Android 只保留与平台无关的游戏依赖。
+///
+/// LWJGL 必须整体替换：桌面版的 Java 绑定虽然平台无关，但它会去找 glibc 编译的原生库与
+/// 桌面图形后端，在 bionic 上无法加载；对应的 `-natives-` 归档同样是桌面二进制。
+fn classpath_allowed(path: &Path) -> bool {
+    if !cfg!(target_os = "android") { return true; }
+    let name = path.file_name().and_then(|value| value.to_str()).unwrap_or_default().to_ascii_lowercase();
+    !name.starts_with("lwjgl") && !name.contains("-natives-")
+}
+
+fn prepare_arguments(version:&Value,settings:&Value,options:&Value,account:&Value,root:&Path,run:&Path,natives:&Path,deps:&Dependencies,app_version:&str,head:&[PathBuf])->Result<(Vec<String>,Vec<String>)>{
     let main=text(version,"mainClass");if main.is_empty()||main.len()>512||!main.chars().all(|c|c.is_ascii_alphanumeric()||"_.$".contains(c)){return Err("版本入口 mainClass 无效".into());}
     let offline=bool_field(account,"offline",false)?||text(account,"authType")=="offline";let auth=if text(account,"authType").is_empty(){if offline{"offline"}else{"microsoft"}}else{text(account,"authType")};let token=if offline{"0"}else{text(account,"accessToken")};let player=text(account,"name");let uuid=text(account,"id").replace('-',"");
     if player.is_empty()||player.len()>256||player.chars().any(char::is_control)||uuid.len()!=32||!uuid.bytes().all(|c|c.is_ascii_hexdigit()){return Err("账号名称或 UUID 无效".into());}
@@ -503,7 +549,7 @@ fn prepare_arguments(version:&Value,settings:&Value,options:&Value,account:&Valu
     // 原生显示采样已在根目录锁之前完成；阻塞工作中只消费确定的内容区尺寸。
     let(width,height,fullscreen)=game_window_size::launch_arguments(options)?;
     let mut features=BTreeMap::from([("is_demo_user".into(),bool_field(options,"demo",false)?),("has_custom_resolution".into(),true)]);let targets=[("quickPlaySingleplayer","is_quick_play_singleplayer"),("quickPlayMultiplayer","is_quick_play_multiplayer"),("quickPlayRealms","is_quick_play_realms")];let mut requested=0;for(key,feature)in targets {if let Some(v)=options.get(key){let v=v.as_str().ok_or("QuickPlay 必须是字符串")?;if v.len()>4096||v.chars().any(char::is_control){return Err("QuickPlay 参数无效".into());}if !v.is_empty(){requested+=1;features.insert(feature.into(),true);}}}if requested>1{return Err("一次只能指定一个 QuickPlay 目标".into());}if requested>0{let base=if text(version,"clientVersion").is_empty(){text(version,"id")}else{text(version,"clientVersion")};let captures=regex::Regex::new(r"^(\d+)\.(\d+)(?:\.(\d+))?(?:$|[-+_])").expect("常量正则");let c=captures.captures(base).ok_or("无法确认此版本支持 QuickPlay")?;let a=c[1].parse::<u32>().unwrap_or(0);let b=c[2].parse::<u32>().unwrap_or(0);if a<1||(a==1&&b<20){return Err("QuickPlay 需要 Minecraft 1.20+".into());}features.insert("has_quick_plays_support".into(),true);}
-    let sep=if cfg!(windows){";"}else{":"};let classpath=deps.classpath.iter().map(|p|p.to_str().ok_or("类路径不是 UTF-8")).collect::<std::result::Result<Vec<_>,_>>()?.join(sep);let path_string=|p:PathBuf|p.to_str().map(str::to_string).ok_or_else(||"游戏路径不是 UTF-8".to_string());
+    let sep=if cfg!(windows){";"}else{":"};let mut entries=head.to_vec();entries.extend(deps.classpath.iter().filter(|path|classpath_allowed(path)).cloned());let classpath=entries.iter().map(|p|p.to_str().ok_or("类路径不是 UTF-8")).collect::<std::result::Result<Vec<_>,_>>()?.join(sep);let path_string=|p:PathBuf|p.to_str().map(str::to_string).ok_or_else(||"游戏路径不是 UTF-8".to_string());
     let asset_path=if !deps.asset_index.is_empty(){let index=read_json(&inside(root,Path::new("assets/indexes").join(format!("{}.json",deps.asset_index)))?)?;if index["virtual"].as_bool().unwrap_or(false){inside(root,Path::new("assets/virtual").join(&deps.asset_index))?}else{inside(root,"assets")?}}else{inside(root,"assets")?};
     let mut vars=BTreeMap::from([("auth_player_name".into(),player.into()),("version_name".into(),text(version,"id").into()),("game_directory".into(),path_string(run.to_path_buf())?),("assets_root".into(),path_string(inside(root,"assets")?)?),("game_assets".into(),path_string(asset_path)?),("assets_index_name".into(),deps.asset_index.clone()),("auth_uuid".into(),uuid),("auth_access_token".into(),token.into()),("auth_session".into(),if offline{"0".into()}else{format!("token:{token}")}), ("user_type".into(),if offline||auth=="yggdrasil"{"legacy"}else{"msa"}.into()),("version_type".into(),if text(version,"type").is_empty(){"release"}else{text(version,"type")}.into()),("clientid".into(),"0".into()),("auth_xuid".into(),"0".into()),("user_properties".into(),"{}".into()),("natives_directory".into(),path_string(natives.to_path_buf())?),("launcher_name".into(),"HungerCatLauncher".into()),("launcher_version".into(),app_version.into()),("classpath".into(),classpath.clone()),("classpath_separator".into(),sep.into()),("library_directory".into(),path_string(inside(root,"libraries")?)?),("resolution_width".into(),width.to_string()),("resolution_height".into(),height.to_string()),("language".into(),"zh_cn".into())]);
     let quick=inside(root,Path::new("launcher-quickplay").join(format!("{}.json",uuid::Uuid::new_v4())))?;vars.insert("quickPlayPath".into(),path_string(quick)?);for(key,_)in targets {vars.insert(key.into(),text(options,key).into());}
@@ -519,6 +565,11 @@ fn prepare_arguments(version:&Value,settings:&Value,options:&Value,account:&Valu
 
 #[derive(Clone,Serialize)] struct RuntimeEvent { channel: &'static str, payload: Value }
 fn emit(app:&tauri::AppHandle,payload:Value){let _=app.emit_to("main","launcher:event",RuntimeEvent{channel:"launch:event",payload});}
+/// 阶段进度：只写日志、不改状态，前端会追加到启动控制台。
+///
+/// 启动流程有几步在手机上可能慢到几十秒（资源 SHA-1 校验、实例目录锁、进程内 JVM 创建），
+/// 没有阶段提示时用户只能看到一直转圈。这里每进入一个阶段先落一行，卡住时最后一行就是现场。
+pub(crate) fn stage(app:&tauri::AppHandle,text:&str){ emit(app,json!({"log":format!("[启动] {text}")})); }
 struct GameControl { pid:u32, session:String, stop:AtomicBool, done:AtomicBool }
 impl GameControl {
     fn new(pid:u32, stopping:bool)->Self {
@@ -779,7 +830,7 @@ fn start_owned(program:PathBuf,argv:Vec<String>,cwd:PathBuf,root:PathBuf,id:Stri
     Ok(json!({"pid":pid}))
 }
 async fn launch_start(options:&Value,settings:&Value,account:Option<&Value>,app:&tauri::AppHandle,request:LaunchRequest)->Result<Value>{
-    if cfg!(target_os="android")||cfg!(target_os="ios"){return Err("Android/iOS 游戏 JVM、LWJGL、Surface 与输入运行时尚未适配，不能执行桌面 Java".into());}
+    if !launch_supported() { return Err(MOBILE_RUNTIME_BOUNDARY.into()); }
     let object=options.as_object().ok_or("启动选项必须是对象")?;let allowed=["versionId","accountId","gameDir","memoryMb","javaPath","extraJvmArgs","extraGameArgs","fullscreen","demo","resolution","quickPlaySingleplayer","quickPlayMultiplayer","quickPlayRealms"];
     if object.keys().any(|key|!allowed.contains(&key.as_str())){return Err("启动选项包含未支持字段".into());}
     for key in ["versionId","accountId","gameDir","javaPath"] {if let Some(value)=object.get(key){if !value.is_null()&&!value.is_string(){return Err("启动路径或标识必须是字符串".into());}}}
@@ -808,29 +859,250 @@ async fn launch_start(options:&Value,settings:&Value,account:Option<&Value>,app:
 }
 async fn launch_prepared(options:Value,settings:Value,account_id:String,root:PathBuf,ticket:Arc<StartTicket>,app:tauri::AppHandle)->Result<Value>{
     ticket.check()?;
+    stage(&app,"校验启动票据与实例目录");
     let permit=LaunchRecoveryPermit::new(&root,ticket.clone())?;
     let root=permit.root.clone();
     // 网络刷新在取得游戏目录锁之前；固定最初选定的 UUID，不重新选择全局 selected。
+    stage(&app,"确认账号凭据");
     let account=crate::auth::account_for_launch(&app,&account_id,ticket.cancel.clone()).await?;
     ticket.check()?;
     // 主 UI 只采样/弹非阻塞警告；await 属于现有启动 owner，且此时尚未持有根目录锁。
+    stage(&app,"计算游戏画面尺寸");
     let options=game_window_size::resolve_options(&app,&settings,options,ticket.cancel.clone()).await?;
     ticket.check()?;
+    stage(&app,"等待实例目录锁");
     let root_guard=install_lock::acquire_for_launch(&root,||ticket.cancel.check().is_err(),permit).await?;
     ticket.check()?;
+    stage(&app,"解析版本清单");
     let id=text(&options,"versionId").to_string();
     let version=resolve_for_launch(&id,&root,&settings,&ticket).await?;
     ticket.check()?;let version_string=app.package_info().version.to_string();
+    // Android 按版本清单声明的主版本选 Java：17 用随包内置的，21/25 首次启动时下载，
+    // 当前架构拿不到运行时就明确报错——绝不能让游戏跑在不匹配的 JVM 上。
+    #[cfg(target_os = "android")]
+    let java_runtime={stage(&app,"检查 Java 运行时");crate::android_runtime::prepare(&app,&version,ticket.cancel.clone()).await?};
     // await 不与取消竞速：任务已派发后让根锁、探针和解压的真实所有者收尾。
     let failure_ticket=ticket.clone();
     tauri::async_runtime::spawn_blocking(move||{
         let _root_guard=root_guard;
-        check_start_cancel(&ticket)?;let required=required_java(&version)?;let java=choose_java(&settings,&id,&options,required)?;let program=PathBuf::from(text(&java,"path"));let isolation=crate::modpack::instance_isolation(&root,&id,&settings)?;let run=if isolation.isolated{inside(&root,Path::new("versions").join(&id))?}else{absolute(&root)?};check_start_cancel(&ticket)?;make_dir(&run)?;
-        let mut features=BTreeMap::new();features.insert("is_demo_user".into(),bool_field(&options,"demo",false)?);features.insert("has_custom_resolution".into(),true);let deps=dependencies(&version,&root,&features)?;check_start_cancel(&ticket)?;validate_assets(&version,&root,&run,&deps.asset_index)?;check_start_cancel(&ticket)?;let natives=extract_natives(&root,&id,&deps.natives)?;check_start_cancel(&ticket)?;
-        let(argv,secrets)=prepare_arguments(&version,&settings,&options,&account,&root,&run,&natives,&deps,&version_string)?;start_owned(program,argv,run,root,id,secrets,account,isolation,ticket,app)
+        check_start_cancel(&ticket)?;
+        #[cfg(not(target_os = "android"))]
+        let required=required_java(&version)?;
+        stage(&app,"校验依赖与游戏资源");
+        let isolation=crate::modpack::instance_isolation(&root,&id,&settings)?;let run=if isolation.isolated{inside(&root,Path::new("versions").join(&id))?}else{absolute(&root)?};check_start_cancel(&ticket)?;make_dir(&run)?;
+        let mut features=BTreeMap::new();features.insert("is_demo_user".into(),bool_field(&options,"demo",false)?);features.insert("has_custom_resolution".into(),true);let deps=dependencies(&version,&root,&features)?;check_start_cancel(&ticket)?;validate_assets(&version,&root,&run,&deps.asset_index)?;check_start_cancel(&ticket)?;
+        // Android 的原生库就在 APK 的 lib/<abi>/ 里：既不需要解压桌面 natives，也不能让
+        // `java.library.path` 指向那些 glibc 二进制，否则 LWJGL 会加载到错误架构的库。
+        #[cfg(target_os = "android")]
+        let natives=crate::android_jvm::native_dir().ok_or("Android 原生库目录尚未就绪，请重新打开应用")?;
+        #[cfg(not(target_os = "android"))]
+        let natives=extract_natives(&root,&id,&deps.natives)?;
+        // 随包的 LWJGL for Android 排在类路径最前，桌面 LWJGL 由 `classpath_allowed` 剔除。
+        #[cfg(target_os = "android")]
+        let head:Vec<PathBuf>=vec![crate::android_jvm::lwjgl_jar().ok_or("Android 图形层类库缺失，请重新安装应用")?];
+        #[cfg(not(target_os = "android"))]
+        let head:Vec<PathBuf>=Vec::new();
+        check_start_cancel(&ticket)?;
+        stage(&app,"组装启动参数");
+        let(argv,secrets)=prepare_arguments(&version,&settings,&options,&account,&root,&run,&natives,&deps,&version_string,&head)?;
+        #[cfg(target_os = "android")]
+        return start_in_process(argv,run,root,id,secrets,account,isolation,ticket,app,java_runtime);
+        #[cfg(not(target_os = "android"))]
+        {let java=choose_java(&settings,&id,&options,required)?;start_owned(PathBuf::from(text(&java,"path")),argv,run,root,id,secrets,account,isolation,ticket,app)}
     }).await.map_err(|_|{failure_ticket.uncertain.store(true,Ordering::Release);"游戏启动后台任务结果未知，请核对进程后重启启动器".to_string()})?
 }
+/// Android 的 Java 适配检查：内置 JVM 由 APK 自带，不存在「装哪个桌面 Java」的问题。
+/// 首次调用会真正创建 JVM（进程内只创建一次），因此放到阻塞线程池执行。
+#[cfg(target_os = "android")]
+async fn android_java_check(_app: &tauri::AppHandle) -> Result<Option<Value>> {
+    let text = tauri::async_runtime::spawn_blocking(crate::android_jvm::probe)
+        .await
+        .map_err(|_| "Android 运行时探测后台任务异常")??;
+    let major = text
+        .split('|')
+        .next()
+        .and_then(|value| value.split('.').next())
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(0);
+    Ok(Some(json!({
+        "required": 0,
+        "compatible": true,
+        "available": [{"name": text, "path": "", "major": major, "source": "builtin"}],
+        "supported": true
+    })))
+}
+/// 已装 Java 运行时清单（Android 专属；其它平台返回空列表，前端据此不渲染管理入口）。
+#[cfg(target_os = "android")]
+async fn android_runtimes() -> Result<Value> {
+    let list = tauri::async_runtime::spawn_blocking(crate::android_runtime::inventory)
+        .await
+        .map_err(|_| "运行时清单后台任务异常")??;
+    Ok(json!({ "runtimes": list }))
+}
+
+#[cfg(not(target_os = "android"))]
+async fn android_runtimes() -> Result<Value> {
+    Ok(json!({ "runtimes": [] }))
+}
+
+/// 删除一个下载来的运行时。内置 17 与「本次会话正在用的那套」由底层拒绝。
+#[cfg(target_os = "android")]
+async fn android_remove_runtime(major: u64) -> Result<Value> {
+    tauri::async_runtime::spawn_blocking(move || crate::android_runtime::remove(major))
+        .await
+        .map_err(|_| "删除运行时后台任务异常")??;
+    Ok(json!({ "removed": major }))
+}
+
+#[cfg(not(target_os = "android"))]
+async fn android_remove_runtime(_major: u64) -> Result<Value> {
+    Err("当前平台没有可管理的 Android 运行时".into())
+}
+
+/// 进程内游戏主方法的退出码；`android_game_finished` 写入，日志线程读出。
+#[cfg(target_os = "android")]
+static ANDROID_EXIT: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
+
+/// 游戏主方法返回时由 JNI 侧回调：登记会话结束，让界面与监控线程收尾。
+#[cfg(target_os = "android")]
+pub(crate) fn android_game_finished(code: i32) {
+    ANDROID_EXIT.store(code, Ordering::Release);
+    if let Some(slot) = GAME.get() {
+        if let Ok(state) = slot.lock() {
+            if let Some(control) = state.as_ref() {
+                control.done.store(true, Ordering::Release);
+            }
+        }
+    }
+}
+
+/// 拆参数时要把「选项与取值分开写」的 JVM 参数整体跳过。
+///
+/// 否则 `--add-opens java.base/java.lang=ALL-UNNAMED` 里的取值会被当成主类名，
+/// Forge / NeoForge 的启动参数正是这个形状。
+const TWO_TOKEN_JVM_FLAGS: [&str; 6] = [
+    "-p", "--module-path", "--add-opens", "--add-exports", "--add-modules", "--patch-module",
+];
+
+/// 把 `-cp <类路径> 主类 参数…` 拆成 Android 侧需要的启动规格。
+///
+/// 主类之后的全部内容都是游戏参数，因此分界点就是第一个不以 `-` 开头的项。
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+fn android_launch_spec(argv:&[String],run:&Path,log:&Path,java_home:&Path,java_major:u64,java_custom:bool)->Result<Value>{
+    let mut jvm=Vec::new();let mut classpath=String::new();let mut heap=2048u64;let mut index=0;
+    while index<argv.len(){
+        let value=&argv[index];
+        if matches!(value.as_str(),"-cp"|"-classpath"|"--class-path"){
+            classpath=argv.get(index+1).cloned().ok_or("启动参数缺少类路径")?;index+=2;continue;
+        }
+        if TWO_TOKEN_JVM_FLAGS.contains(&value.as_str()){
+            let taken=argv.get(index+1).ok_or("JVM 参数缺少取值")?;
+            jvm.push(value.clone());jvm.push(taken.clone());index+=2;continue;
+        }
+        if let Some(rest)=value.strip_prefix("-Xmx"){
+            let scale=if rest.ends_with(['g','G']){1024}else{1};
+            if let Ok(size)=rest.trim_end_matches(['m','M','g','G']).parse::<u64>(){heap=size*scale;}
+        }
+        jvm.push(value.clone());index+=1;
+    }
+    if classpath.is_empty(){return Err("启动参数缺少类路径".into());}
+    let edge=jvm.iter().position(|value|!value.starts_with('-')).ok_or("启动参数缺少主类")?;
+    let mut tail=jvm.split_off(edge);let main=tail.remove(0);
+    Ok(json!({
+        "classpath":classpath,
+        "jvm":jvm,
+        "main":main,
+        "args":tail,
+        "log":log.to_string_lossy(),
+        "cwd":run.to_string_lossy(),
+        "heap":heap,
+        // 运行时目录与主版本由启动前的选择决定：进程内只能建一个 JVM，进了 launch 就不能再改。
+        "runtime":java_home.to_string_lossy(),
+        "major":java_major,
+        "custom":java_custom,
+    }))
+}
+
+/// Android 的启动：JVM 在本进程内，画面由 `GameHost` 铺开，日志靠尾随文件。
+///
+/// 与 `start_owned` 的差别在于「进程」换成「线程」：没有 `Child` 可等，也没有标准输出
+/// 可读，退出只在主方法返回时才有信号。
+#[cfg(target_os = "android")]
+fn start_in_process(argv:Vec<String>,run:PathBuf,root:PathBuf,id:String,secrets:Vec<String>,_account:Value,isolation:crate::modpack::InstanceIsolation,ticket:Arc<StartTicket>,app:tauri::AppHandle,java_runtime:crate::android_runtime::Runtime)->Result<Value>{
+    check_start_cancel(&ticket)?;
+    isolation.verify()?;
+    let logs=inside(&root,"launcher-logs")?;make_dir(&logs)?;
+    let log_path=inside(&logs,format!("{}-{}-{}.log",id,now_ms(),uuid::Uuid::new_v4()))?;
+    File::create(&log_path).map_err(|_|"无法创建游戏日志文件")?;
+    let spec=android_launch_spec(&argv,&run,&log_path,&java_runtime.home,java_runtime.major,java_runtime.custom)?;
+    emit(&app,json!({"state":"launching"}));
+    let pid=std::process::id();
+    let control=Arc::new(GameControl::new(pid,ticket.cancel.check().is_err()));
+    {let mut slot=GAME.get_or_init(||Mutex::new(None)).lock().map_err(|_|"游戏进程状态不可用")?;if ticket.cancel.check().is_err(){control.stop.store(true,Ordering::Release);}*slot=Some(control.clone());}
+    ticket.begin_dispatch()?;
+    // 铺开画面必须回到主线程；失败就地把会话收回，不留下「运行中」的假状态。
+    stage(&app,"准备游戏画面（切横屏、建 Surface）");
+    if let Err(error)=crate::android_host::show_game(&app,serde_json::to_string(&spec).map_err(|_|"启动规格序列化失败")?){
+        control.stop.store(true,Ordering::Release);
+        complete_game_from(GAME.get_or_init(||Mutex::new(None)),&control,|session|crate::ai_hud::game_stopped(&app,session));
+        return Err(error);
+    }
+    emit(&app,json!({"state":"running","pid":pid}));
+    crate::ai_hud::game_started(&app,&control.session);
+    let tail=log_path.clone();let monitor=control.clone();let monitor_app=app.clone();
+    let spawned=thread::Builder::new().name("hcmcl-android-game".into()).spawn(move||{
+        let mut reader=File::open(&tail).ok();let mut pending=String::new();let mut bytes=0usize;let mut suppressed=false;
+        // 黑屏最难受的是「不知道在等什么」：进程内 JVM 与图形层起不来时游戏一个字都不输出，
+        // 这里在完全没有日志的情况下按时间补提示，而不是让用户对着黑屏猜。
+        let mut silent_since=std::time::Instant::now();let mut hints=0u8;
+        loop{
+            if let Some(file)=reader.as_mut(){
+                let mut chunk=Vec::new();
+                if file.read_to_end(&mut chunk).is_ok()&&!chunk.is_empty(){
+                    pending.push_str(&String::from_utf8_lossy(&chunk));
+                    while let Some(cut)=pending.find('\n'){
+                        let line=pending[..cut].trim_end_matches('\r').to_string();pending.drain(..=cut);
+                        let clean=redact(&line,&secrets);
+                        if bytes.saturating_add(clean.len()+1)<=8*1024*1024{
+                            bytes=bytes.saturating_add(clean.len()+1);
+                            emit(&monitor_app,json!({"log":format!("{clean}\n")}));
+                            let _=crate::debug::append_game(&monitor_app,&clean,&secrets);
+                        }else if !suppressed{
+                            suppressed=true;
+                            let notice="[游戏日志达到本次 8 MiB 上限，后续正文未留存]";
+                            emit(&monitor_app,json!({"log":format!("{notice}\n")}));
+                            let _=crate::debug::append_game(&monitor_app,notice,&secrets);
+                        }
+                    }
+                }
+            }
+            if monitor.done.load(Ordering::Acquire){break;}
+            if bytes==0{
+                if hints==0&&silent_since.elapsed()>Duration::from_secs(20){
+                    hints=1;let notice="[启动] 游戏尚未输出任何日志，正在等待进程内 JVM 与图形层…\n";
+                    emit(&monitor_app,json!({"log":notice}));let _=crate::debug::append_game(&monitor_app,notice,&secrets);
+                }else if hints==1&&silent_since.elapsed()>Duration::from_secs(60){
+                    hints=2;let notice="[启动] 已等待 60 秒仍无输出：多半卡在 JVM 创建或图形层初始化，可先在游戏内退出后重试\n";
+                    emit(&monitor_app,json!({"log":notice}));let _=crate::debug::append_game(&monitor_app,notice,&secrets);
+                }
+            }
+            thread::sleep(Duration::from_millis(150));
+        }
+        complete_game_from(GAME.get_or_init(||Mutex::new(None)),&monitor,|session|crate::ai_hud::game_stopped(&monitor_app,session));
+        emit(&monitor_app,json!({"state":"exited","exitCode":ANDROID_EXIT.load(Ordering::Acquire),"pid":pid}));
+    });
+    if spawned.is_err(){
+        control.stop.store(true,Ordering::Release);
+        complete_game_from(GAME.get_or_init(||Mutex::new(None)),&control,|session|crate::ai_hud::game_stopped(&app,session));
+        return Err("无法创建游戏日志线程".into());
+    }
+    Ok(json!({"pid":pid}))
+}
+
 async fn launch_stop()->Result<Value>{
+    // 进程内 JVM 不能像子进程那样按信号终止：`System.exit` 会把启动器一起带走，
+    // 强行 `kill` 则是整个应用消失。这一版明确不支持中途停止。
+    if cfg!(target_os = "android") { return Err("Android 版暂不支持中途停止游戏，请使用游戏内的退出按钮".into()); }
     let pending={let mut state=starts().lock().map_err(|_|"启动任务状态不可用")?;state.begin_stop()?};
     let _stopping=StopWaiter{armed:true};
     let wait=async{
@@ -853,7 +1125,20 @@ pub async fn call(channel:&str,args:&[Value],settings:&Value,account:Option<&Val
         "versions:get"=>{count(args,1)?;let id=string_arg(args,0)?;let root=active_root(settings)?;resolve(id,&root,settings).await?},
         "installed:list"|"installed:listAll"=>{count(args,0)?;let settings=settings.clone();let all=channel=="installed:listAll";tauri::async_runtime::spawn_blocking(move||installed(&settings,all)).await.map_err(|_|"实例扫描后台任务异常")??},
         "java:detect"=>{count(args,0)?;let settings=settings.clone();json!(tauri::async_runtime::spawn_blocking(move||detect_java(&settings)).await.map_err(|_|"Java 检测后台任务异常")??)},
-        "java:check"=>{count(args,1)?;let id=string_arg(args,0)?.to_string();let version=resolve(&id,&active_root(settings)?,settings).await?;let required=required_java(&version)?;let settings=settings.clone();tauri::async_runtime::spawn_blocking(move||{let available=detect_java(&settings)?;let compatible=choose_java(&settings,&id,&json!({}),required).is_ok();Ok::<_,String>(json!({"required":required,"compatible":compatible,"available":available}))}).await.map_err(|_|"Java 适配检查后台任务异常")??},
+        "java:check"=>{count(args,1)?;let id=string_arg(args,0)?.to_string();
+            // Android 使用随 APK 分发、在进程内创建的 bionic JVM，不参与桌面 Java 探测。
+            #[cfg(target_os = "android")]
+            { let _ = id; return android_java_check(&app).await; }
+            // 其它移动端没有可执行的 JRE：直接声明平台不支持，既不解析游戏目录，也不触发安装引导。
+            #[cfg(not(target_os = "android"))]
+            {
+                if !native_game_supported(){return Ok(Some(json!({"required":0,"compatible":false,"available":[],"supported":false})));}
+                let version=resolve(&id,&active_root(settings)?,settings).await?;let required=required_java(&version)?;let settings=settings.clone();tauri::async_runtime::spawn_blocking(move||{let available=detect_java(&settings)?;let compatible=choose_java(&settings,&id,&json!({}),required).is_ok();Ok::<_,String>(json!({"required":required,"compatible":compatible,"available":available,"supported":true}))}).await.map_err(|_|"Java 适配检查后台任务异常")??
+            }
+        },
+        // Android 运行时管理：内置 17 之外的 21/25 可以下载，也应该能删——每个约 100 MB。
+        "android:runtimes"=>{count(args,0)?;android_runtimes().await?},
+        "android:removeRuntime"=>{count(args,1)?;let major=args[0].as_u64().ok_or("Java 主版本必须是数字")?;android_remove_runtime(major).await?},
         "launch:start"=>{count(args,1)?;let request=capture_launch_request()?;launch_start(&args[0],settings,account,app,request).await?},
         "launch:stop"=>{count(args,0)?;launch_stop().await?},
         _=>return Ok(None),
@@ -1428,8 +1713,42 @@ pub async fn call(channel:&str,args:&[Value],settings:&Value,account:Option<&Val
     #[cfg(any(target_os = "android", target_os = "ios"))]
     #[test]
     fn installer_mobile_rejects_before_paths_or_spawn() {
-        assert!(pick_installer_java(&json!({}), "target", 17).unwrap_err().contains("未创建"));
-        assert!(run_installer(Path::new("not-a-path"), Path::new("not-a-jar"), Path::new("not-a-directory"), Arc::new(crate::downloads::Cancel::default()), Arc::new(|_| {})).unwrap_err().contains("未创建"));
+        // 移动端的拒绝必须发生在任何路径/进程动作之前，并说明内置运行时的既有能力。
+        assert!(pick_installer_java(&json!({}), "target", 17).unwrap_err().contains("内置 Java"));
+        assert!(run_installer(Path::new("not-a-path"), Path::new("not-a-jar"), Path::new("not-a-directory"), Arc::new(crate::downloads::Cancel::default()), Arc::new(|_| {})).unwrap_err().contains("内置 Java"));
+    }
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    #[test]
+    fn desktop_platform_reports_game_runtime_supported() {
+        assert!(native_game_supported(), "桌面平台必须具备游戏运行时能力");
+        // 移动端兜底文案必须指向可执行的动作，否则用户无法据此采取行动。
+        assert!(MOBILE_RUNTIME_BOUNDARY.contains("桌面版"));
+        assert!(MOBILE_JAVA_BOUNDARY.contains("内置 Java"));
+        // Android 已有随包的 JVM 与图形层，只有 iOS 仍然被平台边界挡住。
+        assert!(launch_supported());
+    }
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    #[test]
+    fn android_launch_spec_splits_classpath_main_and_args() {
+        // 主类之前全是 JVM 参数；`--add-opens` 这类「选项与取值分开写」的形状不能被误判成主类。
+        let argv: Vec<String> = [
+            "-Xmx2G", "-Djava.library.path=/native", "--add-opens", "java.base/java.lang=ALL-UNNAMED",
+            "-cp", "/a.jar:/b.jar", "net.minecraft.client.main.Main", "--username", "Steve",
+        ].iter().map(|value| (*value).to_string()).collect();
+        let spec = android_launch_spec(&argv, Path::new("/run"), Path::new("/log.txt"), Path::new("/jre"), 21, true).expect("解析启动参数");
+        assert_eq!(spec["main"].as_str(), Some("net.minecraft.client.main.Main"));
+        assert_eq!(spec["classpath"].as_str(), Some("/a.jar:/b.jar"));
+        assert_eq!(spec["heap"].as_u64(), Some(2048));
+        // 运行时选择随 spec 一起下发：进了 launch 就不能再换 JVM。
+        assert_eq!(spec["runtime"].as_str(), Some("/jre"));
+        assert_eq!(spec["major"].as_u64(), Some(21));
+        assert_eq!(spec["custom"].as_bool(), Some(true));
+        let args: Vec<&str> = spec["args"].as_array().expect("游戏参数").iter().filter_map(Value::as_str).collect();
+        assert_eq!(args, vec!["--username", "Steve"]);
+        let jvm: Vec<&str> = spec["jvm"].as_array().expect("JVM 参数").iter().filter_map(Value::as_str).collect();
+        assert!(jvm.contains(&"--add-opens"));
+        assert!(jvm.contains(&"java.base/java.lang=ALL-UNNAMED"));
+        assert!(!jvm.iter().any(|value| value.starts_with("-cp")));
     }
     struct TempRoot(PathBuf);
     impl TempRoot{fn new()->Self{let p=std::env::temp_dir().join(format!("hcmcl-runtime-{}",uuid::Uuid::new_v4()));fs::create_dir_all(&p).unwrap();Self(fs::canonicalize(p).unwrap())}}

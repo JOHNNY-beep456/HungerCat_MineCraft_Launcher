@@ -47,8 +47,8 @@ impl Policy {
     fn from_settings(settings: &Value) -> Result<Self> {
         use Source::{Mirror, Official};
         let key = strategy(settings, "versionListSource")?;
+        // 只调整顺序，不砍候选：官方优先在官方 404 / 堵塞时还要能落回镜像。
         let order: &'static [Source] = match key {
-            "official-first" => &[Official],
             "mirror-first" => &[Mirror, Official],
             _ => &[Official, Mirror],
         };
@@ -79,6 +79,14 @@ pub(super) struct Metadata<'a> {
 fn fresh(path: &Path) -> bool {
     fs::metadata(path).ok().and_then(|m| m.modified().ok())
         .and_then(|mtime| mtime.elapsed().ok()).is_some_and(|age| age < MANIFEST_TTL)
+}
+
+/// 来源轮空后的短暂停顿；取消优先于等待。
+async fn retry_pause(cancel: &Cancel) -> Result<()> {
+    tokio::select! {
+        _ = cancel.cancelled() => Err("下载已取消".into()),
+        _ = tokio::time::sleep(Duration::from_millis(1200)) => cancel.check(),
+    }
 }
 
 // 同根的在线缓存事务使用同一分桶门；从不取得安装根锁，也不持有同步锁跨 await。
@@ -235,18 +243,22 @@ impl<'a> Metadata<'a> {
             }
         }
         let mut error = "未取得有效版本清单".to_owned();
-        for &source in policy.order {
-            match self.manifest(source, force, true).await {
-                Ok(value) => {
-                    if let Some(path) = &selection {
-                        // 清单本体已落盘；丢失此可选提示只影响下次是否重新尝试优先来源。
-                        let _ = atomic_bytes(path, source.name().as_bytes(), self.cancel);
+        // 一轮把全部来源试完，再整体重试一轮：单次 DNS / 连接抖动不足以判定失败。
+        for pass in 0..2u32 {
+            for &source in policy.order {
+                match self.manifest(source, force, true).await {
+                    Ok(value) => {
+                        if let Some(path) = &selection {
+                            // 清单本体已落盘；丢失此可选提示只影响下次是否重新尝试优先来源。
+                            let _ = atomic_bytes(path, source.name().as_bytes(), self.cancel);
+                        }
+                        self.cancel.check()?;
+                        return Ok(value);
                     }
-                    self.cancel.check()?;
-                    return Ok(value);
+                    Err(err) => { self.cancel.check()?; error = err; }
                 }
-                Err(err) => { self.cancel.check()?; error = err; }
             }
+            if pass == 0 { retry_pause(self.cancel).await?; }
         }
         Err(error)
     }
@@ -300,16 +312,20 @@ impl<'a> Metadata<'a> {
         }
         urls.push(url.to_owned());
         let mut error = "未取得有效版本 JSON".to_owned();
-        for url in urls {
-            self.cancel.check()?;
-            match self.fetch(source, false, &url).await.and_then(|bytes| {
-                let value = verified_version(&bytes, id, &digest)?;
-                atomic_bytes(&path, &bytes, self.cancel)?;
-                Ok(value)
-            }) {
-                Ok(value) => return Ok(value),
-                Err(err) => { self.cancel.check()?; error = err; }
+        // 同一来源的多个候选地址轮完后，再整体重试一轮；单个地址抖动不再直接判定失败。
+        for pass in 0..2u32 {
+            for url in &urls {
+                self.cancel.check()?;
+                match self.fetch(source, false, url).await.and_then(|bytes| {
+                    let value = verified_version(&bytes, id, &digest)?;
+                    atomic_bytes(&path, &bytes, self.cancel)?;
+                    Ok(value)
+                }) {
+                    Ok(value) => return Ok(value),
+                    Err(err) => { self.cancel.check()?; error = err; }
+                }
             }
+            if pass == 0 { retry_pause(self.cancel).await?; }
         }
         Err(error)
     }

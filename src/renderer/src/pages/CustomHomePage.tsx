@@ -33,6 +33,7 @@ import { homepageOrigins, httpOrigin, useSecurityGuard } from './customhome/secu
 import { useHostBridge } from './customhome/bridge'
 import { buildFrameSrcDoc } from './customhome/sandbox'
 import { HomepageFrame } from './customhome/frame'
+import { ensureProbe } from './customhome/probe'
 
 // 同一宿主串行签发与撤销；旧请求不能晚于新请求覆盖后端票据。
 let nativeFrameQueue: Promise<void> = Promise.resolve()
@@ -219,13 +220,20 @@ export function CustomHomePage({ id }: { id: string }): JSX.Element {
       loadingDocument={nativeDocument && approved && !frameUrl && !data.error}
       approved={approved}
       frameRef={frameRef}
+      inlineGate
       onApproved={(next: HomepageEntry) => {
         const sequence = ++approvalSequence.current
         // 必须重读整份正文，不能把新授权元数据拼到先前加载的旧内容上。
         void window.api.homepage.read(id).then((current) => {
           if (!aliveRef.current || sequence !== approvalSequence.current) return
+          // 放行凭据只对「核对时那份字节」有效。会话复用启动时的校验结果之后，
+          // 这里就是唯一的兜底：内容变了就重新核对，绝不把旧哈希的授权套到新内容上。
+          if (current.sha256 !== next.sha256) {
+            void ensureProbe(id, true).catch(() => undefined)
+            return
+          }
           data.setEntry(current)
-          setPassedSha(current.sha256 === next.sha256 ? current.sha256 : '')
+          setPassedSha(current.sha256)
         }, (error: unknown) => {
           if (aliveRef.current && sequence === approvalSequence.current) {
             data.setError(error instanceof Error ? error.message : t('ch.loadFailed'))

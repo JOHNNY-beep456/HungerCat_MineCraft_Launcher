@@ -234,6 +234,24 @@ async fn warn(app: &tauri::AppHandle, decision: &Decision, cancel: Arc<crate::do
     tokio::select! { biased; _ = cancel.cancelled() => Err(cancelled()), value = receive => value.map_err(|_| unavailable())? }
 }
 
+/// 移动端的「窗口」就是屏幕：画面由 `SurfaceView` 铺满，没有边框、任务栏与 DPI 换算。
+///
+/// 桌面分支的采样是必需的（缺显示器就报错，不猜分辨率）；手机上却压根没有窗口可测，
+/// 只有一块屏幕。取不到时按 720P 兜底而不拒绝启动——真正的画面尺寸随后由
+/// `surfaceChanged` 上报，这里的值只影响 `--width/--height` 这个初始提示。
+#[cfg(all(not(desktop), target_os = "android"))]
+fn mobile_decision() -> Decision {
+    let (width, height) = crate::android_host::display_size().unwrap_or((1280, 720));
+    Decision {
+        width: width.clamp(MIN_WINDOW, MAX_WINDOW),
+        height: height.clamp(MIN_WINDOW, MAX_WINDOW),
+        // 手机上没有「切全屏」这一步：Surface 已经占满屏幕，再传 `--fullscreen`
+        // 只会让 GLFW 去找一个并不存在的显示器。
+        fullscreen: false,
+        warning: None,
+    }
+}
+
 /// 每次启动采样，不缓存任务栏/DPI；调用点必须在游戏目录根锁之前。
 pub(super) async fn resolve_options(app: &tauri::AppHandle, settings: &Value, options: Value, cancel: Arc<crate::downloads::Cancel>) -> Result<Value> {
     if cancel.check().is_err() { return Err(cancelled()); }
@@ -246,7 +264,12 @@ pub(super) async fn resolve_options(app: &tauri::AppHandle, settings: &Value, op
         if cancel.check().is_err() { return Err(cancelled()); }
         decision.apply(options)
     }
-    #[cfg(not(desktop))]
+    #[cfg(all(not(desktop), target_os = "android"))]
+    {
+        let _ = (app, request);
+        mobile_decision().apply(options)
+    }
+    #[cfg(all(not(desktop), not(target_os = "android")))]
     {
         let _ = (app, request);
         Err(message("移动端未提供桌面游戏窗口尺寸", "行動端未提供桌面遊戲視窗尺寸", "Desktop game window sizing is unavailable on mobile"))

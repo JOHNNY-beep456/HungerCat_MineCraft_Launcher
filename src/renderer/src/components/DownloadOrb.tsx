@@ -29,7 +29,8 @@ export function DownloadOrb({ onNavigate }: { onNavigate: (p: PageId) => void })
   const totalCurrent = active.reduce((s, d) => s + (d.currentBytes || 0), 0)
   const totalTotal = active.reduce((s, d) => s + (d.totalBytes || 0), 0)
   const rawPercent = totalTotal > 0 ? (totalCurrent / totalTotal) * 100 : 0
-  const percent = Math.max(0, Math.min(100, Math.round(rawPercent)))
+  // 仍在下载时封顶 99：字节比四舍五入到 100 会让「还差最后几 MB」看起来像卡死在 100%。
+  const percent = Math.max(0, Math.min(99, Math.round(rawPercent)))
   const speed = active.reduce((s, d) => s + (d.speed || 0), 0)
 
   return (
@@ -38,7 +39,7 @@ export function DownloadOrb({ onNavigate }: { onNavigate: (p: PageId) => void })
         <motion.button
           key="download-orb"
           onClick={() => onNavigate('downloads')}
-          className="glass-strong no-drag fixed right-5 bottom-6 z-[130] flex h-16 w-16 cursor-pointer items-center justify-center"
+          className="download-orb glass-strong no-drag fixed right-5 bottom-6 z-[130] flex h-16 w-16 cursor-pointer items-center justify-center"
           initial={{ opacity: 0, scale: 0.6, y: 16 }}
           animate={{ opacity: 1, scale: 1, y: 0 }}
           exit={{ opacity: 0, scale: 0.6, y: 16 }}

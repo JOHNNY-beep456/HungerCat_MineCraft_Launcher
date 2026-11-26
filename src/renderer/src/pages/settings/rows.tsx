@@ -8,7 +8,7 @@
 import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import { AnimatePresence, motion } from 'motion/react'
 import { createPortal } from 'react-dom'
-import type { JavaRuntime, LauncherSettings } from '@shared/types'
+import type { AndroidRuntimeEntry, JavaRuntime, LauncherSettings } from '@shared/types'
 import { skinTakesOver } from '@shared/settings'
 import { useApp } from '../../store'
 import { Button, Checkbox, Icon, Segmented, Select, Switch } from '../../components/ui'
@@ -977,6 +977,8 @@ function GameWindowSizeRow(): JSX.Element {
   const dirty = useRef(false)
 
   useEffect(() => {
+    // 移动端整行不渲染，也不必再去问显示器尺寸（移动端没有主显示器概念）。
+    if (MOBILE_PLATFORM) return
     void window.api.display
       .primary()
       .then(setDisplay)
@@ -988,6 +990,10 @@ function GameWindowSizeRow(): JSX.Element {
     setWinHText(String(settings.gameWindowHeight))
   }, [settings.gameWindowWidth, settings.gameWindowHeight])
 
+  // 移动端没有可调整的窗口：画面由 Surface 铺满屏幕，尺寸恒等于屏幕本身。
+  // 留着一排无效预设只会让人以为启动失败是选项不对，所以整行不渲染。
+  if (MOBILE_PLATFORM) return <></>
+
   const commit = (): void => {
     dirty.current = false
     const w = clampWindowSize(parseInt(winWText, 10), settings.gameWindowWidth)
@@ -996,7 +1002,6 @@ function GameWindowSizeRow(): JSX.Element {
     setWinHText(String(h))
     void updateSettings({ gameWindowWidth: w, gameWindowHeight: h })
   }
-
   // 预览用的实时尺寸：输入非法时回退到已保存的值，避免预览跳动到边界值。
   const previewW = clampWindowSize(parseInt(winWText, 10), settings.gameWindowWidth)
   const previewH = clampWindowSize(parseInt(winHText, 10), settings.gameWindowHeight)
@@ -1272,10 +1277,110 @@ function MetadataOnlyRow(): JSX.Element {
 /* Java                                                                */
 /* ================================================================== */
 
+/**
+ * 移动端没有可安装、可指定的桌面 JRE：Android 用随包的内置运行时，iOS 则完全不可用。
+ * 两端的检测/选择/安装开关都无效，平台在一次会话内不变，故在模块加载时求值一次即可。
+ */
+const MOBILE_PLATFORM = ['android', 'ios'].includes(window.api?.platform ?? 'unknown')
+/** Android 是唯一有「内置 / 下载 Java 运行时」这套目录的平台。 */
+const ANDROID_PLATFORM = (window.api?.platform ?? 'unknown') === 'android'
+
+/** 运行时目录体积只用于展示量级，四舍五入到 MB 即可。 */
+function sizeLabel(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes <= 0) return '0 MB'
+  if (bytes >= 1024 ** 3) return `${(bytes / 1024 ** 3).toFixed(1)} GB`
+  return `${Math.max(1, Math.round(bytes / 1024 ** 2))} MB`
+}
+
+/**
+ * Android 运行时清单。
+ *
+ * 内置 17 随 APK 分发、删不掉；21 / 25 是按版本需求下载的，每个约 100 MB，
+ * 之前只有下载入口没有删除入口——几个大版本玩过之后就白占几百 MB。
+ */
+function JavaRuntimeRow(): JSX.Element | null {
+  const { t } = useApp()
+  const [list, setList] = useState<AndroidRuntimeEntry[]>([])
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+
+  useEffect(() => {
+    if (!ANDROID_PLATFORM) return
+    let alive = true
+    void (async () => {
+      try {
+        const data = await window.api.java.runtimes()
+        if (alive) setList(data.runtimes)
+      } catch (e) {
+        if (alive) setError((e as Error)?.message ?? String(e))
+      }
+    })()
+    return () => {
+      alive = false
+    }
+  }, [])
+
+  const remove = async (major: number): Promise<void> => {
+    setBusy(true)
+    setError('')
+    try {
+      await window.api.java.removeRuntime(major)
+      const data = await window.api.java.runtimes()
+      setList(data.runtimes)
+    } catch (e) {
+      setError((e as Error)?.message ?? String(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  if (!ANDROID_PLATFORM || list.length === 0) return null
+  return (
+    <Row label={t('settings.java.runtimes')} desc={t('settings.java.runtimesDesc')}>
+      <div className="flex flex-col items-end gap-1">
+        {list.map((item) => (
+          <div key={item.major} className="flex items-center gap-2">
+            <span className="caption">
+              Java {item.major}
+              {item.version && item.version !== '?' ? ` · ${item.version}` : ''} · {sizeLabel(item.size)}
+            </span>
+            {item.builtin ? (
+              <span className="caption opacity-60">{t('settings.java.runtimeBuiltin')}</span>
+            ) : (
+              <Button
+                size="sm"
+                variant="ghost"
+                icon="xmark"
+                disabled={busy}
+                onClick={() => void remove(item.major)}
+              >
+                {t('settings.java.runtimeDelete')}
+              </Button>
+            )}
+          </div>
+        ))}
+        {error && <span className="caption text-[#ff453a]">{error}</span>}
+      </div>
+    </Row>
+  )
+}
+
 /** Java 自动检测开关：关闭前二次确认（关闭后改为手动指定 Java）。 */
 function JavaAutoRow(): JSX.Element {
   const { settings, updateSettings, t } = useApp()
   const [notice, setNotice] = useState(false)
+  // 移动端没有可执行的桌面 JRE：检测、选择、安装都无从谈起，改为一行只读说明，
+  // 避免出现「空列表 + 按钮点了报错」的假可用界面。
+  if (MOBILE_PLATFORM) {
+    return (
+      <>
+        <Row label={t('settings.row.javaAutoDetect')} desc={t('settings.java.mobileDesc')}>
+          <span className="caption shrink-0 opacity-60">{t('settings.java.mobileTag')}</span>
+        </Row>
+        <JavaRuntimeRow />
+      </>
+    )
+  }
   return (
     <>
       <Row label={t('settings.row.javaAutoDetect')}>
@@ -1343,6 +1448,8 @@ function JavaPathRow(): JSX.Element {
   const [javas, setJavas] = useState<JavaRuntime[]>([])
   const [detecting, setDetecting] = useState(false)
   const [pickError, setPickError] = useState<string | null>(null)
+  /** 移动端没有可执行的桌面 JRE，整块不渲染（说明由 JavaAutoRow 承担）。 */
+  const mobile = MOBILE_PLATFORM
 
   const pick = async (): Promise<void> => {
     setPickError(null)
@@ -1360,14 +1467,20 @@ function JavaPathRow(): JSX.Element {
     setDetecting(true)
     try {
       setJavas(await window.api.java.detect())
+    } catch {
+      // 检测失败（权限 / 平台边界）不应变成未处理的 Promise 拒绝：清空列表并让占位文案生效。
+      setJavas([])
     } finally {
       setDetecting(false)
     }
   }
 
   useEffect(() => {
+    if (mobile) return
     void detect()
-  }, [])
+  }, [mobile])
+
+  if (mobile) return <></>
 
   return (
     <div className="mt-2">

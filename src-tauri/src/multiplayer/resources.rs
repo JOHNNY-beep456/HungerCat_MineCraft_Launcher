@@ -17,9 +17,11 @@ fn is_link(metadata: &Metadata) -> bool {
 
 fn directory_probe(directory: &Path) -> Probe {
     if !directory.is_absolute() { return Probe::Invalid; }
-    for path in directory.ancestors() {
+    // ancestors() 由末级向外；只有末级必须是无链接的真实目录，Android 的私有目录
+    // 祖先前缀由系统维护成别名软链接（见 `crate::path_alias`）。
+    for (index, path) in directory.ancestors().enumerate() {
         match fs::symlink_metadata(path) {
-            Ok(metadata) if is_link(&metadata) || !metadata.is_dir() => return Probe::Invalid,
+            Ok(metadata) if (is_link(&metadata) && crate::path_alias::link_is_fatal(index == 0)) || !metadata.is_dir() => return Probe::Invalid,
             Ok(_) => {},
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Probe::Missing,
             Err(_) => return Probe::Invalid,

@@ -2,5 +2,7 @@
   "ch.loadFailed": "Failed to load the custom homepage",
   "ch.loading": "Loading custom homepage…",
   "ch.frameTitle": "Custom homepage",
-  "ch.useBuiltin": "Use built-in interface"
+  "ch.useBuiltin": "Use built-in interface",
+  "ch.checking": "Verifying homepage…",
+  "ch.needsConfirm": "The homepage needs your confirmation before it can run"
 }

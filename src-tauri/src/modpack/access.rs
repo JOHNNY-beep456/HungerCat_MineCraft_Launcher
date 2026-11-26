@@ -49,15 +49,26 @@ fn checked_meta(file: &File) -> Result<Metadata> {
 }
 
 #[derive(Clone)]
-struct Anchor { path: PathBuf, file: Arc<File>, identity: Identity }
+struct Anchor { path: PathBuf, file: Arc<File>, identity: Identity, alias: bool }
 #[derive(Clone)]
 pub(super) struct Directory { path: PathBuf, anchors: Vec<Anchor> }
 impl Directory {
     pub(super) fn open(path: &Path) -> Result<Self> {
+        Self::open_exact(path).or_else(|error| match crate::path_alias::resolved_alias(path) {
+            // 系统别名落在末级时，规范化一次再复核；仍然失败则保留原始错误。
+            Some(canonical) => Self::open_exact(&canonical).map_err(|_| error),
+            None => Err(error),
+        })
+    }
+    fn open_exact(path: &Path) -> Result<Self> {
         if !path.is_absolute() { return Err("整合包目录必须为绝对路径".into()); }
         let mut current = PathBuf::new();
         let mut anchors: Vec<Anchor> = Vec::new();
-        for part in path.components() {
+        let mut parts = path.components().peekable();
+        while let Some(part) = parts.next() {
+            // 只有末级是启动器自己定位并创建的对象；祖先前缀在 Android 上可能由系统
+            // 维护成别名软链接（`/data/user/0` ↔ `/data/data`），见 `crate::path_alias`。
+            let final_segment = parts.peek().is_none();
             match part {
                 Component::Prefix(prefix) => {
                     #[cfg(windows)] { use std::path::Prefix; if !matches!(prefix.kind(), Prefix::Disk(_) | Prefix::VerbatimDisk(_)) { return Err("不支持网络共享或设备目录".into()); } }
@@ -65,19 +76,16 @@ impl Directory {
                 }
                 Component::RootDir => {
                     current.push(part.as_os_str());
-                    let file = native::root(&current).map_err(|_| "无法打开整合包根目录")?;
-                    let meta = checked_meta(&file)?;
-                    if !meta.is_dir() { return Err("整合包根路径不是目录".into()); }
-                    anchors.push(Anchor { path: current.clone(), identity: identity(&file, &meta)?, file: Arc::new(file) });
+                    let file = native::root(&current, false).map_err(|_| "无法打开整合包根目录")?;
+                    anchors.push(anchor_of(file, &current, false)?);
                 }
                 Component::Normal(name) => {
                     let name = leaf(name.to_str().ok_or("路径不是有效 UTF-8")?)?;
                     let parent = anchors.last().ok_or("缺少整合包根目录")?;
                     current.push(name);
-                    let file = native::child(&parent.file, &current, name).map_err(|_| "无法打开现存整合包目录")?;
-                    let meta = checked_meta(&file)?;
-                    if !meta.is_dir() { return Err("整合包路径不是目录".into()); }
-                    anchors.push(Anchor { path: current.clone(), identity: identity(&file, &meta)?, file: Arc::new(file) });
+                    let follow = !final_segment && crate::path_alias::ancestor_alias_allowed();
+                    let file = native::child(&parent.file, &current, name, follow).map_err(|_| "无法打开现存整合包目录")?;
+                    anchors.push(anchor_of(file, &current, follow)?);
                 }
                 _ => return Err("整合包路径不得包含相对跳转".into()),
             }
@@ -90,8 +98,13 @@ impl Directory {
     pub(super) fn verify(&self) -> Result<()> {
         for anchor in &self.anchors {
             let meta = fs::symlink_metadata(&anchor.path).map_err(|_| "整合包目录已改变")?;
-            if linked(&meta) || !meta.is_dir() { return Err("整合包目录已改变或成为链接".into()); }
-            let current = native::root(&anchor.path).map_err(|_| "无法重验整合包目录")?;
+            if meta.file_type().is_symlink() {
+                // 仅祖先前缀允许是系统别名；末级（`alias == false`）永远是真实目录。
+                if !anchor.alias { return Err("整合包目录已改变或成为链接".into()); }
+            } else if !meta.is_dir() {
+                return Err("整合包目录已改变或成为链接".into());
+            }
+            let current = native::root(&anchor.path, anchor.alias).map_err(|_| "无法重验整合包目录")?;
             if identity(&current, &checked_meta(&current)?)? != anchor.identity { return Err("整合包目录身份已改变".into()); }
         }
         Ok(())
@@ -109,7 +122,7 @@ impl Directory {
         leaf(name)?;
         self.verify()?;
         let path = self.path.join(name);
-        let file = match native::child(self.handle(), &path, name) {
+        let file = match native::child(self.handle(), &path, name, false) {
             Ok(file) => file,
             Err(error) if error.kind() == io::ErrorKind::NotFound => { self.verify()?; return Ok(None); }
             Err(_) => return Err("无法安全读取实例内容；链接或特殊文件不受支持".into()),
@@ -125,7 +138,7 @@ impl Directory {
         if !node.meta.is_dir() { return Err("实例内容不是目录".into()); }
         node.verify()?;
         let mut anchors = self.clone_anchors();
-        anchors.push(Anchor { path: node.path.clone(), identity: node.stamp.identity, file: Arc::new(node.file) });
+        anchors.push(Anchor { path: node.path.clone(), identity: node.stamp.identity, file: Arc::new(node.file), alias: false });
         let result = Self { path: node.path, anchors };
         result.verify()?;
         Ok(result)
@@ -148,6 +161,14 @@ impl Directory {
     }
 }
 
+/// 校验刚打开的一级目录并登记其身份；`alias` 表示该级允许是系统维护的别名软链接。
+fn anchor_of(file: File, path: &Path, alias: bool) -> Result<Anchor> {
+    let meta = checked_meta(&file)?;
+    if !meta.is_dir() { return Err("整合包路径不是目录".into()); }
+    let value = Anchor { path: path.to_path_buf(), identity: identity(&file, &meta)?, file: Arc::new(file), alias };
+    Ok(value)
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Stamp { identity: Identity, size: u64, modified: SystemTime, changed:(i64,i64) }
 #[cfg(unix)]fn change_time(_:&File,meta:&Metadata)->Result<(i64,i64)>{use std::os::unix::fs::MetadataExt;Ok((meta.ctime(),meta.ctime_nsec()))}
@@ -163,7 +184,7 @@ impl Node {
     fn verify(&self) -> Result<()> {
         let meta = fs::symlink_metadata(&self.path).map_err(|_| "实例内容已改变")?;
         if linked(&meta) { return Err("实例内容已变成链接".into()); }
-        let current = native::root(&self.path).map_err(|_| "无法重验实例内容")?;
+        let current = native::root(&self.path, false).map_err(|_| "无法重验实例内容")?;
         let current_meta = checked_meta(&current)?;
         if self.meta.is_dir() {
             // 目录新增/移除成员会改变时间和大小，不等于目录被换绑。
@@ -221,7 +242,8 @@ impl OpenedFile {
 #[cfg(unix)]
 mod native {
     use super::*;
-    use std::{ffi::CString, os::{fd::{AsRawFd, FromRawFd}, unix::fs::OpenOptionsExt}};
+    use std::ffi::CString;
+    use std::os::{fd::{AsRawFd, FromRawFd}, unix::{ffi::OsStrExt, fs::OpenOptionsExt}};
     #[cfg(any(target_os="macos",target_os="ios"))] const NOFOLLOW:i32=0x100;
     #[cfg(all(target_os="android",any(target_arch="arm",target_arch="aarch64")))] const NOFOLLOW:i32=0x8000;
     #[cfg(not(any(target_os="macos",target_os="ios",all(target_os="android",any(target_arch="arm",target_arch="aarch64")))))] const NOFOLLOW:i32=0x20000;
@@ -229,8 +251,32 @@ mod native {
     #[cfg(not(any(target_os="macos",target_os="ios")))] const CLOEXEC:i32=0x80000;
     #[cfg(any(target_os="macos",target_os="ios"))] const NONBLOCK:i32=0x4;
     #[cfg(not(any(target_os="macos",target_os="ios")))] const NONBLOCK:i32=0x800;
+    // O_PATH：只取锚点、不要读权限。Android 的 `/data` 一类祖先只有执行权限，
+    // 可读句柄打不开，但 O_PATH 句柄仍能继续 openat 与 fstat。
+    #[cfg(any(target_os="linux",target_os="android"))] const PATH_ONLY:i32=0x200000;
+    #[allow(dead_code)] const AT_FDCWD:i32=-100;
     extern "C" { fn openat(dir:i32,name:*const std::os::raw::c_char,flags:i32,...)->i32; }
-    pub(super) fn root(path:&Path)->io::Result<File> { OpenOptions::new().read(true).custom_flags(NOFOLLOW|CLOEXEC|NONBLOCK).open(path) }
+
+    fn raw(path:&Path)->io::Result<CString> { CString::new(path.as_os_str().as_bytes()).map_err(|_| io::Error::new(io::ErrorKind::InvalidInput,"路径无效")) }
+    fn from_fd(fd:i32)->io::Result<File> { if fd<0 { Err(io::Error::last_os_error()) } else { Ok(unsafe { File::from_raw_fd(fd) }) } }
+    /// 祖先不可读时的退路；只在这两个 errno 上使用，其它错误照旧上报。
+    fn path_only(dir:i32,name:&CString,nofollow:i32)->io::Result<File> {
+        #[cfg(any(target_os="linux",target_os="android"))]
+        { return from_fd(unsafe { openat(dir,name.as_ptr(),PATH_ONLY|nofollow|CLOEXEC) }); }
+        #[cfg(not(any(target_os="linux",target_os="android")))]
+        { let _=(dir,name,nofollow); Err(io::Error::new(io::ErrorKind::PermissionDenied,"祖先目录不可读")) }
+    }
+    fn unreadable(dir:i32,name:&CString,error:&io::Error,nofollow:i32)->io::Result<File> {
+        if matches!(error.raw_os_error(),Some(1)|Some(13)) { path_only(dir,name,nofollow) } else { Err(io::Error::new(error.kind(),error.to_string())) }
+    }
+
+    pub(super) fn root(path:&Path,follow:bool)->io::Result<File> {
+        let nofollow=if follow {0} else {NOFOLLOW};
+        match OpenOptions::new().read(true).custom_flags(nofollow|CLOEXEC|NONBLOCK).open(path) {
+            Ok(file) => Ok(file),
+            Err(error) => unreadable(AT_FDCWD,&raw(path)?,&error,nofollow),
+        }
+    }
     pub(super) fn names(file:&File,_:&Path)->io::Result<Box<dyn Iterator<Item=io::Result<std::ffi::OsString>>>> {
         #[cfg(any(target_os="linux",target_os="android"))]
         {let path=PathBuf::from(format!("/proc/self/fd/{}",file.as_raw_fd()));Ok(Box::new(fs::read_dir(path)?.map(|entry|entry.map(|e|e.file_name()))))}
@@ -260,28 +306,31 @@ mod native {
             if dir.is_null(){let error=io::Error::last_os_error();unsafe{close(fd);}return Err(error);}Ok(Box::new(Names(dir)))
         }
     }
-    pub(super) fn child(parent:&File,_:&Path,name:&str)->io::Result<File> {
+    pub(super) fn child(parent:&File,_:&Path,name:&str,follow:bool)->io::Result<File> {
         let name=CString::new(name).map_err(|_| io::Error::new(io::ErrorKind::InvalidInput,"文件名无效"))?;
-        let fd=unsafe { openat(parent.as_raw_fd(),name.as_ptr(),NOFOLLOW|CLOEXEC|NONBLOCK) };
-        if fd<0 { Err(io::Error::last_os_error()) } else { Ok(unsafe { File::from_raw_fd(fd) }) }
+        let nofollow=if follow {0} else {NOFOLLOW};
+        match from_fd(unsafe { openat(parent.as_raw_fd(),name.as_ptr(),nofollow|CLOEXEC|NONBLOCK) }) {
+            Ok(file) => Ok(file),
+            Err(error) => unreadable(parent.as_raw_fd(),&name,&error,nofollow),
+        }
     }
 }
 #[cfg(windows)]
 mod native {
     use super::*; use std::os::windows::fs::OpenOptionsExt;
-    pub(super) fn root(path:&Path)->io::Result<File> {
+    pub(super) fn root(path:&Path,_follow:bool)->io::Result<File> {
         // 不共享 DELETE；整个读取期间祖先不能被换名。OPEN_REPARSE_POINT 后再检查属性。
         let share=if fs::symlink_metadata(path)?.is_dir(){3}else{1};
         OpenOptions::new().read(true).share_mode(share).custom_flags(0x02000000|0x00200000).open(path)
     }
-    pub(super) fn child(_:&File,path:&Path,_:&str)->io::Result<File> { root(path) }
+    pub(super) fn child(_:&File,path:&Path,_:&str,_follow:bool)->io::Result<File> { root(path,false) }
     pub(super) fn names(_:&File,path:&Path)->io::Result<Box<dyn Iterator<Item=io::Result<std::ffi::OsString>>>> {Ok(Box::new(fs::read_dir(path)?.map(|entry|entry.map(|e|e.file_name()))))}
 }
 #[cfg(not(any(unix,windows)))]
 mod native {
     use super::*;
-    pub(super) fn root(_:&Path)->io::Result<File> { Err(io::Error::new(io::ErrorKind::Unsupported,"平台不支持安全只读句柄")) }
-    pub(super) fn child(_:&File,path:&Path,_:&str)->io::Result<File> { root(path) }
+    pub(super) fn root(_:&Path,_follow:bool)->io::Result<File> { Err(io::Error::new(io::ErrorKind::Unsupported,"平台不支持安全只读句柄")) }
+    pub(super) fn child(_:&File,path:&Path,_:&str,_follow:bool)->io::Result<File> { root(path,false) }
     pub(super) fn names(_:&File,_:&Path)->io::Result<Box<dyn Iterator<Item=io::Result<std::ffi::OsString>>>> {Err(io::Error::new(io::ErrorKind::Unsupported,"平台不支持安全目录枚举"))}
 }
 

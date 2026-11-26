@@ -624,11 +624,14 @@ fn tool_policy(settings: &Value, intent: &ToolIntent) -> Result<ToolPolicy, Stri
 fn tool_scope(settings: &Value) -> Result<PathBuf, String> {
     let root=crate::operation_game_dir("ai:chat", &[], settings)?;
     let mut cursor=PathBuf::new();
-    for part in root.components() {
+    let mut parts=root.components().peekable();
+    while let Some(part)=parts.next() {
+        // 末级由启动器定位；祖先级在 Android 上可能是系统维护的别名链接。
+        let final_segment=parts.peek().is_none();
         cursor.push(part.as_os_str());
         if matches!(part,std::path::Component::Prefix(_)){continue;}
         match std::fs::symlink_metadata(&cursor) {
-            Ok(meta) if link_or_reparse(&meta)=>return Err("AI 游戏目录不能经过链接或重解析目录".into()),
+            Ok(meta) if link_or_reparse(&meta) && crate::path_alias::link_is_fatal(final_segment)=>return Err("AI 游戏目录不能经过链接或重解析目录".into()),
             Ok(meta) if !meta.is_dir()=>return Err("AI 游戏目录的祖先不是目录".into()),
             Ok(_)=>{},Err(e) if e.kind()==std::io::ErrorKind::NotFound=>{},Err(_)=>return Err("无法复核 AI 游戏目录".into())
         }

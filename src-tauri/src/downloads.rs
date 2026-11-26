@@ -13,6 +13,14 @@ mod version_metadata;
 pub(crate) type Result<T> = std::result::Result<T, String>;
 const JSON_LIMIT: u64 = 32 * 1024 * 1024;
 const FILE_LIMIT: u64 = 2 * 1024 * 1024 * 1024;
+/// 单文件下载的来源轮数：一轮把全部候选来源试完，仍未成功再整体重试一轮。
+const DOWNLOAD_PASSES: u32 = 2;
+/// 建连 + 等响应头的上限。客户端已不再设「整体超时」（它会连响应体一起掐断大文件下载），
+/// 所以这里必须自己兜住「服务端接受连接却不回响应头」的情况，否则整条流会静默挂死。
+const RESPONSE_TIMEOUT: Duration = Duration::from_secs(30);
+/// 稳态低速判据：30 秒内不足 32 KiB 视为连接被掐断（TCP 半开时仍会滴流，读取超时抓不到）。
+const SLOW_WINDOW: Duration = Duration::from_secs(30);
+const SLOW_WINDOW_BYTES: u64 = 32 * 1024;
 const MIRROR: &str = "https://bmclapi2.bangbang93.com";
 /// 版本依赖下载的可信主机。
 ///
@@ -59,8 +67,42 @@ pub(crate) fn identifier(s: &str) -> Result<&str> {
     let stem=s.split('.').next().unwrap_or("").to_ascii_uppercase();
     if matches!(stem.as_str(),"CON"|"PRN"|"AUX"|"NUL") || (stem.len()==4 && (stem.starts_with("COM")||stem.starts_with("LPT")) && matches!(stem.as_bytes()[3],b'1'..=b'9')) { return Err("拒绝系统保留名称".into()); } Ok(s)
 }
-fn no_link(path: &Path) -> Result<()> { match fs::symlink_metadata(path) { Ok(m) => { if m.file_type().is_symlink() { return Err("拒绝符号链接路径".into()); } #[cfg(windows)] { use std::os::windows::fs::MetadataExt; if m.file_attributes() & 0x400 != 0 { return Err("拒绝重解析点路径".into()); } } Ok(()) }, Err(e) if e.kind()==std::io::ErrorKind::NotFound=>Ok(()), Err(_)=>Err("无法验证文件路径".into()) } }
-fn absolute(path: &Path) -> Result<PathBuf> { if !path.is_absolute() || path.as_os_str().is_empty() { return Err("游戏目录必须为绝对路径".into()); } let mut out=PathBuf::new(); for c in path.components() { match c { Component::Prefix(prefix)=>{out.push(prefix.as_os_str());continue;}, Component::RootDir=>{out.push(c.as_os_str());no_link(&out)?;continue;}, Component::ParentDir|Component::CurDir=>return Err("目录不能含相对跳转".into()), _=>out.push(c.as_os_str()) } no_link(&out)?; } Ok(out) }
+fn no_link(path: &Path) -> Result<()> { no_link_component(path, true) }
+/// 祖先级软链接只在桌面平台拒绝；Android 的私有目录前缀由系统维护（见 `path_alias`）。
+fn no_link_component(path: &Path, final_segment: bool) -> Result<()> {
+    match fs::symlink_metadata(path) {
+        Ok(m) => {
+            if m.file_type().is_symlink() && crate::path_alias::link_is_fatal(final_segment) { return Err("拒绝符号链接路径".into()); }
+            #[cfg(windows)] { use std::os::windows::fs::MetadataExt; if m.file_attributes() & 0x400 != 0 { return Err("拒绝重解析点路径".into()); } }
+            Ok(())
+        }
+        Err(e) if e.kind()==std::io::ErrorKind::NotFound => Ok(()),
+        Err(_) => Err("无法验证文件路径".into()),
+    }
+}
+fn absolute(path: &Path) -> Result<PathBuf> {
+    walk_absolute(path).or_else(|error| match crate::path_alias::resolved_alias(path) {
+        // 别名落在末级时，规范化一次再复核；仍然失败则保留原始错误。
+        Some(canonical) => walk_absolute(&canonical).map_err(|_| error),
+        None => Err(error),
+    })
+}
+fn walk_absolute(path: &Path) -> Result<PathBuf> {
+    if !path.is_absolute() || path.as_os_str().is_empty() { return Err("游戏目录必须为绝对路径".into()); }
+    let mut out = PathBuf::new();
+    let mut parts = path.components().peekable();
+    while let Some(c) = parts.next() {
+        let final_segment = parts.peek().is_none();
+        match c {
+            Component::Prefix(prefix)=>{out.push(prefix.as_os_str());continue;},
+            Component::RootDir=>{out.push(c.as_os_str());no_link_component(&out, final_segment)?;continue;},
+            Component::ParentDir|Component::CurDir=>return Err("目录不能含相对跳转".into()),
+            _=>out.push(c.as_os_str()),
+        }
+        no_link_component(&out, final_segment)?;
+    }
+    Ok(out)
+}
 fn inside(root:&Path,relative:impl AsRef<Path>)->Result<PathBuf> { let mut out=absolute(root)?; let rel=relative.as_ref(); if rel.as_os_str().is_empty(){return Err("文件路径为空".into());} for c in rel.components(){if let Component::Normal(n)=c { let s=n.to_str().ok_or("文件路径不是 UTF-8")?; identifier(s)?;out.push(n);no_link(&out)?;}else{return Err("文件路径越界".into());}}Ok(out) }
 fn mkdir(path:&Path)->Result<()> {absolute(path)?;fs::create_dir_all(path).map_err(|_|"无法创建安装目录")?;absolute(path)?;Ok(())}
 fn read_bounded(path:&Path,limit:u64)->Result<Vec<u8>>{absolute(path)?;let m=fs::metadata(path).map_err(|_|"本地文件不存在")?;if !m.is_file()||m.len()>limit{return Err("本地文件不是普通文件或超过大小上限".into());}let mut out=Vec::new();File::open(path).map_err(|_|"无法读取本地文件")?.take(limit+1).read_to_end(&mut out).map_err(|_|"读取本地文件失败")?;if out.len()as u64>limit{return Err("本地文件超过大小上限".into());}Ok(out)}
@@ -70,7 +112,7 @@ pub(crate) fn version_path(root:&Path,id:&str)->Result<PathBuf>{inside(root,Path
 #[derive(Clone, Default)] pub(crate) struct Cancel { stopped: Arc<AtomicBool>, notify: Arc<Notify> }
 impl Cancel { pub(crate) fn check(&self)->Result<()> {if self.stopped.load(Ordering::Acquire){Err("下载已取消".into())}else{Ok(())}} pub(crate) fn stop(&self){self.stopped.store(true,Ordering::Release);self.notify.notify_waiters();} pub(crate) async fn cancelled(&self){loop{if self.stopped.load(Ordering::Acquire){return;}tokio::select!{_ = self.notify.notified()=>{},_ = tokio::time::sleep(Duration::from_millis(50))=>{}}}} }
 struct TempPath {path:PathBuf, committed:bool}
-impl Drop for TempPath{fn drop(&mut self){if !self.committed{let _=fs::remove_file(&self.path);}}}
+impl Drop for TempPath{fn drop(&mut self){if !self.committed{discard_partial(&self.path);}}}
 fn atomic_bytes(path:&Path,bytes:&[u8],cancel:&Cancel)->Result<()> {cancel.check()?;absolute(path)?;let parent=path.parent().ok_or("文件没有父目录")?;mkdir(parent)?;let mut temp=TempPath{path:inside(parent,format!(".hcmcl-write-{}.part",uuid::Uuid::new_v4()))?,committed:false};let mut file=OpenOptions::new().write(true).create_new(true).open(&temp.path).map_err(|_|"无法创建临时文件")?;file.write_all(bytes).map_err(|_|"写入临时文件失败")?;file.sync_all().map_err(|_|"提交临时文件失败")?;drop(file);cancel.check()?;absolute(path)?;replace_file(&temp.path,path)?;temp.committed=true;Ok(())}
 fn atomic_json(path:&Path,value:&Value,cancel:&Cancel)->Result<()>{let bytes=serde_json::to_vec_pretty(value).map_err(|_|"JSON 序列化失败")?;atomic_bytes(path,&bytes,cancel)}
 fn hex_sha1(bytes:&[u8])->String{format!("{:x}",Sha1::digest(bytes))}
@@ -88,13 +130,18 @@ async fn satisfied_in_context(task:&FileTask,cancel:&Cancel)->Result<bool>{
     tokio::task::spawn_blocking(move||satisfied(&task,&cancel)).await.map_err(|_|"下载校验任务异常结束".to_string())?
 }
 #[derive(Clone)] struct Network{client:reqwest::Client,#[cfg(test)] loopback:bool}
-impl Network{fn production()->Result<Self>{Ok(Self{client:reqwest::Client::builder().redirect(reqwest::redirect::Policy::none()).connect_timeout(Duration::from_secs(10)).timeout(Duration::from_secs(180)).pool_max_idle_per_host(64).no_gzip().no_brotli().no_deflate().user_agent("HCMCL-Tauri/0.8.0").build().map_err(|_|"无法初始化下载网络")?,#[cfg(test)]loopback:false})} fn url(&self,raw:&str)->Result<reqwest::Url>{let u=reqwest::Url::parse(raw).map_err(|_|"下载地址无效")?;if raw.len()>32768||raw.chars().any(char::is_control)||!u.username().is_empty()||u.password().is_some()||u.fragment().is_some(){return Err("下载地址包含不安全字段".into());}#[cfg(test)]if self.loopback&&u.scheme()=="http"&&u.host_str().and_then(|h|h.parse::<std::net::IpAddr>().ok()).is_some_and(|ip|ip.is_loopback()){return Ok(u);}if u.scheme()!="https"||u.port().is_some_and(|p|p!=443){return Err("正式下载只允许标准 HTTPS".into());}let host=u.host_str().ok_or("下载地址缺少主机")?;if !allowed_download_host(host){return Err(format!("下载地址不在版本依赖白名单（{host}）"));}Ok(u)}
+impl Network{fn production()->Result<Self>{Ok(Self{client:reqwest::Client::builder().redirect(reqwest::redirect::Policy::none()).connect_timeout(Duration::from_secs(10)).pool_max_idle_per_host(64).no_gzip().no_brotli().no_deflate().user_agent("HCMCL-Tauri/0.8.0").build().map_err(|_|"无法初始化下载网络")?,#[cfg(test)]loopback:false})} fn url(&self,raw:&str)->Result<reqwest::Url>{let u=reqwest::Url::parse(raw).map_err(|_|"下载地址无效")?;if raw.len()>32768||raw.chars().any(char::is_control)||!u.username().is_empty()||u.password().is_some()||u.fragment().is_some(){return Err("下载地址包含不安全字段".into());}#[cfg(test)]if self.loopback&&u.scheme()=="http"&&u.host_str().and_then(|h|h.parse::<std::net::IpAddr>().ok()).is_some_and(|ip|ip.is_loopback()){return Ok(u);}if u.scheme()!="https"||u.port().is_some_and(|p|p!=443){return Err("正式下载只允许标准 HTTPS".into());}let host=u.host_str().ok_or("下载地址缺少主机")?;if !allowed_download_host(host){return Err(format!("下载地址不在版本依赖白名单（{host}）"));}Ok(u)}
 async fn request(&self,raw:&str,range:Option<(u64,Option<&str>)>,cancel:&Cancel)->std::result::Result<reqwest::Response,TransferError>{self.request_checked(raw,range.map(|(offset,validator)|(offset,None,validator)),cancel,|raw|self.url(raw)).await}
 async fn request_end(&self,raw:&str,start:u64,end:u64,cancel:&Cancel)->std::result::Result<reqwest::Response,TransferError>{if end<start{return Err(TransferError::fatal("分段范围无效"));}self.request_checked(raw,Some((start,Some(end),None)),cancel,|raw|self.url(raw)).await}
-async fn request_checked(&self,raw:&str,range:Option<(u64,Option<u64>,Option<&str>)>,cancel:&Cancel,validate:impl Fn(&str)->Result<reqwest::Url>)->std::result::Result<reqwest::Response,TransferError>{let mut url=validate(raw).map_err(TransferError::fatal)?;for hop in 0..=5{cancel.check().map_err(TransferError::fatal)?;let mut req=self.client.get(url.clone());if let Some((offset,end,validator))=range{req=req.header(reqwest::header::RANGE,if let Some(end)=end{format!("bytes={offset}-{end}")}else{format!("bytes={offset}-")});if let Some(v)=validator{req=req.header(reqwest::header::IF_RANGE,v);}}let response=tokio::select!{_ = cancel.cancelled()=>return Err(TransferError::fatal("下载已取消")),r=req.send()=>r.map_err(|e|TransferError{status:None,retry:None,slow:e.is_timeout(),message:"下载网络连接失败".into(),fatal:false})?};if !response.status().is_redirection(){return Ok(response);}if hop==5{return Err(TransferError::fatal("下载重定向次数过多"));}let next=response.headers().get(reqwest::header::LOCATION).and_then(|s|s.to_str().ok()).ok_or_else(||TransferError::fatal("下载重定向缺少地址"))?;if next.chars().any(char::is_control){return Err(TransferError::fatal("下载重定向地址无效"));}let resolved=url.join(next).map_err(|_|TransferError::fatal("下载重定向地址无效"))?;url=validate(resolved.as_str()).map_err(TransferError::fatal)?;}Err(TransferError::fatal("下载重定向失败"))}
+async fn request_checked(&self,raw:&str,range:Option<(u64,Option<u64>,Option<&str>)>,cancel:&Cancel,validate:impl Fn(&str)->Result<reqwest::Url>)->std::result::Result<reqwest::Response,TransferError>{let mut url=validate(raw).map_err(TransferError::fatal)?;for hop in 0..=5{cancel.check().map_err(TransferError::fatal)?;let mut req=self.client.get(url.clone());if let Some((offset,end,validator))=range{req=req.header(reqwest::header::RANGE,if let Some(end)=end{format!("bytes={offset}-{end}")}else{format!("bytes={offset}-")});if let Some(v)=validator{req=req.header(reqwest::header::IF_RANGE,v);}}let response=tokio::select!{_ = cancel.cancelled()=>return Err(TransferError::fatal("下载已取消")),r=tokio::time::timeout(RESPONSE_TIMEOUT,req.send())=>match r{Err(_)=>return Err(TransferError{status:None,retry:None,slow:true,message:"下载请求长时间无响应".into()}),Ok(Ok(response))=>response,Ok(Err(e))=>return Err(TransferError{status:None,retry:None,slow:e.is_timeout(),message:"下载网络连接失败".into()})}};if !response.status().is_redirection(){return Ok(response);}if hop==5{return Err(TransferError::fatal("下载重定向次数过多"));}let next=response.headers().get(reqwest::header::LOCATION).and_then(|s|s.to_str().ok()).ok_or_else(||TransferError::fatal("下载重定向缺少地址"))?;if next.chars().any(char::is_control){return Err(TransferError::fatal("下载重定向地址无效"));}let resolved=url.join(next).map_err(|_|TransferError::fatal("下载重定向地址无效"))?;url=validate(resolved.as_str()).map_err(TransferError::fatal)?;}Err(TransferError::fatal("下载重定向失败"))}
 }
-#[derive(Debug)]struct TransferError{status:Option<u16>,retry:Option<Duration>,slow:bool,message:String,fatal:bool}
-impl TransferError{fn fatal(s:impl Into<String>)->Self{Self{status:None,retry:None,slow:false,message:s.into(),fatal:true}} fn status(response:&reqwest::Response)->Self{let code=response.status().as_u16();let retry=response.headers().get(reqwest::header::RETRY_AFTER).and_then(|v|v.to_str().ok()).and_then(|s|s.parse::<u64>().ok()).map(|n|Duration::from_secs(n.min(30)));Self{status:Some(code),retry,slow:code==408,message:format!("下载 HTTP {code}"),fatal:matches!(code,400|401|403)}} fn delay(&self,attempt:u32)->Duration{self.retry.unwrap_or_else(||Duration::from_millis(((if self.status==Some(429){3000}else{500})*(1u64<<attempt.min(5))).min(20000)))}}
+#[derive(Debug)]struct TransferError{status:Option<u16>,retry:Option<Duration>,slow:bool,message:String}
+impl TransferError{fn fatal(s:impl Into<String>)->Self{Self{status:None,retry:None,slow:false,message:s.into()}} fn status(response:&reqwest::Response)->Self{let code=response.status().as_u16();let retry=response.headers().get(reqwest::header::RETRY_AFTER).and_then(|v|v.to_str().ok()).and_then(|s|s.parse::<u64>().ok()).map(|n|Duration::from_secs(n.min(30)));Self{status:Some(code),retry,slow:code==408,message:format!("下载 HTTP {code}")}} fn delay(&self,attempt:u32)->Duration{self.retry.unwrap_or_else(||Duration::from_millis(((if self.status==Some(429){3000}else{500})*(1u64<<attempt.min(5))).min(20000)))}
+    /// 同一地址重试没有意义：文件不存在、请求被拒或续传范围不可用，直接换源。
+    fn hopeless(&self)->bool{matches!(self.status,Some(400|401|403|404|410|416))}
+    /// 同一来源的快速重试预算。停滞失败已经等满一个读取/响应窗口，再给一次机会就够了；
+    /// 直接换源会丢掉当前来源已经下好的分段，反而让进度倒退。
+    fn attempts(&self)->u32{if self.slow{2}else{3}}}
 async fn sleep_cancel(delay:Duration,cancel:&Cancel)->Result<()>{tokio::select!{_ = cancel.cancelled()=>Err("下载已取消".into()),_ = tokio::time::sleep(delay)=>cancel.check()}}
 #[derive(Clone)] pub(crate) struct Progress {sink:Arc<dyn Fn(Value)+Send+Sync>,task_id:String,title:String,data:Arc<Mutex<ProgressData>>}
 struct ProgressData{bytes:BTreeMap<String,u64>,sizes:BTreeMap<String,u64>,done:BTreeSet<String>,total:usize,last:Instant,sample:Instant,sample_bytes:u64,finished:bool,sum_bytes:u64,sum_sizes:u64}
@@ -103,7 +150,10 @@ impl Progress{pub(crate) fn new(task_id:String,title:String,sink:Arc<dyn Fn(Valu
         // 通道被打满后下载线程反被拖慢。完成事件与普通进度共用同一节流窗口，
         // 仅在「全部完成」时强制立即发送，避免进度条停在 99.x%。
         if (!done||d.done.len()<d.total)&&d.last.elapsed()<Duration::from_millis(80){return;}
-        d.last=Instant::now();let current_bytes=d.sum_bytes;let total_bytes=d.sum_sizes;let elapsed=d.sample.elapsed().as_secs_f64();let speed=if elapsed>=0.15{let n=current_bytes.saturating_sub(d.sample_bytes)as f64/elapsed;d.sample=Instant::now();d.sample_bytes=current_bytes;n}else{0.0};let percent=if d.total>0{(d.done.len()as f64/d.total as f64*100.0).min(99.9)}else{0.0};json!({"taskId":self.task_id,"jobTitle":self.title,"task":task.label,"current":d.done.len(),"total":d.total,"currentBytes":current_bytes,"totalBytes":total_bytes,"phase":task.phase,"percent":percent,"speed":speed})};(self.sink)(payload);}pub(crate) fn finish(&self,success:bool){let payload={let Ok(mut d)=self.data.lock()else{return};if d.finished{return;}d.finished=true;json!({"taskId":self.task_id,"jobTitle":self.title,"task":if success{"完成"}else{"下载中断"},"current":d.done.len(),"total":d.total,"currentBytes":d.sum_bytes,"totalBytes":d.sum_sizes,"phase":"done","percent":if success{100}else{0},"speed":0})};(self.sink)(payload);}}
+        d.last=Instant::now();let current_bytes=d.sum_bytes;let total_bytes=d.sum_sizes;let elapsed=d.sample.elapsed().as_secs_f64();let speed=if elapsed>=0.15{let n=current_bytes.saturating_sub(d.sample_bytes)as f64/elapsed;d.sample=Instant::now();d.sample_bytes=current_bytes;n}else{0.0};
+        // 百分比必须按字节算：最后收尾的往往是大依赖，只按「已完成文件数」计时，
+        // 5460/5461 会长时间钉在 99.9% 不动，看上去就像卡死。保留一位小数给前端直接显示。
+        let percent=if total_bytes>0{((current_bytes as f64*100.0/total_bytes as f64).min(99.9)*10.0).round()/10.0}else if d.total>0{((d.done.len()as f64/d.total as f64*100.0).min(99.9)*10.0).round()/10.0}else{0.0};json!({"taskId":self.task_id,"jobTitle":self.title,"task":task.label,"current":d.done.len(),"total":d.total,"currentBytes":current_bytes,"totalBytes":total_bytes,"phase":task.phase,"percent":percent,"speed":speed})};(self.sink)(payload);}pub(crate) fn finish(&self,success:bool){let payload={let Ok(mut d)=self.data.lock()else{return};if d.finished{return;}d.finished=true;json!({"taskId":self.task_id,"jobTitle":self.title,"task":if success{"完成"}else{"下载中断"},"current":d.done.len(),"total":d.total,"currentBytes":d.sum_bytes,"totalBytes":d.sum_sizes,"phase":"done","percent":if success{100}else{0},"speed":0})};(self.sink)(payload);}}
 fn path_key(path:&Path)->String{let s=path.to_string_lossy().replace('\\',"/");if cfg!(windows){s.to_lowercase()}else{s}}
 struct Job{cancel:Arc<Cancel>,id:String,completion:tokio::sync::watch::Sender<Option<Result<()>>>}
 static JOBS:OnceLock<Mutex<HashMap<String,Arc<Job>>>>=OnceLock::new();
@@ -136,7 +186,9 @@ fn cancel_id(args:&[Value])->Result<Option<&str>> {
     }
 }
 fn strategy(settings:&Value,key:&str)->Result<&'static str>{match settings.get(key){None|Some(Value::Null)=>Ok("auto"),Some(Value::String(s))=>match s.as_str(){"auto"=>Ok("auto"),"official-first"=>Ok("official-first"),"mirror-first"=>Ok("mirror-first"),_=>Err("下载源策略无效".into())},_=>Err("下载源策略必须为字符串".into())}}
-fn ordered(official:&str,mirror:&str,strategy:&str)->Vec<String>{let values=match strategy{"official-first"=>vec![official],"mirror-first"=>vec![mirror,official],_=>vec![official,mirror]};let mut out=Vec::new();for v in values{if !v.is_empty()&&!out.iter().any(|s|s==v){out.push(v.to_string());}}out}
+/// 来源候选。任何策略都保留另一个来源作兜底：官方优先也要能在官方 404 / 堵塞时切镜像，
+/// 镜像优先也要能在镜像缺文件时回官方；只改尝试顺序，不砍候选。
+fn ordered(official:&str,mirror:&str,strategy:&str)->Vec<String>{let values=match strategy{"mirror-first"=>vec![mirror,official],_=>vec![official,mirror]};let mut out=Vec::new();for v in values{if !v.is_empty()&&!out.iter().any(|s|s==v){out.push(v.to_string());}}out}
 fn mirror_url(url:&str)->String{if let Some(rel)=url.strip_prefix("https://libraries.minecraft.net/"){return format!("{MIRROR}/maven/{rel}");}if url.starts_with("https://resources.download.minecraft.net/"){if let Some(hash)=url.rsplit('/').next(){if checksum(hash,40).is_ok(){return format!("{MIRROR}/assets/{hash}");}}}if url.starts_with("https://piston-data.mojang.com/"){for piece in url.split('/'){if checksum(piece,40).is_ok(){return format!("{MIRROR}/objects/{piece}");}}}url.into()}
 fn file_urls(url:&str,settings:&Value)->Result<Vec<String>>{
     // 镜像节点地址直接作为「镜像」候选、官方等价地址作为回退；普通地址维持原有语义。
@@ -145,11 +197,29 @@ fn file_urls(url:&str,settings:&Value)->Result<Vec<String>>{
     Ok(ordered(url,&mirror_url(url),strategy))
 }
 fn client_urls(url:&str,base:&str,settings:&Value)->Result<Vec<String>>{identifier(base)?;Ok(ordered(url,&format!("{MIRROR}/version/{base}/client"),strategy(settings,"downloadSource")?))}
+/// 依赖库候选：主仓库（含镜像）之后补一个公共仓库来源。
+///
+/// Fabric / Quilt / Forge 的 maven 只托管各自产物，很多传递依赖（例如
+/// `it.unimi.dsi:fastutil`）实际位于 Maven Central；主仓库 404 或只返回错误页时，
+/// 不该就此判定整份依赖下载失败。摘要仍按版本 JSON 复核，换源不放大信任边界。
+fn library_urls(url:&str,settings:&Value)->Result<Vec<String>>{
+    let mut urls=file_urls(url,settings)?;
+    if let Ok(parsed)=reqwest::Url::parse(url){
+        let maven_host=matches!(parsed.host_str().unwrap_or(""),
+            "libraries.minecraft.net"|"maven.fabricmc.net"|"maven.quiltmc.org"|"maven.minecraftforge.net"|"maven.neoforged.net");
+        let path=parsed.path();
+        if maven_host&&(path.ends_with(".jar")||path.ends_with(".zip")){
+            let central=format!("https://repo1.maven.org/maven2{path}");
+            if !urls.iter().any(|candidate|candidate==&central){urls.push(central);}
+        }
+    }
+    Ok(urls)
+}
 fn concurrency(settings:&Value)->Result<usize>{let base=match settings.get("maxDownloadConcurrency"){Some(Value::Null)|None=>8,Some(v)=>v.as_u64().filter(|n|*n>=1&&*n<=128).ok_or("下载并发必须为1..128的整数")?};let factor=match text(settings,"downloadAcceleration"){"balanced"=>0.5,"turbo"=>2.0,""|"auto"=>1.0,_=>return Err("下载加速档位无效".into())};Ok(((base as f64*factor).round()as usize).clamp(1,48))}
 
 // Windows rename 不覆盖已有文件；使用同卷原子替换，不先删除旧的有效目标。
 fn replace_file(source:&Path,target:&Path)->Result<()> {absolute(source)?;absolute(target)?;#[cfg(windows)]{use std::os::windows::ffi::OsStrExt;#[link(name="kernel32")]extern "system"{fn MoveFileExW(from:*const u16,to:*const u16,flags:u32)->i32;}let a=source.as_os_str().encode_wide().chain(Some(0)).collect::<Vec<_>>();let b=target.as_os_str().encode_wide().chain(Some(0)).collect::<Vec<_>>();if unsafe{MoveFileExW(a.as_ptr(),b.as_ptr(),1|8)}==0{return Err("无法原子替换下载文件".into());}Ok(())}#[cfg(not(windows))]{fs::rename(source,target).map_err(|_|"无法原子替换下载文件".into())}}
-async fn fetch_bytes(network:&Network,urls:&[String],sha:Option<&str>,limit:u64,cancel:&Cancel)->Result<Vec<u8>> {let mut last="元数据下载地址为空".to_string();for url in urls{for attempt in 0..3u32{cancel.check()?;let result=async{let mut r=network.request(url,None,cancel).await?;if !r.status().is_success(){return Err(TransferError::status(&r));}if r.content_length().is_some_and(|n|n>limit){return Err(TransferError::fatal("元数据响应超过大小上限"));}let mut out=Vec::new();loop{let next=tokio::select!{_ = cancel.cancelled()=>return Err(TransferError::fatal("下载已取消")),r=tokio::time::timeout(Duration::from_secs(20),r.chunk())=>r.map_err(|_|TransferError{status:None,retry:None,slow:true,message:"元数据读取停滞超时".into(),fatal:false})?.map_err(|_|TransferError{status:None,retry:None,slow:false,message:"元数据读取失败".into(),fatal:false})?};let Some(chunk)=next else{break};if out.len()as u64+chunk.len()as u64>limit{return Err(TransferError::fatal("元数据响应超过大小上限"));}out.extend_from_slice(&chunk);}if let Some(expected)=sha{if hex_sha1(&out)!=checksum(expected,40).map_err(TransferError::fatal)?{return Err(TransferError{status:None,retry:None,slow:false,message:"元数据 SHA-1 校验失败".into(),fatal:false});}}Ok(out)}.await;match result{Ok(bytes)=>return Ok(bytes),Err(e)=>{cancel.check()?;last=e.message.clone();if e.fatal||e.slow||matches!(e.status,Some(404)|Some(410)){break;}if attempt<2{sleep_cancel(e.delay(attempt),cancel).await?;}}}}}Err(last)}
+async fn fetch_bytes(network:&Network,urls:&[String],sha:Option<&str>,limit:u64,cancel:&Cancel)->Result<Vec<u8>> {let mut last="元数据下载地址为空".to_string();for pass in 0..DOWNLOAD_PASSES{for url in urls{for attempt in 0..3u32{cancel.check()?;let result=async{let mut r=network.request(url,None,cancel).await?;if !r.status().is_success(){return Err(TransferError::status(&r));}if r.content_length().is_some_and(|n|n>limit){return Err(TransferError::fatal("元数据响应超过大小上限"));}let mut out=Vec::new();loop{let next=tokio::select!{_ = cancel.cancelled()=>return Err(TransferError::fatal("下载已取消")),r=tokio::time::timeout(Duration::from_secs(20),r.chunk())=>r.map_err(|_|TransferError{status:None,retry:None,slow:true,message:"元数据读取停滞超时".into()})?.map_err(|_|TransferError{status:None,retry:None,slow:false,message:"元数据读取失败".into()})?};let Some(chunk)=next else{break};if out.len()as u64+chunk.len()as u64>limit{return Err(TransferError::fatal("元数据响应超过大小上限"));}out.extend_from_slice(&chunk);}if let Some(expected)=sha{if hex_sha1(&out)!=checksum(expected,40).map_err(TransferError::fatal)?{return Err(TransferError{status:None,retry:None,slow:false,message:"元数据 SHA-1 校验失败".into()});}}Ok(out)}.await;match result{Ok(bytes)=>return Ok(bytes),Err(e)=>{cancel.check()?;last=e.message.clone();if e.hopeless(){break;}if attempt+1>=e.attempts(){break;}sleep_cancel(e.delay(attempt),cancel).await?;}}}}if pass+1<DOWNLOAD_PASSES{sleep_cancel(Duration::from_millis(1200),cancel).await?;}}Err(last)}
 fn parse_json(bytes:&[u8])->Result<Value>{let v:Value=serde_json::from_slice(bytes).map_err(|_|"远程元数据不是有效 JSON")?;if !v.is_object(){return Err("元数据必须是对象".into());}Ok(v)}
 #[derive(Clone)]struct PartState{source:String,validator:Option<String>}
 fn response_validator(r:&reqwest::Response)->Option<String>{r.headers().get(reqwest::header::ETAG).and_then(|v|v.to_str().ok()).filter(|s|!s.starts_with("W/")).or_else(||r.headers().get(reqwest::header::LAST_MODIFIED).and_then(|v|v.to_str().ok())).map(str::to_string)}
@@ -179,61 +249,202 @@ pub(crate) async fn flush_download_buffer<W: tokio::io::AsyncWrite + Unpin>(file
     file.flush().await
 }
 async fn transfer_task(network:&Network,task:&FileTask,temp:&Path,state:&mut Option<PartState>,source:&str,cancel:&Cancel,progress:&Progress)->std::result::Result<(),TransferError>{
-    cancel.check().map_err(TransferError::fatal)?;let length=tokio::fs::metadata(temp).await.map(|m|m.len()).unwrap_or(0);let resume=state.as_ref().filter(|s|s.source==source&&s.validator.is_some()&&length>0&&length<FILE_LIMIT);let offset=if resume.is_some(){length}else{0};let mut response=network.request(source,resume.map(|s|(offset,s.validator.as_deref())),cancel).await?;if response.status().as_u16()==416{return Err(TransferError{status:Some(416),retry:None,slow:false,message:"服务器拒绝续传范围".into(),fatal:false});}if !response.status().is_success(){return Err(TransferError::status(&response));}
-    let append=response.status().as_u16()==206;if append&&offset==0{return Err(TransferError::fatal("服务器返回了未请求的部分内容"));}let mut total=if append{Some(content_range(response.headers().get(reqwest::header::CONTENT_RANGE).and_then(|v|v.to_str().ok()).unwrap_or(""),offset,task.size).map_err(TransferError::fatal)?)}else{response.content_length()};if total.is_some_and(|n|n>FILE_LIMIT){return Err(TransferError::fatal("下载文件超过安全上限"));}if let(Some(expected),Some(actual))=(task.size,total){if actual!=expected{return Err(TransferError{status:None,retry:None,slow:false,message:"下载响应大小与元数据不符".into(),fatal:false});}}if total.is_none(){total=task.size;}
+    cancel.check().map_err(TransferError::fatal)?;let length=tokio::fs::metadata(temp).await.map(|m|m.len()).unwrap_or(0);let resume=state.as_ref().filter(|s|s.source==source&&s.validator.is_some()&&length>0&&length<FILE_LIMIT);let offset=if resume.is_some(){length}else{0};let mut response=network.request(source,resume.map(|s|(offset,s.validator.as_deref())),cancel).await?;if response.status().as_u16()==416{return Err(TransferError{status:Some(416),retry:None,slow:false,message:"服务器拒绝续传范围".into()});}if !response.status().is_success(){return Err(TransferError::status(&response));}
+    let append=response.status().as_u16()==206;if append&&offset==0{return Err(TransferError::fatal("服务器返回了未请求的部分内容"));}let mut total=if append{Some(content_range(response.headers().get(reqwest::header::CONTENT_RANGE).and_then(|v|v.to_str().ok()).unwrap_or(""),offset,task.size).map_err(TransferError::fatal)?)}else{response.content_length()};if total.is_some_and(|n|n>FILE_LIMIT){return Err(TransferError::fatal("下载文件超过安全上限"));}if let(Some(expected),Some(actual))=(task.size,total){if actual!=expected{return Err(TransferError{status:None,retry:None,slow:false,message:"下载响应大小与元数据不符".into()});}}if total.is_none(){total=task.size;}
     let validator=response_validator(&response);if append&&resume.and_then(|s|s.validator.as_ref()).zip(validator.as_ref()).is_some_and(|(a,b)|a!=b){return Err(TransferError::fatal("续传期间服务端文件已变化"));}*state=Some(PartState{source:source.into(),validator});let mut options=tokio::fs::OpenOptions::new();options.write(true).create(true);if append{options.append(true);}else{options.truncate(true);}let mut file=options.open(temp).await.map_err(|_|TransferError::fatal("无法写入下载临时文件"))?;let mut received=if append{offset}else{0};progress.update(task,received,total,false);
     // 16KB 的流式 chunk 逐块写盘会让每次写都派发一次后台阻塞任务；攒到约 1 MiB 再落盘，
     // 块大小对下载吞吐影响明显（尤其镜像单连接本来就快时）。
     let mut pending:Vec<u8>=Vec::with_capacity(1024*1024);
-    loop{let next=tokio::select!{_ = cancel.cancelled()=>{if !pending.is_empty(){write_download_chunk(&mut file,&pending).await.map_err(|_|TransferError::fatal("写入或刷新下载文件失败"))?;}return Err(TransferError::fatal("下载已取消"))},r=tokio::time::timeout(Duration::from_secs(20),response.chunk())=>r};let chunk=match next{Ok(Ok(Some(chunk)))=>chunk,Ok(Ok(None))=>break,Ok(Err(e))=>{if !pending.is_empty(){write_download_chunk(&mut file,&pending).await.map_err(|_|TransferError::fatal("写入或刷新下载文件失败"))?;}return Err(TransferError{status:None,retry:None,slow:e.is_timeout(),message:"读取下载数据失败".into(),fatal:false})},Err(_)=>{if !pending.is_empty(){write_download_chunk(&mut file,&pending).await.map_err(|_|TransferError::fatal("写入或刷新下载文件失败"))?;}return Err(TransferError{status:None,retry:None,slow:true,message:"下载读取停滞超时".into(),fatal:false})}};received=received.checked_add(chunk.len()as u64).ok_or_else(||TransferError::fatal("下载大小溢出"))?;if received>FILE_LIMIT||task.size.is_some_and(|n|received>n){return Err(TransferError::fatal("实际下载超过声明大小"));}cancel.check().map_err(TransferError::fatal)?;pending.extend_from_slice(&chunk);if pending.len()>=1024*1024{write_download_chunk(&mut file,&pending).await.map_err(|_|TransferError::fatal("写入或刷新下载文件失败"))?;pending.clear();}cancel.check().map_err(TransferError::fatal)?;progress.update(task,received,total,false);}
+    // 低速看门狗：TCP 半开时对端仍会滴流，20 秒读取超时抓不住，需要按时间窗判定。
+    let mut window=Instant::now();let mut window_bytes=0u64;
+    loop{let next=tokio::select!{_ = cancel.cancelled()=>{if !pending.is_empty(){write_download_chunk(&mut file,&pending).await.map_err(|_|TransferError::fatal("写入或刷新下载文件失败"))?;}return Err(TransferError::fatal("下载已取消"))},r=tokio::time::timeout(Duration::from_secs(20),response.chunk())=>r};let chunk=match next{Ok(Ok(Some(chunk)))=>chunk,Ok(Ok(None))=>break,Ok(Err(e))=>{if !pending.is_empty(){write_download_chunk(&mut file,&pending).await.map_err(|_|TransferError::fatal("写入或刷新下载文件失败"))?;}return Err(TransferError{status:None,retry:None,slow:e.is_timeout(),message:"读取下载数据失败".into()})},Err(_)=>{if !pending.is_empty(){write_download_chunk(&mut file,&pending).await.map_err(|_|TransferError::fatal("写入或刷新下载文件失败"))?;}return Err(TransferError{status:None,retry:None,slow:true,message:"下载读取停滞超时".into()})}};received=received.checked_add(chunk.len()as u64).ok_or_else(||TransferError::fatal("下载大小溢出"))?;if received>FILE_LIMIT||task.size.is_some_and(|n|received>n){return Err(TransferError::fatal("实际下载超过声明大小"));}cancel.check().map_err(TransferError::fatal)?;pending.extend_from_slice(&chunk);window_bytes+=chunk.len()as u64;if pending.len()>=1024*1024{write_download_chunk(&mut file,&pending).await.map_err(|_|TransferError::fatal("写入或刷新下载文件失败"))?;pending.clear();}cancel.check().map_err(TransferError::fatal)?;if window.elapsed()>=SLOW_WINDOW{if window_bytes<SLOW_WINDOW_BYTES{if !pending.is_empty(){write_download_chunk(&mut file,&pending).await.map_err(|_|TransferError::fatal("写入或刷新下载文件失败"))?;pending.clear();}return Err(TransferError{status:None,retry:None,slow:true,message:"下载速度过低，放弃当前来源".into()});}window=Instant::now();window_bytes=0;}progress.update(task,received,total,false);}
     if !pending.is_empty(){write_download_chunk(&mut file,&pending).await.map_err(|_|TransferError::fatal("写入或刷新下载文件失败"))?;}
     finalize_download(task,temp,cancel,progress,received,total).await
 }
 /// 下载临时文件收尾：尺寸 / 摘要复核、sidecar 落盘、原子替换、完成进度。单流与分段共用。
 async fn finalize_download(task:&FileTask,temp:&Path,cancel:&Cancel,progress:&Progress,received:u64,total:Option<u64>)->std::result::Result<(),TransferError>{
-    if task.size.or(total).is_some_and(|n|n!=received){return Err(TransferError{status:None,retry:None,slow:false,message:"下载文件未完整传输".into(),fatal:false});}
+    if task.size.or(total).is_some_and(|n|n!=received){return Err(TransferError{status:None,retry:None,slow:false,message:"下载文件未完整传输".into()});}
     let mut file=tokio::fs::OpenOptions::new().append(true).open(temp).await.map_err(|_|TransferError::fatal("无法刷新下载临时文件"))?;file.sync_all().await.map_err(|_|TransferError::fatal("提交下载文件失败"))?;drop(file);cancel.check().map_err(TransferError::fatal)?;
-    let temporary=FileTask{path:temp.into(),..task.clone()};if !satisfied_in_context(&temporary,cancel).await.map_err(TransferError::fatal)?{let _=tokio::fs::remove_file(temp).await;return Err(TransferError{status:None,retry:None,slow:false,message:"下载文件大小或摘要校验失败".into(),fatal:false});}if task.sidecar{if let Some(d)=&task.sha1{let cache=task.path.with_extension(format!("{}.hc-sha1",task.path.extension().and_then(|s|s.to_str()).unwrap_or("")));atomic_json(&cache,&json!({"sha1":d}),cancel).map_err(TransferError::fatal)?;}}cancel.check().map_err(TransferError::fatal)?;replace_file(temp,&task.path).map_err(TransferError::fatal)?;progress.update(task,received,Some(received),true);Ok(())
+    let temporary=FileTask{path:temp.into(),..task.clone()};if !satisfied_in_context(&temporary,cancel).await.map_err(TransferError::fatal)?{let _=tokio::fs::remove_file(temp).await;return Err(TransferError{status:None,retry:None,slow:false,message:"下载文件大小或摘要校验失败".into()});}if task.sidecar{if let Some(d)=&task.sha1{let cache=task.path.with_extension(format!("{}.hc-sha1",task.path.extension().and_then(|s|s.to_str()).unwrap_or("")));atomic_json(&cache,&json!({"sha1":d}),cancel).map_err(TransferError::fatal)?;}}cancel.check().map_err(TransferError::fatal)?;replace_file(temp,&task.path).map_err(TransferError::fatal)?;progress.update(task,received,Some(received),true);Ok(())
 }
 /// 分段下载阈值与上限：过小文件分段收益抵不过额外连接；单文件分段数有硬顶。
 const SEGMENT_MIN_BYTES:u64=16*1024*1024;
 const SEGMENT_MAX_CONN:usize=16;
+/// 每段至少 4 MiB。19 MiB 的依赖切成 4 段，而不是 16 段 1.2 MiB 的碎请求——
+/// 段越碎，任何一段掉队就把整个文件拖回起点的概率越高。
+const SEGMENT_MIN_CHUNK:u64=4*1024*1024;
+/// 单段重试预算。一段失败只补这一段，已经下完的其它段必须继续算数。
+const SEGMENT_ATTEMPTS:u32=3;
 fn download_connections(settings:&Value)->usize{match settings.get("downloadConnections"){Some(v)=>v.as_u64().filter(|n|*n>=1&&*n<=256).map(|n|n as usize).unwrap_or(8),None|Some(Value::Null)=>8}}
+/// 实际段数：用户设置之外再受「每段至少 4 MiB」约束，碎请求越多越容易被单段掉队拖垮。
+fn segment_connections(settings:&Value,total:u64)->usize{
+    download_connections(settings).clamp(2,SEGMENT_MAX_CONN).min((total/SEGMENT_MIN_CHUNK).max(2)as usize)
+}
+/// 分段失败的两种语义：来源根本不支持 Range（该退回单流），还是传输本身失败（该保留分段重试）。
+enum SegError{Unsupported(TransferError),Other(TransferError)}
+fn segment_slot(temp:&Path)->Option<(PathBuf,String)>{
+    Some((temp.parent()?.to_path_buf(),temp.file_name()?.to_string_lossy().into_owned()))
+}
+fn drop_segment_files(parent:&Path,name:&str){
+    let prefix=format!("{name}.seg");
+    if let Ok(entries)=fs::read_dir(parent){for entry in entries.flatten(){let file=entry.file_name();if file.to_string_lossy().starts_with(&prefix){let _=fs::remove_file(entry.path());}}}
+}
+/// 放弃一个下载目标时，主临时文件与全部分段、分段元数据必须一起清掉，否则留下无主残片。
+fn discard_partial(temp:&Path){
+    let _=fs::remove_file(temp);
+    if let Some((parent,name))=segment_slot(temp){drop_segment_files(&parent,&name);}
+}
+/// 分段几何对同一来源固定（来源 + 总大小 + 段数），已完成的分段原样保留；
+/// 只有几何变化（换源 / 改连接数）才丢弃，避免把别的切法的字节当成本段内容。
+fn segment_layout(temp:&Path,source:&str,total:u64,conns:usize)->Result<Vec<(u64,u64,PathBuf)>>{
+    let(parent,name)=segment_slot(temp).ok_or("下载临时文件路径无效")?;
+    let geometry=json!({"source":source,"total":total,"conns":conns});
+    let meta=parent.join(format!("{name}.segmeta"));
+    let same=fs::read_to_string(&meta).ok().and_then(|text|serde_json::from_str::<Value>(&text).ok()).is_some_and(|value|value==geometry);
+    if !same{
+        drop_segment_files(&parent,&name);
+        fs::write(&meta,serde_json::to_vec(&geometry).map_err(|_|"分段几何无法序列化")?).map_err(|_|"无法写入分段元数据")?;
+    }
+    let seg_len=total.div_ceil(conns as u64);
+    if seg_len==0{return Err("分段长度无效".into());}
+    let mut out=Vec::new();
+    for index in 0..conns as u64{
+        let start=index*seg_len;if start>=total{break;}
+        let end=((start+seg_len).min(total))-1;
+        out.push((start,end,parent.join(format!("{name}.seg-{index}"))));
+    }
+    Ok(out)
+}
+async fn flush_segment(file:&mut tokio::fs::File,pending:&mut Vec<u8>)->std::result::Result<(),SegError>{
+    if pending.is_empty(){return Ok(());}
+    let result=file.write_all(&pending[..]).await;
+    pending.clear();
+    result.map_err(|_|SegError::Other(TransferError::fatal("写入分段暂存文件失败")))
+}
 /// 单个分段：请求明确的 [start,end] 字节区间写入独立暂存文件；进度用全局原子计数聚合（区间不相交，总和单调）。
-async fn transfer_segment(network:&Network,source:&str,seg:&Path,start:u64,end:u64,total:u64,written:&Arc<AtomicU64>,cancel:&Cancel,progress:&Progress,task:&FileTask)->std::result::Result<(),TransferError>{
-    cancel.check().map_err(TransferError::fatal)?;let mut response=network.request_end(source,start,end,cancel).await?;if response.status().as_u16()!=206{return Err(TransferError{status:Some(response.status().as_u16()),retry:None,slow:false,message:"分段下载未获得部分内容响应".into(),fatal:false});}
-    let header=response.headers().get(reqwest::header::CONTENT_RANGE).and_then(|v|v.to_str().ok()).unwrap_or("");let body=header.strip_prefix("bytes ").ok_or_else(||TransferError::fatal("分段响应缺少 Content-Range"))?;let(range,range_total)=body.split_once('/').ok_or_else(||TransferError::fatal("分段范围格式无效"))?;let(hs,he)=range.split_once('-').ok_or_else(||TransferError::fatal("分段范围格式无效"))?;let hs=hs.parse::<u64>().map_err(|_|TransferError::fatal("分段起点无效"))?;let he=he.parse::<u64>().map_err(|_|TransferError::fatal("分段终点无效"))?;let range_total=range_total.parse::<u64>().map_err(|_|TransferError::fatal("分段总大小无效"))?;if hs!=start||he!=end||range_total!=total||total>FILE_LIMIT{return Err(TransferError::fatal("服务器返回了不一致的分段范围"));}
-    let mut file=tokio::fs::OpenOptions::new().write(true).create(true).truncate(true).open(seg).await.map_err(|_|TransferError::fatal("无法写入分段暂存文件"))?;
+async fn transfer_segment(network:&Network,source:&str,seg:&Path,start:u64,end:u64,total:u64,written:&Arc<AtomicU64>,cancel:&Cancel,progress:&Progress,task:&FileTask)->std::result::Result<(),SegError>{
+    let unsupported=|message:&str|SegError::Unsupported(TransferError::fatal(message));
+    cancel.check().map_err(|e|SegError::Other(TransferError::fatal(e)))?;
+    let mut response=network.request_end(source,start,end,cancel).await.map_err(SegError::Other)?;
+    if response.status().as_u16()!=206{
+        // 200 说明来源忽略了 Range，只能退回单流；其它非 2xx 属于普通失败，交给重试与换源。
+        return Err(if response.status().is_success(){unsupported("当前来源不支持分段下载")}else{SegError::Other(TransferError::status(&response))});
+    }
+    let header=response.headers().get(reqwest::header::CONTENT_RANGE).and_then(|v|v.to_str().ok()).unwrap_or("");
+    let body=header.strip_prefix("bytes ").ok_or_else(||unsupported("分段响应缺少 Content-Range"))?;
+    let(range,range_total)=body.split_once('/').ok_or_else(||unsupported("分段范围格式无效"))?;
+    let(hs,he)=range.split_once('-').ok_or_else(||unsupported("分段范围格式无效"))?;
+    let hs=hs.parse::<u64>().map_err(|_|unsupported("分段起点无效"))?;
+    let he=he.parse::<u64>().map_err(|_|unsupported("分段终点无效"))?;
+    let range_total=range_total.parse::<u64>().map_err(|_|unsupported("分段总大小无效"))?;
+    if hs!=start||he!=end||range_total!=total||total>FILE_LIMIT{return Err(unsupported("服务器返回了不一致的分段范围"));}
+    let mut file=tokio::fs::OpenOptions::new().write(true).create(true).truncate(true).open(seg).await.map_err(|_|SegError::Other(TransferError::fatal("无法写入分段暂存文件")))?;
     let expected=end-start+1;let mut received=0u64;let mut pending:Vec<u8>=Vec::with_capacity(1024*1024);
-    loop{let next=tokio::select!{_ = cancel.cancelled()=>return Err(TransferError::fatal("下载已取消")),r=tokio::time::timeout(Duration::from_secs(20),response.chunk())=>r};let chunk=match next{Ok(Ok(Some(chunk)))=>chunk,Ok(Ok(None))=>break,Ok(Err(e))=>{if !pending.is_empty(){file.write_all(&pending).await.map_err(|_|TransferError::fatal("写入分段暂存文件失败"))?;}return Err(TransferError{status:None,retry:None,slow:e.is_timeout(),message:"读取分段数据失败".into(),fatal:false})},Err(_)=>{if !pending.is_empty(){file.write_all(&pending).await.map_err(|_|TransferError::fatal("写入分段暂存文件失败"))?;}return Err(TransferError{status:None,retry:None,slow:true,message:"分段读取停滞超时".into(),fatal:false})}};received=received.checked_add(chunk.len()as u64).ok_or_else(||TransferError::fatal("分段大小溢出"))?;if received>expected{return Err(TransferError::fatal("分段数据超过请求边界"));}cancel.check().map_err(TransferError::fatal)?;pending.extend_from_slice(&chunk);if pending.len()>=1024*1024{file.write_all(&pending).await.map_err(|_|TransferError::fatal("写入分段暂存文件失败"))?;pending.clear();}written.fetch_add(chunk.len()as u64,Ordering::Relaxed);progress.update(task,written.load(Ordering::Relaxed),Some(total),false);}
-    if !pending.is_empty(){file.write_all(&pending).await.map_err(|_|TransferError::fatal("写入分段暂存文件失败"))?;}file.flush().await.map_err(|_|TransferError::fatal("刷新分段暂存文件失败"))?;file.sync_all().await.map_err(|_|TransferError::fatal("提交分段暂存文件失败"))?;drop(file);
-    if received!=expected{return Err(TransferError{status:None,retry:None,slow:false,message:"分段未完整传输".into(),fatal:false});}cancel.check().map_err(TransferError::fatal)?;Ok(())
+    // 分段同样使用低速看门狗：单段滴流会让整文件永远下不完，及时放弃以回退单流或换源。
+    let mut window=Instant::now();let mut window_bytes=0u64;
+    loop{
+        let next=tokio::select!{_ = cancel.cancelled()=>return Err(SegError::Other(TransferError::fatal("下载已取消"))),r=tokio::time::timeout(Duration::from_secs(20),response.chunk())=>r};
+        let chunk=match next{
+            Ok(Ok(Some(chunk)))=>chunk,
+            Ok(Ok(None))=>break,
+            Ok(Err(e))=>{flush_segment(&mut file,&mut pending).await?;return Err(SegError::Other(TransferError{status:None,retry:None,slow:e.is_timeout(),message:"读取分段数据失败".into()}));},
+            Err(_)=>{flush_segment(&mut file,&mut pending).await?;return Err(SegError::Other(TransferError{status:None,retry:None,slow:true,message:"分段读取停滞超时".into()}));}
+        };
+        received=received.checked_add(chunk.len()as u64).ok_or_else(||SegError::Other(TransferError::fatal("分段大小溢出")))?;
+        if received>expected{return Err(SegError::Other(TransferError::fatal("分段数据超过请求边界")));}
+        cancel.check().map_err(|e|SegError::Other(TransferError::fatal(e)))?;
+        pending.extend_from_slice(&chunk);window_bytes+=chunk.len()as u64;
+        if pending.len()>=1024*1024{flush_segment(&mut file,&mut pending).await?;}
+        written.fetch_add(chunk.len()as u64,Ordering::Relaxed);
+        if window.elapsed()>=SLOW_WINDOW{if window_bytes<SLOW_WINDOW_BYTES{flush_segment(&mut file,&mut pending).await?;return Err(SegError::Other(TransferError{status:None,retry:None,slow:true,message:"分段速度过低，放弃分段下载".into()}));}window=Instant::now();window_bytes=0;}
+        progress.update(task,written.load(Ordering::Relaxed),Some(total),false);
+    }
+    flush_segment(&mut file,&mut pending).await?;
+    file.flush().await.map_err(|_|SegError::Other(TransferError::fatal("刷新分段暂存文件失败")))?;
+    file.sync_all().await.map_err(|_|SegError::Other(TransferError::fatal("提交分段暂存文件失败")))?;drop(file);
+    if received!=expected{return Err(SegError::Other(TransferError{status:None,retry:None,slow:false,message:"分段未完整传输".into()}));}
+    cancel.check().map_err(|e|SegError::Other(TransferError::fatal(e)))?;Ok(())
 }
-struct SegmentCleanup(Vec<PathBuf>);
-impl Drop for SegmentCleanup{fn drop(&mut self){for path in &self.0{let _=fs::remove_file(path);}}}
-/// 多连接分段下载：仅用于已知大小且 ≥16 MiB 的大文件。任一前置条件不满足或服务器不按边界
-/// 返回 206 时返回错误，由调用方回退到既有单流（支持续传）路径。
-async fn segmented_transfer(network:&Network,task:&FileTask,temp:&Path,source:&str,settings:&Value,cancel:&Cancel,progress:&Progress)->std::result::Result<(),TransferError>{
-    let total=task.size.ok_or_else(||TransferError::fatal("分段下载缺少大小元数据"))?;if total<SEGMENT_MIN_BYTES||total>FILE_LIMIT{return Err(TransferError::fatal("文件大小不适合分段下载"));}
-    let conns=download_connections(settings).clamp(2,SEGMENT_MAX_CONN);let seg_len=total.div_ceil(conns as u64);if seg_len==0{return Err(TransferError::fatal("分段长度无效"));}
-    let parent=temp.parent().ok_or_else(||TransferError::fatal("下载路径无父目录"))?;
-    let mut segments=Vec::new();for index in 0..conns as u64{let start=index*seg_len;if start>=total{break;}let end=((start+seg_len).min(total))-1;let path=parent.join(format!(".hcmcl-seg-{}-{index}.part",uuid::Uuid::new_v4().simple()));segments.push((start,end,path));}
-    let _cleanup=SegmentCleanup(segments.iter().map(|(_,_,path)|path.clone()).collect());
-    let written=Arc::new(AtomicU64::new(0));let mut workers=JoinSet::new();
-    for (start,end,path) in &segments{let start=*start;let end=*end;let path=path.clone();let network=network.clone();let source=source.to_owned();let task=task.clone();let cancel=cancel.clone();let progress=progress.clone();let written=written.clone();workers.spawn(async move{transfer_segment(&network,&source,&path,start,end,total,&written,&cancel,&progress,&task).await});}
-    while let Some(joined)=workers.join_next().await{match joined{Ok(Ok(()))=>{},Ok(Err(error))=>return Err(error),Err(_)=>return Err(TransferError::fatal("分段下载任务异常结束"))}cancel.check().map_err(TransferError::fatal)?;}
+/// 单段重试：一段超时只补这一段，不把整份文件推回起点。
+async fn segment_with_retry(network:&Network,source:&str,seg:&Path,start:u64,end:u64,total:u64,written:&Arc<AtomicU64>,cancel:&Cancel,progress:&Progress,task:&FileTask)->std::result::Result<(),SegError>{
+    let mut last=None;
+    for attempt in 0..SEGMENT_ATTEMPTS{
+        match transfer_segment(network,source,seg,start,end,total,written,cancel,progress,task).await{
+            Ok(())=>return Ok(()),
+            Err(SegError::Unsupported(error))=>return Err(SegError::Unsupported(error)),
+            Err(SegError::Other(error))=>{
+                if error.hopeless()||attempt+1>=SEGMENT_ATTEMPTS{return Err(SegError::Other(error));}
+                let delay=error.delay(attempt);
+                last=Some(error);
+                if let Err(stop)=sleep_cancel(delay,cancel).await{return Err(SegError::Other(TransferError::fatal(stop)));}
+            }
+        }
+    }
+    Err(SegError::Other(last.unwrap_or_else(||TransferError::fatal("分段下载失败"))))
+}
+/// 多连接分段下载：仅用于已知大小且 ≥16 MiB 的大文件。同一来源重试时只补缺失的段。
+async fn segmented_transfer(network:&Network,task:&FileTask,temp:&Path,source:&str,settings:&Value,cancel:&Cancel,progress:&Progress)->std::result::Result<(),SegError>{
+    let unsupported=|message:&str|SegError::Unsupported(TransferError::fatal(message));
+    let total=task.size.ok_or_else(||unsupported("分段下载缺少大小元数据"))?;
+    if total<SEGMENT_MIN_BYTES||total>FILE_LIMIT{return Err(unsupported("文件大小不适合分段下载"));}
+    // 段数同时受用户设置与「每段至少 4 MiB」约束：碎请求越多，单段掉队拖垮整文件的机会越大。
+    let conns=segment_connections(settings,total);
+    let segments=segment_layout(temp,source,total,conns).map_err(|e|SegError::Other(TransferError::fatal(e)))?;
+    let mut done_bytes=0u64;let mut pending=Vec::new();
+    for(start,end,path)in &segments{
+        let expected=end-start+1;
+        if fs::metadata(path).map(|m|m.len()).unwrap_or(0)==expected{done_bytes+=expected;}else{pending.push((*start,*end,path.clone()));}
+    }
+    let written=Arc::new(AtomicU64::new(done_bytes));
+    progress.update(task,done_bytes,Some(total),false);
+    let mut workers=JoinSet::new();
+    for(start,end,path)in pending{
+        let network=network.clone();let source=source.to_owned();let task=task.clone();let cancel=cancel.clone();let progress=progress.clone();let written=written.clone();
+        workers.spawn(async move{segment_with_retry(&network,&source,&path,start,end,total,&written,&cancel,&progress,&task).await});
+    }
+    let mut failure:Option<SegError>=None;
+    while let Some(joined)=workers.join_next().await{
+        match joined{
+            Ok(Ok(()))=>{},
+            Ok(Err(error))=>{
+                // 来源不支持 Range 时其余分段没有意义，立刻收摊退回单流。
+                if matches!(&error,SegError::Unsupported(_)){workers.shutdown().await;return Err(error);}
+                if failure.is_none(){failure=Some(error);}
+            }
+            Err(_)=>{if failure.is_none(){failure=Some(SegError::Other(TransferError::fatal("分段下载任务异常结束")));}}
+        }
+        if cancel.check().is_err(){workers.shutdown().await;return Err(SegError::Other(TransferError::fatal("下载已取消")));}
+    }
+    if let Some(error)=failure{
+        // 已落盘的分段留着：上层同源重试只补缺的那几段，进度也随之回到真实值而不是归零。
+        let on_disk=segments.iter().map(|(start,end,path)|fs::metadata(path).map(|m|m.len().min(end-start+1)).unwrap_or(0)).sum::<u64>();
+        progress.update(task,on_disk.min(total),Some(total),false);
+        return Err(error);
+    }
     // 串接各分段到主临时文件；逐个核对长度，写穿后清理分段暂存。
-    let mut output=tokio::fs::OpenOptions::new().write(true).create(true).truncate(true).open(temp).await.map_err(|_|TransferError::fatal("无法写入下载临时文件"))?;
-    for (start,end,path) in &segments{let expected=end-start+1;let mut input=tokio::fs::File::open(path).await.map_err(|_|TransferError::fatal("无法读取分段暂存文件"))?;let copied=tokio::io::copy(&mut input,&mut output).await.map_err(|_|TransferError::fatal("串接分段暂存文件失败"))?;if copied!=expected{return Err(TransferError::fatal("分段暂存文件长度不一致"));}cancel.check().map_err(TransferError::fatal)?;}
-    output.flush().await.map_err(|_|TransferError::fatal("刷新下载临时文件失败"))?;output.sync_all().await.map_err(|_|TransferError::fatal("提交下载临时文件失败"))?;drop(output);
-    for (_,_,path) in &segments{let _=tokio::fs::remove_file(path).await;}
-    finalize_download(task,temp,cancel,progress,total,Some(total)).await
+    let mut output=tokio::fs::OpenOptions::new().write(true).create(true).truncate(true).open(temp).await.map_err(|_|SegError::Other(TransferError::fatal("无法写入下载临时文件")))?;
+    for(start,end,path)in &segments{
+        let expected=end-start+1;
+        let mut input=tokio::fs::File::open(path).await.map_err(|_|SegError::Other(TransferError::fatal("无法读取分段暂存文件")))?;
+        let copied=tokio::io::copy(&mut input,&mut output).await.map_err(|_|SegError::Other(TransferError::fatal("串接分段暂存文件失败")))?;
+        if copied!=expected{return Err(SegError::Other(TransferError::fatal("分段暂存文件长度不一致")));}
+        cancel.check().map_err(|e|SegError::Other(TransferError::fatal(e)))?;
+    }
+    output.flush().await.map_err(|_|SegError::Other(TransferError::fatal("刷新下载临时文件失败")))?;
+    output.sync_all().await.map_err(|_|SegError::Other(TransferError::fatal("提交下载临时文件失败")))?;drop(output);
+    if let Some((parent,name))=segment_slot(temp){drop_segment_files(&parent,&name);}
+    finalize_download(task,temp,cancel,progress,total,Some(total)).await.map_err(SegError::Other)
 }
-/// 单流与分段的统一入口：满足条件先尝试分段，失败回退单流（保留既有续传语义）。
+/// 单流与分段的统一入口：满足条件先尝试分段，只有「来源不支持 Range」才退回单流。
 async fn transfer_any(network:&Network,task:&FileTask,temp:&Path,state:&mut Option<PartState>,source:&str,settings:&Value,cancel:&Cancel,progress:&Progress)->std::result::Result<(),TransferError>{
     if task.size.is_some_and(|size|size>=SEGMENT_MIN_BYTES)&&download_connections(settings)>=2{
-        if let Ok(())=segmented_transfer(network,task,temp,source,settings,cancel,progress).await{return Ok(());}
-        let _=tokio::fs::remove_file(temp).await;*state=None;
+        match segmented_transfer(network,task,temp,source,settings,cancel,progress).await{
+            Ok(())=>return Ok(()),
+            // 分段残片对单流没有续传价值，清掉后退回既有单流路径。
+            Err(SegError::Unsupported(_))=>{discard_partial(temp);*state=None;},
+            // 传输本身失败：分段留在盘上，让上层按预算重试同一来源（只补缺失的段）。
+            Err(SegError::Other(error))=>return Err(error),
+        }
     }
     transfer_task(network,task,temp,state,source,cancel,progress).await
 }
@@ -241,7 +452,33 @@ async fn download_one(network:&Network,mut task:FileTask,settings:&Value,cancel:
     if task.sha1.is_none()&&task.sha256.is_none(){let cache=task.path.with_extension(format!("{}.hc-sha1",task.path.extension().and_then(|s|s.to_str()).unwrap_or("")));if cache.is_file(){if let Ok(v)=read_json(&cache){if let Ok(d)=checksum(text(&v,"sha1"),40){task.sha1=Some(d);}}}}
     if satisfied_in_context(&task,cancel).await?{let size=fs::metadata(&task.path).map_err(|_|"读取缓存大小失败")?.len();progress.update(&task,size,Some(size),true);return Ok(());}if local(settings){return Err(format!("本地模式缺少已校验文件：{}；未发起网络请求",task.label));}if task.local_only{return Err(format!("缺少安装器生成的本地依赖：{}",task.label));}if task.urls.is_empty(){return Err(format!("{}缺少下载地址",task.label));}for url in &task.urls{network.url(url)?;}
     if task.sha1.is_none()&&task.sha256.is_none()&&task.sidecar{let sidecars=task.urls.iter().map(|u|format!("{u}.sha1")).collect::<Vec<_>>();if let Ok(bytes)=fetch_bytes(network,&sidecars,None,1024,cancel).await{if let Ok(s)=std::str::from_utf8(&bytes){if let Some(value)=s.split_whitespace().next(){if let Ok(hash)=checksum(value,40){task.sha1=Some(hash);}}}}cancel.check()?;if satisfied_in_context(&task,cancel).await?{let size=fs::metadata(&task.path).map_err(|_|"读取缓存大小失败")?.len();progress.update(&task,size,Some(size),true);return Ok(());}}
-    mkdir(task.path.parent().ok_or("下载路径没有父目录")?)?;let mut temp=TempPath{path:inside(task.path.parent().ok_or("下载路径无父目录")?,format!(".hcmcl-{}.part",uuid::Uuid::new_v4()))?,committed:false};let mut state=None;let mut last=String::new();for source in &task.urls{for attempt in 0..3u32{cancel.check()?;match transfer_any(network,&task,&temp.path,&mut state,source,settings,cancel,progress).await{Ok(())=>{temp.committed=true;return Ok(());},Err(e)=>{cancel.check()?;last=e.message.clone();if e.fatal{return Err(format!("{}：{}",task.label,last));}if e.status==Some(416){let _=tokio::fs::remove_file(&temp.path).await;state=None;}if e.slow||matches!(e.status,Some(404)|Some(410)){break;}if attempt<2{sleep_cancel(e.delay(attempt),cancel).await?;}}}}let _=tokio::fs::remove_file(&temp.path).await;state=None;progress.update(&task,0,task.size,false);}Err(format!("缺少必需文件「{}」：{}",task.label,last))
+    mkdir(task.path.parent().ok_or("下载路径没有父目录")?)?;let mut temp=TempPath{path:inside(task.path.parent().ok_or("下载路径无父目录")?,format!(".hcmcl-{}.part",uuid::Uuid::new_v4()))?,committed:false};let mut state=None;let mut last=String::new();
+    // 三重兜底：同一来源按预算重试 → 换下一个候选来源 → 全部来源轮空后再整体重试一轮。
+    // 任何单次失败都不再直接终止；只有取消和「所有来源 × 全部轮数」都失败才作为错误上报。
+    for pass in 0..DOWNLOAD_PASSES{
+        for source in &task.urls{
+            for attempt in 0..3u32{
+                cancel.check()?;
+                match transfer_any(network,&task,&temp.path,&mut state,source,settings,cancel,progress).await{
+                    Ok(())=>{temp.committed=true;return Ok(());},
+                    Err(e)=>{
+                        cancel.check()?;
+                        last=e.message.clone();
+                        if e.status==Some(416){discard_partial(&temp.path);state=None;}
+                        // 换源没有意义的状态码（404/410/400/401/403/416）直接切下一个来源。
+                        if e.hopeless(){break;}
+                        if attempt+1>=e.attempts(){break;}
+                        sleep_cancel(e.delay(attempt),cancel).await?;
+                    }
+                }
+            }
+            // 换源前丢弃本来源半成品：不同来源的续传校验器不可互认，分段几何也不再适用。
+            discard_partial(&temp.path);state=None;
+            progress.update(&task,0,task.size,false);
+        }
+        if pass+1<DOWNLOAD_PASSES{sleep_cancel(Duration::from_millis(1500),cancel).await?;}
+    }
+    Err(format!("缺少必需文件「{}」：{}",task.label,last))
 }
 fn unique_tasks(tasks:Vec<FileTask>)->Result<Vec<FileTask>>{let mut map=BTreeMap::<String,FileTask>::new();for t in tasks{let key=path_key(&t.path);if let Some(old)=map.get_mut(&key){if old.sha1!=t.sha1||old.sha256!=t.sha256||old.size!=t.size{return Err("同一下载目标出现冲突校验元数据".into());}for u in t.urls{if !old.urls.contains(&u){old.urls.push(u);}}}else{map.insert(key,t);}}Ok(map.into_values().collect())}
 async fn batch(network:&Network,tasks:Vec<FileTask>,settings:&Value,cancel:Arc<Cancel>,progress:&Progress)->Result<()> {let tasks=unique_tasks(tasks)?;progress.register(&tasks);let width=concurrency(settings)?;let mut iter=tasks.into_iter();let mut running=JoinSet::new();loop{while running.len()<width{let Some(task)=iter.next()else{break};let n=network.clone();let s=settings.clone();let c=cancel.clone();let p=progress.clone();running.spawn(async move{download_one(&n,task,&s,&c,&p).await});}if running.is_empty(){break;}match running.join_next().await{Some(Ok(Ok(())))=>{},Some(Ok(Err(e)))=>{cancel.stop();while running.join_next().await.is_some(){}return Err(e);},Some(Err(_))=>{cancel.stop();while running.join_next().await.is_some(){}return Err("下载工作任务异常结束".into());},None=>break}}cancel.check()}
@@ -367,7 +604,7 @@ fn library_task(root:&Path,settings:&Value,lib:&Value,info:&Value,class:Option<&
     let mut enriched=info.clone();
     if !enriched.is_object(){enriched=json!({});}
     if enriched.get("sha1").is_none(){if let Some(h)=lib.get("sha1"){enriched["sha1"]=h.clone();}}
-    let mut task=FileTask::info(if local_only{Vec::new()}else{file_urls(&url,settings)?},path,&enriched,text(lib,"name").into(),phase)?;
+    let mut task=FileTask::info(if local_only{Vec::new()}else{library_urls(&url,settings)?},path,&enriched,text(lib,"name").into(),phase)?;
     task.local_only=local_only;
     task.sidecar=task.sha1.is_none()&&task.sha256.is_none();
     Ok(task)
@@ -675,7 +912,7 @@ pub async fn call(app:&tauri::AppHandle,channel:&str,args:&[Value],settings:&Val
         fs::write(stage.join("libraries/x/y/1/y-1.jar"),lib).unwrap();fs::create_dir_all(stage.join("libraries/unbound")).unwrap();fs::write(stage.join("libraries/unbound/extra.jar"),b"unbound").unwrap();promote_staged_libraries(&version,&stage,&t.root,&json!({}),&c).unwrap();assert!(!t.root.join("libraries/unbound/extra.jar").exists());
         let stopped=Cancel::default();stopped.stop();assert!(copy_checked(&t.root.join("versions/base/base.jar"),&stage.join("cancelled.jar"),&stopped).is_err());assert!(!stage.join("cancelled.jar").exists());
     }
-    #[test]fn paths_and_source_order(){let t=Temp::new();for id in["../x","a/b","a\\b","NUL","COM1.txt","bad:","x.",""]{assert!(identifier(id).is_err(),"{id}");}assert!(inside(&t.root,"../x").is_err());let official="https://libraries.minecraft.net/org/x.jar";assert_eq!(file_urls(official,&json!({"downloadSource":"official-first"})).unwrap(),vec![official]);assert_eq!(file_urls(official,&json!({"downloadSource":"mirror-first"})).unwrap()[0],format!("{MIRROR}/maven/org/x.jar"));assert_eq!(client_urls("https://piston-data.mojang.com/x","1.20.5",&json!({"downloadSource":"auto"})).unwrap()[1],format!("{MIRROR}/version/1.20.5/client"));assert!(Network::production().unwrap().url("http://127.0.0.1:123/x").is_err());}
+    #[test]fn paths_and_source_order(){let t=Temp::new();for id in["../x","a/b","a\\b","NUL","COM1.txt","bad:","x.",""]{assert!(identifier(id).is_err(),"{id}");}assert!(inside(&t.root,"../x").is_err());let official="https://libraries.minecraft.net/org/x.jar";assert_eq!(file_urls(official,&json!({"downloadSource":"official-first"})).unwrap(),vec![official.to_string(),format!("{MIRROR}/maven/org/x.jar")],"官方优先也要保留镜像兜底");assert_eq!(file_urls(official,&json!({"downloadSource":"mirror-first"})).unwrap()[0],format!("{MIRROR}/maven/org/x.jar"));assert_eq!(client_urls("https://piston-data.mojang.com/x","1.20.5",&json!({"downloadSource":"auto"})).unwrap()[1],format!("{MIRROR}/version/1.20.5/client"));assert!(Network::production().unwrap().url("http://127.0.0.1:123/x").is_err());}
     #[test]fn inheritance_rules_maven_and_conflicts(){let parent=json!({"id":"1.20.5","arguments":{"jvm":["-cp","CLASSPATH"],"game":["--username","USER"]},"libraries":[{"name":"x:y:1"}],"downloads":{"client":{"sha1":"abc"}}});let child=json!({"id":"named","inheritsFrom":"1.20.5","arguments":{"game":["--child"]},"libraries":[{"name":"x:y:2"}]});let v=merge(&parent,&child).unwrap();assert_eq!(v["clientVersion"],"1.20.5");assert_eq!(v["arguments"]["game"].as_array().unwrap().len(),3);assert!(v.get("inheritsFrom").is_none());assert!(!rules_allow(Some(&json!([{"action":"allow"},{"action":"disallow"}]))).unwrap());assert!(!rules_allow(Some(&json!([{"action":"allow","features":{"some_launch_flag":true}}]))).unwrap());assert_eq!(maven_path("org.x:y:1:natives-test@zip",None).unwrap(),Path::new("org/x/y/1/y-1-natives-test.zip"));assert_eq!(concurrency(&json!({"downloadAcceleration":"balanced","maxDownloadConcurrency":8})).unwrap(),4);assert_eq!(concurrency(&json!({"downloadAcceleration":"turbo","maxDownloadConcurrency":100})).unwrap(),48);}
     #[test]fn hash_rejects_same_size_corruption(){let t=Temp::new();let p=t.root.join("payload");fs::write(&p,b"bad!").unwrap();let task=FileTask::info(Vec::new(),p,&json!({"size":4,"sha1":hex_sha1(b"good")}),"x".into(),"client").unwrap();assert!(!satisfied(&task,&Cancel::default()).unwrap());assert!(FileTask::info(Vec::new(),t.root.join("a"),&json!({"sha1":"invalid"}),"a".into(),"client").is_err());}
     #[tokio::test]async fn bounded_concurrency_dedup_and_cache(){let t=Temp::new();let bodies=(0..6).map(|i|(format!("/f{i}"),format!("body-{i}").into_bytes())).collect::<BTreeMap<_,_>>();let server=HttpFixture::new(bodies.clone());let mut tasks=(0..6).map(|i|task(&server,&t.root,&format!("f{i}"),bodies.get(&format!("/f{i}")).unwrap())).collect::<Vec<_>>();tasks.push(tasks[0].clone());let(p,events)=progress();let c=Arc::new(Cancel::default());batch(&network(),tasks.clone(),&json!({"maxDownloadConcurrency":3}),c,&p).await.unwrap();assert_eq!(server.requests.load(Ordering::SeqCst),6);assert!(server.peak.load(Ordering::SeqCst)<=3);assert!(server.peak.load(Ordering::SeqCst)>=2);let c=Arc::new(Cancel::default());batch(&network(),tasks,&json!({"mode":"local","maxDownloadConcurrency":3}),c,&p).await.unwrap();assert_eq!(server.requests.load(Ordering::SeqCst),6);p.finish(true);let e=events.lock().unwrap();assert_eq!(e.last().unwrap()["phase"],"done");assert_eq!(e.last().unwrap()["percent"],100);}
@@ -774,4 +1011,59 @@ pub async fn call(app:&tauri::AppHandle,channel:&str,args:&[Value],settings:&Val
         assert!(stopped.check().is_err());
     }
     #[tokio::test]async fn root_lock_job_ownership_and_cancel_wait(){let t=Temp::new();let c=Cancel::default();let first=install_lock::acquire(&t.root,||c.stopped.load(Ordering::Acquire)).await.unwrap();let stop=Arc::new(Cancel::default());let s=stop.clone();let root=t.root.clone();let waiting=tokio::spawn(async move{install_lock::acquire(&root,||s.stopped.load(Ordering::Acquire)).await.is_err()});tokio::time::sleep(Duration::from_millis(50)).await;stop.stop();assert!(waiting.await.unwrap());drop(first);let one=JobGuard::register(&t.root,"id").unwrap();assert!(JobGuard::register(&t.root,"id").is_err());cancel_jobs(Some("id")).unwrap();assert!(one.job.cancel.check().is_err());drop(one);assert!(JobGuard::register(&t.root,"id").is_ok());}
+    #[test]fn source_strategy_never_drops_the_fallback_candidate(){
+        // 官方优先只改顺序：官方被墙或该文件只在镜像上时仍然要能落回镜像源。
+        for strategy in ["auto","official-first","mirror-first"]{
+            let urls=ordered("https://libraries.minecraft.net/a/b.jar","https://bmclapi2.bangbang93.com/maven/a/b.jar",strategy);
+            assert_eq!(urls.len(),2,"{strategy} 必须保留两个候选");
+            let mirror_first=strategy=="mirror-first";
+            assert!(urls[0].contains(if mirror_first{"bangbang93"}else{"libraries.minecraft.net"}),"{strategy} 顺序错误");
+        }
+        // 镜像映射不到时去重成单候选，不会产生重复请求。
+        let same=ordered("https://maven.fabricmc.net/x.jar","https://maven.fabricmc.net/x.jar","auto");
+        assert_eq!(same,vec!["https://maven.fabricmc.net/x.jar".to_string()]);
+    }
+    #[tokio::test]async fn missing_file_retries_every_source_twice_before_failing(){
+        // 全部来源 404 时不再单次失败：两个候选 × 两轮 = 4 次请求，最后才把错误上报。
+        let t=Temp::new();let server=HttpFixture::new(BTreeMap::new());let(p,_)=progress();
+        let x=FileTask::info(vec![server.url("/gone-a"),server.url("/gone-b")],t.root.join("gone.bin"),&json!({}),"缺失依赖".into(),"libraries").unwrap();
+        let error=download_one(&network(),x,&json!({}),&Cancel::default(),&p).await.unwrap_err();
+        assert_eq!(server.request_count(),4,"每个来源两轮各一次");
+        assert!(error.contains("缺失依赖"),"错误应保留文件标签：{error}");
+        assert!(!fs::read_dir(&t.root).unwrap().any(|entry|entry.unwrap().file_name().to_string_lossy().ends_with(".part")));
+    }
+    #[tokio::test]async fn truncated_body_is_retried_on_the_same_source_before_switching(){
+        // 首个响应体被截断时先按同一来源续传重试，成功后不得再打备用来源。
+        let t=Temp::new();let bytes=b"truncated-then-resumed";let server=HttpFixture::new(BTreeMap::from([("/resume".into(),bytes.to_vec())]));
+        let mut x=task(&server,&t.root,"resume",bytes);x.urls=vec![server.url("/resume"),server.url("/backup")];let(p,_)=progress();
+        download_one(&network(),x,&json!({}),&Cancel::default(),&p).await.unwrap();
+        assert_eq!(fs::read(t.root.join("resume")).unwrap(),bytes);
+        assert_eq!(server.request_count(),2,"第二次请求应是同源续传");
+    }
+    #[test]fn segment_geometry_keeps_chunks_above_four_mebibytes(){
+        let t=Temp::new();let part=t.root.join(".hcmcl-fixture.part");let total=20*1024*1024;
+        let segments=segment_layout(&part,"https://a.invalid/x.jar",total,segment_connections(&json!({"downloadConnections":16}),total)).unwrap();
+        // 20 MiB 不该被切成 16 段 1.2 MiB：段太碎时任意一段掉队就把整个文件推回起点。
+        assert_eq!(segments.len(),5);
+        assert!(segments.iter().all(|(start,end,_)|end-start+1>=4*1024*1024));
+        assert_eq!(segments.first().unwrap().0,0);
+        assert_eq!(segments.last().unwrap().1,total-1);
+        // 大文件仍然放行用户设置的连接数：段数下限只针对「大文件切太碎」。
+        assert_eq!(segment_connections(&json!({"downloadConnections":16}),200*1024*1024),16);
+        assert_eq!(segment_connections(&json!({"downloadConnections":8}),20*1024*1024),5);
+    }
+    #[test]fn segment_layout_reuses_finished_chunks_and_drops_stale_ones(){
+        let t=Temp::new();let part=t.root.join(".hcmcl-fixture.part");
+        let segments=segment_layout(&part,"https://a.invalid/x.jar",16*1024*1024,4).unwrap();
+        let(_,end,path)=segments[0].clone();fs::write(&path,vec![7u8;(end+1)as usize]).unwrap();
+        // 同一来源同一几何：已经下完的分段保留，重试只补缺的那几段。
+        let again=segment_layout(&part,"https://a.invalid/x.jar",16*1024*1024,4).unwrap();
+        assert_eq!(again[0].2,path);assert_eq!(fs::metadata(&path).unwrap().len(),end+1);
+        // 换源：旧分段必须清掉，不能把别的来源的字节当成本段内容。
+        let other=segment_layout(&part,"https://b.invalid/x.jar",16*1024*1024,4).unwrap();
+        assert_eq!(other[0].2,path);assert!(!path.exists());
+        // 放弃下载目标时主临时文件与全部分段一起清掉，不留无主残片。
+        fs::write(&part,b"partial").unwrap();discard_partial(&part);
+        assert!(!part.exists());assert!(other.iter().all(|(_,_,path)|!path.exists()));
+    }
 }

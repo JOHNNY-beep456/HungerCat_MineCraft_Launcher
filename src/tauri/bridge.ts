@@ -119,7 +119,9 @@ export function createTauriApi(options: TauriBridgeOptions = {}): LauncherApi {
       detect: () => call('java:detect'),
       check: (versionId) => call('java:check', versionId),
       install: (major) => call('java:install', major),
-      pick: () => call('java:pick')
+      pick: () => call('java:pick'),
+      runtimes: () => call('android:runtimes'),
+      removeRuntime: (major) => call('android:removeRuntime', major)
     },
     manage: {
       mods: (versionId, dirId) => call('manage:mods', versionId, dirId),
@@ -160,6 +162,8 @@ export function createTauriApi(options: TauriBridgeOptions = {}): LauncherApi {
       download: (url, filename, sizeHint) => call('homepage:download', url, filename, sizeHint),
       remove: (id) => call('homepage:remove', id),
       verify: (id) => call('homepage:verify', id),
+      hold: (id, sha256) => call('homepage:hold', id, sha256),
+      release: () => call('homepage:release'),
       confirm: (id, network, expectedSha) => call('homepage:confirm', id, network, expectedSha ?? null),
       setActive: (id) => call('homepage:setActive', id),
       block: (id, reason) => call('homepage:block', id, reason),

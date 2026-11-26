@@ -78,5 +78,10 @@
   "cmp.javaPrompt.body": "No suitable Java {n} runtime was found. You can download and install Java {n} (Adoptium Temurin) automatically, or cancel this launch.",
   "cmp.javaPrompt.cancel": "Cancel launch",
   "cmp.javaPrompt.installing": "Installing…",
-  "cmp.javaPrompt.install": "Install Java {n} automatically"
+  "cmp.javaPrompt.install": "Install Java {n} automatically",
+  "cmp.platformBlocked.title": "Launching is not supported on this platform yet",
+  "cmp.platformBlocked.subtitle": "The iOS build is a management-only client",
+  "cmp.platformBlocked.body": "iOS does not allow an app to ship an executable JVM or load a self-distributed Java runtime, so a Minecraft Java Edition game cannot start here. The Android build ships Java 17 plus the LWJGL graphics layer and can launch normally.",
+  "cmp.platformBlocked.hint": "Installing versions, managing mods and modpacks, and browsing servers and accounts still work. Launch the game with the Android, Windows, macOS or Linux build.",
+  "cmp.platformBlocked.close": "Got it"
 }

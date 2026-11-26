@@ -13,6 +13,17 @@ import { diagnoseLaunch, type LaunchReport } from './launch-diagnosis'
 import { activeGameDir, useApp } from './store'
 
 /**
+ * 当前平台是否具备完整的游戏运行时（JVM + LWJGL + 图形与输入栈）。
+ *
+ * Android 版随包分发 bionic 编译的 Java 17 与 LWJGL for Android（gl4es 转发 GL），
+ * 由应用进程内创建 JVM，因此可以真正启动游戏；iOS 仍没有这套运行时，
+ * 在「点击启动」这一层就拦下并给出可读说明，不让流程走到后端才抛技术性错误。
+ * 这里直接读 `window.api.platform`，避免为一次判断把整个 Tauri 桥接静态拉进首屏包
+ * （`main.tsx` 是按需动态导入桥接的）。
+ */
+const NATIVE_GAME_SUPPORTED = window.api?.platform !== 'ios'
+
+/**
  * 在本地诊断报告之上，按设置追加 AI 分析。
  *
  * 设计要点：
@@ -61,6 +72,10 @@ interface RuntimeState {
   installingId: string | null
   /** Non-null when a Java version mismatch is waiting for the user's decision. */
   javaPrompt: { required: number } | null
+  /** 当前平台不具备游戏运行时（Android/iOS）时为真：界面弹出说明而不是启动。 */
+  platformBlocked: boolean
+  /** 关闭「当前平台暂不支持启动」说明。 */
+  dismissPlatformBlocked: () => void
   /** 下载光球动画的起点（屏幕坐标） */
   flyFrom: { x: number; y: number; key: number } | null
   /**
@@ -104,6 +119,8 @@ interface RuntimeActions {
   launch: (opts: LaunchOptions) => Promise<void>
   stopLaunch: () => void
   clearLog: () => void
+  /** 关闭「当前平台暂不支持启动」说明。 */
+  dismissPlatformBlocked: () => void
   installJavaAndLaunch: () => Promise<void>
   cancelJavaPrompt: () => void
   /** 关闭启动异常报告弹窗。 */
@@ -133,6 +150,8 @@ export function RuntimeProvider({ children }: { children: ReactNode }): JSX.Elem
   const [busy, setBusy] = useState(false)
   const [installingId, setInstallingId] = useState<string | null>(null)
   const [javaPrompt, setJavaPrompt] = useState<{ required: number } | null>(null)
+  /** 移动端点击启动时的说明弹窗；桌面平台永远不会置真。 */
+  const [platformBlocked, setPlatformBlocked] = useState(false)
   const [modpackPending, setModpackPending] = useState<{ temp: string; probe: ModpackProbe } | null>(null)
   const [flyFrom, setFlyFrom] = useState<{ x: number; y: number; key: number } | null>(null)
   const pendingLaunchRef = useRef<LaunchOptions | null>(null)
@@ -289,6 +308,11 @@ export function RuntimeProvider({ children }: { children: ReactNode }): JSX.Elem
 
   const launch = useCallback(
     async (opts: LaunchOptions) => {
+      // iOS 没有可执行的 JVM：先给出可读说明，不进入「检查 Java → 启动」流程。
+      if (!NATIVE_GAME_SUPPORTED) {
+        setPlatformBlocked(true)
+        return
+      }
       try {
         const check = await window.api.java.check(opts.versionId)
         if (!check.compatible) {
@@ -327,6 +351,13 @@ export function RuntimeProvider({ children }: { children: ReactNode }): JSX.Elem
     const prompt = javaPrompt
     const opts = pendingLaunchRef.current
     if (!prompt || !opts) return
+    // iOS 装不了也跑不了 Java：收起引导并改为平台说明，避免把后端边界当安装失败展示。
+    if (!NATIVE_GAME_SUPPORTED) {
+      pendingLaunchRef.current = null
+      setJavaPrompt(null)
+      setPlatformBlocked(true)
+      return
+    }
     setJavaPrompt(null)
     pendingLaunchRef.current = null
     setBusy(true)
@@ -350,6 +381,8 @@ export function RuntimeProvider({ children }: { children: ReactNode }): JSX.Elem
     setJavaPrompt(null)
   }, [])
 
+  const dismissPlatformBlocked = useCallback(() => setPlatformBlocked(false), [])
+
   const stopLaunch = useCallback(() => {
     void window.api.launch.stop()
   }, [])
@@ -372,13 +405,14 @@ export function RuntimeProvider({ children }: { children: ReactNode }): JSX.Elem
       launch,
       stopLaunch,
       clearLog,
+      dismissPlatformBlocked,
       installJavaAndLaunch,
       cancelJavaPrompt,
       dismissLaunchReport,
       beginModpackImport,
       clearModpackPending
     }),
-    [triggerFly, installVersion, cancelDownload, cancelTask, launch, stopLaunch, clearLog, installJavaAndLaunch, cancelJavaPrompt, dismissLaunchReport, beginModpackImport, clearModpackPending]
+    [triggerFly, installVersion, cancelDownload, cancelTask, launch, stopLaunch, clearLog, dismissPlatformBlocked, installJavaAndLaunch, cancelJavaPrompt, dismissLaunchReport, beginModpackImport, clearModpackPending]
   )
 
   const value = useMemo<RuntimeState>(
@@ -393,11 +427,12 @@ export function RuntimeProvider({ children }: { children: ReactNode }): JSX.Elem
       busy,
       installingId,
       javaPrompt,
+      platformBlocked,
       flyFrom,
       modpackPending,
       ...actions
     }),
-    [download, downloads, launchState, launchLog, launchPid, launchReport, analyzingReport, busy, installingId, javaPrompt, flyFrom, modpackPending, actions]
+    [download, downloads, launchState, launchLog, launchPid, launchReport, analyzingReport, busy, installingId, javaPrompt, platformBlocked, flyFrom, modpackPending, actions]
   )
 
   return (

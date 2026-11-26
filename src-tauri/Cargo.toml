@@ -1,6 +1,6 @@
 [package]
 name = "hcmcl-tauri"
-version = "0.8.0-beta5"
+version = "0.8.0"
 description = "HungerCat MineCraft Launcher Tauri v2"
 edition = "2021"
 rust-version = "1.77.2"
@@ -35,6 +35,8 @@ flate2 = "1"
 # 壁纸原生解码与超限缩放；限制格式并保留 GIF 原始动画字节。
 image = { version = "=0.24.9", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp"] }
 tar = { version = "0.4", default-features = false }
+# Android 多 Java 运行时：上游只发 .tar.xz，纯 Rust 解压避免为 liblzma 再编一份 Android C 代码。
+lzma-rs = "0.3"
 uuid = { version = "1", features = ["v4"] }
 md5 = "0.7"
 # 仅兼容用户主动选择的 HMCL/PCL 旧格式；本机凭据仍交给系统安全存储。
@@ -57,3 +59,11 @@ keyring = { version = "3.6.3", features = ["apple-native"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 keyring = { version = "3.6.3", features = ["sync-secret-service", "crypto-rust"] }
+
+[target.'cfg(target_os = "android")'.dependencies]
+# Android 上 JVM 由本进程创建：libjvm.so 随 APK 的 jniLibs 分发，运行时 dlopen 后取
+# JNI_CreateJavaVM；不使用 jni 的 invocation feature，避免构建期尝试链接桌面 libjvm。
+jni = { version = "0.21", default-features = false }
+libc = "0.2"
+# 取 ART 侧的 JavaVM 与 Activity：由 Rust 发起「铺开游戏画面」时无法自带 JNIEnv。
+ndk-context = "0.1"

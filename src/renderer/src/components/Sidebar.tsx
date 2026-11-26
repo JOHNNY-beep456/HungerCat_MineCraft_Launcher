@@ -2,6 +2,7 @@ import { motion } from 'motion/react'
 import { Icon, Avatar } from './ui'
 import { useApp } from '../store'
 import { useRuntime } from '../runtime'
+import { useHomepageProbe } from '../pages/customhome/probe'
 
 export type PageId =
   | 'home'
@@ -71,7 +72,12 @@ export function Sidebar({
 }): JSX.Element {
   const { accounts, selectedAccount, settings, homepageUpdates, t } = useApp()
   const { downloads } = useRuntime()
+  const probe = useHomepageProbe()
   const nav = visibleNav(settings)
+  // 主页联网核对不再弹窗：图标闪烁就是状态——闪=正在核对，持续闪=需要用户处理。
+  const homePulsing = !!settings.homepageId && (probe.phase === 'checking' || probe.phase === 'attention')
+  const homeTitle =
+    !homePulsing ? undefined : probe.phase === 'checking' ? t('ch.checking') : t('ch.needsConfirm')
 
   return (
     <aside className={`app-sidebar flex h-full flex-col gap-3 p-4 ${side === 'left' ? 'pr-1' : 'pl-1'}`}>
@@ -85,6 +91,7 @@ export function Sidebar({
                 id={`nav-${item.id}`}
                 onClick={() => onNavigate(item.id)}
                 aria-current={isActive ? 'page' : undefined}
+                title={item.id === 'home' ? homeTitle : undefined}
                 className="relative flex items-center gap-3 rounded-[16px] px-3.5 py-2.5 text-left no-drag"
                 style={{ color: isActive ? 'var(--text-primary)' : 'var(--text-secondary)' }}
               >
@@ -95,8 +102,11 @@ export function Sidebar({
                     transition={{ type: 'spring', bounce: 0.2, duration: 0.4 }}
                   />
                 )}
-                <span className="relative z-10">
-                  <Icon name={item.icon} size={19} />
+                <span
+                  className="relative z-10"
+                  style={item.id === 'home' && homePulsing ? { color: 'var(--fill-primary)' } : undefined}
+                >
+                  <Icon name={item.icon} size={19} className={item.id === 'home' && homePulsing ? 'nav-blink' : undefined} />
                 </span>
                 <span className="relative z-10 text-[14px] font-medium">{t(`nav.${item.id}`)}</span>
                 {item.id === 'downloads' && downloads.length > 0 && (
@@ -166,7 +176,11 @@ export function TopNav({
 }): JSX.Element {
   const { accounts, selectedAccount, settings, homepageUpdates, t } = useApp()
   const { downloads } = useRuntime()
+  const probe = useHomepageProbe()
   const nav = visibleNav(settings)
+  const homePulsing = !!settings.homepageId && (probe.phase === 'checking' || probe.phase === 'attention')
+  const homeTitle =
+    !homePulsing ? undefined : probe.phase === 'checking' ? t('ch.checking') : t('ch.needsConfirm')
 
   return (
     <div className={`app-topnav shrink-0 px-4 ${side === 'top' ? 'pb-1 pt-3' : 'pb-3 pt-1'}`}>
@@ -180,6 +194,7 @@ export function TopNav({
                 id={`nav-${item.id}`}
                 onClick={() => onNavigate(item.id)}
                 aria-current={isActive ? 'page' : undefined}
+                title={item.id === 'home' ? homeTitle : undefined}
                 className="relative flex shrink-0 items-center gap-2 rounded-full px-3.5 py-2 no-drag"
                 style={{ color: isActive ? 'var(--text-primary)' : 'var(--text-secondary)' }}
               >
@@ -190,8 +205,11 @@ export function TopNav({
                     transition={{ type: 'spring', bounce: 0.2, duration: 0.4 }}
                   />
                 )}
-                <span className="relative z-10">
-                  <Icon name={item.icon} size={18} />
+                <span
+                  className="relative z-10"
+                  style={item.id === 'home' && homePulsing ? { color: 'var(--fill-primary)' } : undefined}
+                >
+                  <Icon name={item.icon} size={18} className={item.id === 'home' && homePulsing ? 'nav-blink' : undefined} />
                 </span>
                 <span className="relative z-10 whitespace-nowrap text-[13px] font-medium">
                   {t(`nav.${item.id}`)}

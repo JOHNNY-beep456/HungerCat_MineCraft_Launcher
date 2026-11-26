@@ -6,6 +6,8 @@ import { RuntimeProvider, useRuntime } from './runtime'
 import { TitleBar } from './components/TitleBar'
 import { Sidebar, TopNav, type PageId } from './components/Sidebar'
 import { JavaPrompt } from './components/JavaPrompt'
+import { PlatformBlockedNotice } from './components/PlatformBlockedNotice'
+import { HomepageSession } from './components/HomepageSession'
 import { FlyDot } from './components/FlyDot'
 import { AgreementModal } from './components/AgreementModal'
 import { AnnouncementModal } from './components/AnnouncementModal'
@@ -152,10 +154,13 @@ function Shell(): JSX.Element {
   // 液态玻璃只是皮肤，外壳保持不变。
   // 极简模式下按默认外壳渲染（实验皮肤只是「暂不生效」，设置本身仍保留）。
   const minimal = settings.mode === 'minimal'
-  const desktop = !minimal && settings.experimental === 'win10'
+  // 移动端（Android / iOS）：没有自定义标题栏、窗口按钮与鼠标指针，外壳固定为
+  // 「底部横向导航 + 全屏内容」，不受桌面端「导航栏位置」设置影响。
+  const mobile = window.api.platform === 'android' || window.api.platform === 'ios'
+  const desktop = !mobile && !minimal && settings.experimental === 'win10'
   const frosted = !minimal && settings.experimental === 'frosted'
-  // 与设置页共用生效值，保证导航位置的显示与实际布局一致。
-  const navPosition = effectiveNavPosition(settings)
+  // 与设置页共用生效值，保证导航位置的显示与实际布局一致；移动端强制底部导航。
+  const navPosition = mobile ? 'bottom' : effectiveNavPosition(settings)
 
   // 「模糊玻璃」：把 90px 模糊一次性烘焙成贴图（详见 blob-texture.ts）。
   // 不烘焙时每帧都要重算整层模糊，实测只有 ~14fps。
@@ -201,6 +206,7 @@ function Shell(): JSX.Element {
   return (
     <MotionConfig reducedMotion={settings.reducedMotion ? 'always' : 'user'}>
       <div className="relative h-full">
+        <HomepageSession />
         {desktop ? (
           <Win10Desktop />
         ) : (
@@ -217,9 +223,10 @@ function Shell(): JSX.Element {
               )}
             </div>
 
-            <TitleBar onLogoDoubleClick={() => setOnboardingOpen(true)} />
+            {/* 自定义标题栏只在桌面渲染：移动端用系统状态栏，不提供最小化 / 关闭等窗口操作。 */}
+            {!mobile && <TitleBar onLogoDoubleClick={() => setOnboardingOpen(true)} />}
 
-            <div className="flex h-full flex-col pt-12">
+            <div className={`flex h-full flex-col ${mobile ? 'pt-0' : 'pt-12'}`}>
               {/* 导航栏位置（上 / 下 / 左 / 右）：横条与竖栏互斥显示。
                   横向时贴在内容上方或下方，竖向时贴在内容左侧或右侧。 */}
               {navPosition === 'top' && <TopNav active={page} onNavigate={navigate} side="top" />}
@@ -273,7 +280,8 @@ function Shell(): JSX.Element {
             </div>
 
             <DownloadOrb onNavigate={navigate} />
-            <CursorGlow />
+            {/* 触摸屏没有指针，光晕只会白耗一次全屏合成。 */}
+            {!mobile && <CursorGlow />}
           </>
         )}
 
@@ -305,6 +313,8 @@ function Shell(): JSX.Element {
         </AnimatePresence>
 
         <JavaPrompt />
+        {/* 移动端点击启动时的平台说明（桌面不会触发）。 */}
+        <PlatformBlockedNotice />
         <FlyDot />
         {/* 联机会话大脑：常驻持有语音引擎与提示音（不渲染界面）。
             挂在 Shell 内是为了在切换页面时通话不断。 */}

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { AnimatePresence, motion } from 'motion/react'
 import type { HomepageEntry } from '@shared/types'
 import { useApp } from '../store'
+import { approveProbe, ensureProbe } from '../pages/customhome/probe'
 import { Button, Icon, LoadingState } from './ui'
 
 /** 运行前的判定流程所处阶段。 */
@@ -42,13 +43,19 @@ export function HomepageGate({
   id,
   onApproved,
   onCancel,
-  cancelLabel
+  cancelLabel,
+  inline
 }: {
   id: string
   /** 通过全部检查后回调；参数为最新条目。 */
   onApproved: (entry: HomepageEntry) => void
   onCancel: () => void
   cancelLabel?: string
+  /**
+   * 运行期闸门：不再弹全屏遮罩，改用「页面内卡片 + 侧栏图标闪烁」告知。
+   * 这里的校验也只取会话内那一次结果，不会每进一次主页就联网。
+   */
+  inline?: boolean
 }): JSX.Element {
   const { t, homepageUpdates, refreshHomepageUpdates } = useApp()
   const [state, setState] = useState<GateState>('checking')
@@ -61,11 +68,12 @@ export function HomepageGate({
     approvedRef.current = onApproved
   })
 
-  const run = useCallback(async (): Promise<void> => {
+  const run = useCallback(async (force = false): Promise<void> => {
     setState('checking')
     setMessage('')
     try {
-      const res = await window.api.homepage.verify(id)
+      // 运行期只用启动时那一次结果；只有用户主动「重试 / 更新后重查」才强制联网。
+      const res = inline ? await ensureProbe(id, force) : await window.api.homepage.verify(id)
       const e = res.entry
       setEntry(e)
       setMessage(res.message)
@@ -101,7 +109,7 @@ export function HomepageGate({
       setMessage(err instanceof Error ? err.message : String(err))
       setState('error')
     }
-  }, [id, t])
+  }, [id, t, inline])
 
   useEffect(() => {
     void run()
@@ -112,6 +120,8 @@ export function HomepageGate({
     try {
       if (!entry) throw new Error(t('ch.loadFailed'))
       const next = await window.api.homepage.confirm(id, network, entry.sha256)
+      // 运行期确认完成后把会话状态提到「可运行」：图标停止闪烁，文件占用也随之上锁。
+      if (inline) approveProbe(id, next.sha256)
       onApproved(next)
     } catch (err) {
       setMessage(err instanceof Error ? err.message : String(err))
@@ -147,7 +157,8 @@ export function HomepageGate({
     try {
       await window.api.homepage.update(updatable)
       await refreshHomepageUpdates()
-      await run()
+      // 内容换了，哈希必须重新联网核对一次——这不是"重复检查"，是新内容第一次被检查。
+      await run(true)
     } catch (err) {
       setMessage(t('hp.gate.updateFailed', { msg: err instanceof Error ? err.message : String(err) }))
     } finally {
@@ -212,14 +223,18 @@ export function HomepageGate({
   return (
     <AnimatePresence>
       <motion.div
-        className="fixed inset-0 z-[120] flex items-center justify-center p-6"
+        className={
+          inline
+            ? 'flex h-full w-full items-center justify-center p-6'
+            : 'fixed inset-0 z-[120] flex items-center justify-center p-6'
+        }
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
         exit={{ opacity: 0 }}
       >
-        <div className="absolute inset-0" style={{ background: 'var(--scrim)' }} />
+        {!inline && <div className="absolute inset-0" style={{ background: 'var(--scrim)' }} />}
         <motion.div
-          className="glass-strong relative z-10 flex max-h-[80vh] w-full max-w-lg flex-col rounded-[28px] p-6"
+          className={`glass-strong relative z-10 flex max-h-[80vh] w-full max-w-lg flex-col rounded-[28px] p-6 ${inline ? 'shadow-none' : ''}`}
           initial={{ scale: 0.95, opacity: 0, y: 16 }}
           animate={{ scale: 1, opacity: 1, y: 0 }}
           exit={{ scale: 0.96, opacity: 0, y: 12 }}
@@ -335,7 +350,7 @@ export function HomepageGate({
                         ? t('hp.gate.updateUnavailable')
                         : undefined
                     }
-                    onClick={() => void (state === 'outdated' ? updateNow() : run())}
+                    onClick={() => void (state === 'outdated' ? updateNow() : run(true))}
                   >
                     {state === 'outdated'
                       ? updating

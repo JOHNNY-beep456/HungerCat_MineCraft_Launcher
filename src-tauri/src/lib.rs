@@ -35,8 +35,15 @@ mod mobile_security;
 mod loaders;
 mod minecraft;
 mod modpack;
+mod path_alias;
 mod runtime;
 mod services;
+#[cfg(target_os = "android")]
+mod android_jvm;
+#[cfg(target_os = "android")]
+mod android_host;
+#[cfg(target_os = "android")]
+mod android_runtime;
 mod storage;
 
 use serde::Serialize;

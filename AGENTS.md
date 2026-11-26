@@ -12,7 +12,7 @@
 | 技术栈 | 主产品为 Tauri v2 + Rust + React/TypeScript；**Electron 版已归档到 `HCMCL_old/`（2026-11-14），不再随根构建**，仅作对照；Lite 为独立产品 |
 | 样式 | **单文件** `src/renderer/src/index.css`（4000+ 行）+ Tailwind 工具类；皮肤靠 `[data-skin]` 切换 |
 | 服务端 | PHP，位于 `server/`，**gitignore，不入库**，手动部署 |
-| 当前版本 | 以 `package.json` 为准；当前 `0.8.0-beta5`，批次进度及验证时间点见 `plan.md` |
+| 当前版本 | 以 `package.json` 为准；当前 `0.8.0`（Android versionCode 9800，未出包），批次进度及验证时间点见 `plan.md` 第 43–55 节 |
 
 ```bash
 npm run dev                # Tauri 开发（热更新）
@@ -161,9 +161,160 @@ node scripts/fix-artifact-integrity.mjs --check   # 只检查，有 Low 则退�
   - **AppImage 打包会 panic**：`couldn't find a square icon to use as AppImage icon`——`bundle.icon`
     缺省候选里只有 `.ico`/`.icns`，没有方形 PNG。用 `npx tauri icon src-tauri/icons/icon.png -o <临时目录>`
     生成 32/64/128/128@2x 与 `icon.icns` 复制到 `src-tauri/icons/`，并在 `tauri.conf.json` 显式列出。
+- **Android 由 `src-tauri/gen/android` 的 Gradle 工程构建**（2026-11-23 首次打通；x86_64 / x86 / arm64 均出包，arm64 自 0.8.0-beta10 起可用）：
+  - 前置：Android SDK（`platform-tools`、`platforms;android-36`、`build-tools;36.0.0`）+ NDK `27.2.12479018`
+    + JDK 17+；Rust 目标 `x86_64-linux-android` / `i686-linux-android` / `aarch64-linux-android`。
+    本机 SDK 在 `F:\Android\Sdk`（非默认位置），构建前必须显式导出：
+    ```powershell
+    $env:ANDROID_HOME='F:\Android\Sdk'; $env:ANDROID_SDK_ROOT=$env:ANDROID_HOME
+    $env:NDK_HOME="$env:ANDROID_HOME\ndk\27.2.12479018"; $env:JAVA_HOME='C:\Program Files\Java\jdk-21'
+    $env:NODE_OPTIONS=''
+    npx.cmd tauri android build -t x86_64     # 或 -t i686 / -t aarch64
+    ```
+  - **JDK 的 PKIX 校验会挡住 Gradle 下载**：本机 TLS 由中间设备签发，JDK `cacerts` 不认，
+    报 `unable to find valid certification path to requested target`。**不要为此关证书校验**，
+    加 `$env:JAVA_TOOL_OPTIONS='-Djavax.net.ssl.trustStoreType=Windows-ROOT'` 让 JDK 直接用系统根证书库。
+    若 `services.gradle.org` 仍被中断，从国内镜像（如 `mirrors.cloud.tencent.com/gradle/`）下 zip，
+    再把 wrapper 的 `distributionUrl` 临时指向 `file:/…`（构建后记得还原）。
+  - **必须关闭 Gradle 配置缓存**：`gradle.properties` 里保持 `org.gradle.configuration-cache=false`。
+    维护版 `BuildTask.kt`（哈希锁定、调用 Tauri CLI）在执行期读 `project.providers`，开着会直接失败：
+    `Invocation of 'Task.project' … unsupported with the configuration cache`。
+  - `tauri android build` 出的是 **unsigned** APK，需自行对齐与签名：
+    ```powershell
+    zipalign -p -f 4 app-universal-release-unsigned.apk app-aligned.apk
+    apksigner sign --ks <keystore> --ks-key-alias hcmcl --out <name>.apk app-aligned.apk
+    apksigner verify --print-certs <name>.apk
+    ```
+    密钥在本机 `.local/android-keystore/`（`/.local/` 已 gitignore）。**同一应用升级必须沿用同一签名**，
+    丢失后只能卸载重装。
+  - `-t x86_64` 的产物文件名仍叫 `app-universal-release-unsigned.apk`（universal flavor + 只含该 ABI 的
+    `abiFilters`），别误认为多架构包；用 `aapt2 dump badging <apk> | Select-String native-code` 核实。
+  - **编译检查的任务名带 flavor**：改完 Kotlin 用 `:app:compileUniversalReleaseKotlin`；
+    写 `:app:compileReleaseKotlin` 会报 ambiguous variant，报错文本像代码问题、实际是任务名不对。
+    只改 Rust 时 `cargo check --target aarch64-linux-android --lib` 需要先导出
+    `CC_aarch64_linux_android` / `AR_aarch64_linux_android` / `CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER`
+    指向 NDK 27.2 的 `aarch64-linux-android24-clang.cmd`，否则报找不到 `aarch64-linux-android-clang`。
+  - **出包前先把 `out/tauri` 挪走**：沙箱的删除钩子会卡在 `safe-delete ETIMEDOUT`，
+    vite 清空目录失败导致整个 `tauri android build` 失败。改成 `Move-Item out\tauri .local\trash\…` 再构建。
+  - **Android 已具备完整启动链路（0.8.0-beta11 起）**：JRE 原生库（含 `libjvm.so`）与 LWJGL for Android
+    的 8 个图形库由 `scripts/prepare-android-runtime.mjs` 从 `.local/android-runtime/`（JRE tar + 
+    `PojavLauncher.apk`，均已 gitignore）装进 `jniLibs/<abi>/`，类库镜像、`boot.jar` 与
+    `assets/runtime/lwjgl/lwjgl-glfw-classes.jar` 进 `assets/runtime/`，再由 `src-tauri/src/android_jvm.rs`
+    在进程内 `JNI_CreateJavaVM`。**构建 Android 前必须先跑 `npm run android:runtime`**。
+  - **`useLegacyPackaging` 不能关**：进程内 `dlopen("libjvm.so")` 与 `java.library.path` 都需要
+    `nativeLibraryDir` 下的实体文件，默认的「留在 APK 内直接映射」两条路都会落空。
+  - **平台判据分两个**：`runtime::launch_supported()`（只排除 iOS）决定能否发起启动；
+    `runtime::native_game_supported()`（仅桌面）决定是否走 spawn 子进程的桌面路径。
+    `launch_start` 用前者，`spawn_process` / `detect_java` / 安装器用后者。
+  - **Android 启动的三段式**：`runtime::start_in_process` 组装 spec → `android_host::show_game`
+    （`ndk-context` 取 ART 的 JavaVM + Activity，经其类加载器在主线程调 `GameHost.start`）→
+    `surfaceCreated` 里先 `JREUtils.setupBridgeWindow` 再起游戏线程 → JNI `nativeStartGame` →
+    `android_jvm::launch` → `hcmcl.Boot.launch`。**顺序不能改**：GLFW 在建窗时就要拿到 `ANativeWindow`。
+  - `net.kdt.pojavlaunch.utils.JREUtils` 的包名/类名由 `libpojavexec.so` 的 `Java_...` 符号决定，
+    改动它等于让图形桥静默失效。
+  - **触控层（0.8.0-beta12 起）**：`top.johnnyblog.hcmcl.controls` 是自研实现，与 FoldCraftLauncher
+    没有任何代码关系（只参考了「虚拟按键可自定义」这一功能形态），不要往里粘第三方源码。
+    布局是自有 JSON（`hcmcl.controls/1`，坐标 0..1 相对值）放在 `filesDir/controls/*.json`，
+    与游戏数据分离；默认布局写在 `ControlLayout.default()`，不要在别处再复制一份。
+    **FCL 是 GPL-3.0，代码级借用会传染**：用户明确要求「不得被认定为衍生作品」，
+    参考来源只允许是公开文档、设备上的行为观察、Minecraft/LWJGL/OpenJDK 公开规范。
+    边界与七项可对照差异写在 [`docs/android-fcl-parity.md`](./docs/android-fcl-parity.md)，新增触控能力前先读它。
+  - **布局管理（0.8.0-beta16 起）**：编辑模式可复制当前布局为新布局、改名、切换、删除，
+    并可导出 / 导入 JSON 到 `getExternalFilesDir(null)/controls`（数据线可取）。
+    **切换布局前必须 `releaseAll()`**——旧布局按住的键在新布局里没有对应控件，不松开就永久卡住。
+    导入要校验 `schema`，重名加序号而不是覆盖；新建入口是「复制当前」，不要改成空白画布。
+  - **`ControlsView` 里的 `layout` 字段会遮蔽 `View.layout(...)`**：在 `EditText(context).apply { … }`、
+    匿名内部类等处直接写 `layout.name` 会解析到 View 的方法而编译失败。必须先
+    `val current = this@ControlsView.layout`（`rename()` 与 `duplicateLayout()` 都踩过，别第三次）。
+  - **输入事件的三个跳**：`ControlsView`（ART）→ `GameHost.native*` → `android_host` 的 JNI 入口
+    → `android_jvm::input`（把 UI 线程附着到进程内 HotSpot）→ `hcmcl.Boot.key/look/mouse/scroll`
+    → `org.lwjgl.glfw.CallbackBridge` → `libpojavexec` 的事件队列。中间任何一环都不能省：
+    触控事件属于 ART，GLFW 队列属于 HotSpot，两者只能靠 JNI 连。
+  - **引导 jar 自带 `org/lwjgl/glfw/CallbackBridge`**：随包类库里的同名类是残缺的（只有 `sendData` 桩），
+    图形层真正注册的是 `nativeSendKey/nativeSendChar/nativeSendCursorPos/nativeSendMouseButton/
+    nativeSendScroll/nativeSendScreenSize`。引导 jar 在系统类加载器上，父优先委派会盖住类库版本；
+    七个发送入口由 `android_jvm::register_input` 用 `dlsym("noncritical_send_*")` 主动登记，
+    并优先 `RTLD_NOLOAD` 取**已加载的那份** `libpojavexec.so`（否则会得到没有窗口的第二份实例）。
+  - **`GameHost` 不能用 `setZOrderOnTop(true)`**：那会让 Surface 盖住整个窗口，触控层就看不见了。
+    改法是游戏期间把启动器的 WebView `GONE` 掉，退出时恢复。
+  - **窗口尺寸只有桌面版**（0.8.0-beta13）：`game_window_size::resolve_options` 的桌面分支要真实采样
+    显示器与窗口装饰；Android 走 `mobile_decision()`，尺寸 = 屏幕（`GameHost.displaySize()` 经
+    `android_host::display_size()` 取回，横向、取不到则 1280×720），`fullscreen` 恒为 false
+    （Surface 已占满屏幕，传 `--fullscreen` 只会让 GLFW 去找不存在的显示器）。
+    设置页的「游戏窗口尺寸」整行在移动端不渲染。
+  - **`free_memory_mb()` 的 `/proc/meminfo` 分支必须同时覆盖 `linux` 与 `android`**：Android 的
+    `target_os` 不是 `linux`，漏掉就会以「无法测量剩余内存」拒绝启动。
+  - **屏幕尺寸查询必须带超时**（0.8.0-beta14）：`android_host::display_size()` 在独立线程里调
+    `GameHost.displaySize()`，`recv_timeout(2s)` 超时回落 720P 并记日志。JNI 调用一旦挂住就没有下限，
+    裸 `recv()` 会把「尺寸拿不到」变成「启动页永久转圈」——现象和真正跑起来之前的等待完全一样，极难区分。
+  - **多 Java 运行时由 `src-tauri/src/android_runtime.rs` 决定（0.8.0-beta15）**：按版本清单的
+    `javaVersion.majorVersion` 选 17（内置）/ 21 / 25（首次启动下载）。`SOURCES` 表只登记**核对过 sha256**
+    的来源，下载走流式 + 长度与 SHA-256 双校验，失败删 `.part`；`.tar.xz` 用 `lzma-rs`（纯 Rust）解，
+    不引入 liblzma 的 C 代码。解压后必须给 `lib/**/*.so` 与 `bin/*` 补 `0o755`——xz 包里的权限是 0644，
+    `dlopen` 需要可执行映射。完整性判据是 `lib/server/libjvm.so` + `lib/modules` + `release` 三者齐全。
+  - **`JNI_CreateJavaVM` 不可重入，且 bionic 按 SONAME 去重**：同名 `libjvm.so` 第二次 `dlopen` 只会拿到
+    先加载的那份，所以自定义运行时要 `dlopen(<home>/lib/server/libjvm.so)` **绝对路径**。
+    `android_jvm` 的 `ACTIVE` 记住「本次建 VM 的主版本 + 目录」，换版本时明确返回「重启应用后再启动」，
+    不能悄悄跑在旧版本上。
+  - **清单里的桌面路径参数必须丢弃**（0.8.0-beta16）：`jvm` 段的 `-Djava.library.path=` /
+    `-Dorg.lwjgl.librarypath=` 指向桌面目录，JVM 取**最后一个**同名属性，留着会覆盖算好的值。
+    同时在 `android_jvm` 里补 `-Dorg.lwjgl.librarypath`（LWJGL3 的 `SharedLibraryLoader` 与 JNA 各认
+    自己的属性，只设 `java.library.path` 时 `stb`/`tinyfd`/`openal` 会在跑到一半才报找不到库）、
+    `-Djna.tmpdir` / `-Dio.netty.native.workdir`（默认 `/tmp` 在 Android 不存在）、
+    `-Dfml.ignoreInvalidMinecraftCertificates` / `-Dfml.ignorePatchDiscrepancies`、`-Dlog4j2.formatMsgNoLookups`、
+    `-Dminecraft.launcher.brand/version`、`-XX:-UsePerfData`。
+  - **Java 8 在 Android 上没有可用来源**（2026-11-25 复核四条路）：Pojav 的 `jre8-*` 全是
+    for sandboxed iOS（Mach-O）；Pojav Android 版只在需登录的 Actions 产物里；Termux 的 JDK8 按 Termux
+    前缀构建、不可重定位；FCL 源码树里的 jre8 是 **pack200 形态**（`lib/resources.jar.pack`），
+    而 `unpack200` 自 JDK 14 起已移除。声明需要 8 的版本按 17 启动并在控制台写明原因，
+    要真正支持还得补一份 `javac --release 8` 的引导 jar（现有是 class 61，且完整性判据是 `lib/rt.jar`）。
+  - **Android 暂不支持中途停止游戏**：进程内 JVM 不能按信号终止，`System.exit` 会连启动器一起退出；
+    `launch_stop` 在 Android 返回可读说明而不是假装停掉。
+  - **文字输入是第四类事件**（0.8.0-beta17）：`Boot.text(String)` 整串进来按码点切开发给
+    `CallbackBridge.sendChar`，**不要**改成逐字一次 JNI（中文输入法一次提交多个字符）。
+    Kotlin 侧 `GameKeyboard` 用 1×1 透明 `EditText` + 自定义 `InputConnection`，
+    文字**绝不能留在输入框里**——留在里面会让下一次 `deleteSurroundingText` 的字符数对不上。
+    改 `Boot.java` 后必须同时升 `src-tauri/android-boot/VERSION`，否则已装设备不会重新解压 assets。
+  - **`windowSoftInputMode` 必须是 `adjustNothing`**：`adjustResize` 会在弹出输入法时改变
+    `Surface` 尺寸，触发一次 `surfaceChanged` 与画面重建；输入法应当浮在画面上而不是挤动游戏。
+  - **摇杆输出仍是离散方向键**：随包 `CallbackBridge` 没有轴事件入口，`kind=stick` 只是
+    圆形外观 + 可见死区，**不要**在文案或文档里写成「模拟摇杆」。
+  - **陀螺仪要注销**：`Gyro.release()` 在 `GameHost.hide()` 里调用，漏掉会一直挂在 Activity 上；
+    姿态差超过 30° 一律当噪声丢弃，否则切前后台会让视角甩飞。
+  - **运行时删除的拒绝对**：内置 17（随 APK）与「本次会话已创建过 JVM 的那一版」都不能删；
+    后者是因为 `libjvm.so` 已在进程里，删目录只会让下次启动拿到残缺运行时。
+  - **体积隔离**：`jniLibs/` 与 `assets/runtime/` 只进 APK，桌面打包不读这两个目录，Windows / macOS /
+    Linux 安装包体积不受影响。这两处均已 gitignore，由脚本再生成。
+    **前端只需拦截 iOS**（`runtime.tsx` 的 `NATIVE_GAME_SUPPORTED` + `PlatformBlockedNotice`），
+    设置页 Java 区块在移动端换成内置运行时说明。移动外壳由 `<html data-platform>` 驱动
+    （`App.tsx` 强制底部导航、隐藏自定义标题栏与指针光晕）。
+  - **Android 路径必须走 `path_alias` 的「末级严格、祖先放开」策略**：`/data/user/0` 与 `/data/data`
+    是同一目录的两种写法，且 `/data` 只有执行权限、没有读权限。任何「逐级 `symlink_metadata` 拒绝链接」或
+    「从 `/` 逐级 `openat`」的写法在 Android 上都会误判。当前规则：末级（启动器自建对象）任何平台都拒绝链接；
+    祖先级只在桌面拒绝（`crate::path_alias::link_is_fatal(final_segment)`）；目录锚点打不开时退回 `O_PATH`
+    （仍可 `openat`/`fstat`，只是不能枚举）。新增路径校验代码前先看 `modpack/access.rs` 的 `native` 模块。
+  - **Gradle wrapper 只在首次真正下载**：本机 `~/.gradle/wrapper/dists/gradle-9.6.1-bin/` 下已有完整解压副本，
+    若 `gradlew` 又去 `services.gradle.org` 拉 zip（`Read timed out`），把已解压的 `gradle-9.6.1` 拷进 wrapper
+    按官方 URL 算出的哈希目录并补 `gradle-9.6.1-bin.zip.ok`，即可离线复用，不必改 `distributionUrl`。
+  - **Android 自有源码在 `HCMCL PE/`**（0.8.0-beta17）：引导 Java → `HCMCL PE/android-boot/`，
+    手写 Kotlin → `HCMCL PE/app/src/main/java/`，由 `app/build.gradle.kts` 的
+    `sourceSets`（`$rootDir/../../../HCMCL PE/app/src/main/java`）挂进 Gradle。
+    **`generated/` 必须留在 `src-tauri/gen/android/app/src/main/java/`**：Tauri 每次构建会重新生成
+    `Rust.kt` / `WryActivity.kt` 等同名类，搬出去就是两份定义、直接编译失败。
+    `src-tauri/src/android_*.rs`、Gradle 骨架与 `scripts/*android*.mjs` 也不搬（Tauri 与 npm 脚本路径写死），
+    原因与占用表见 `HCMCL PE/README.md`。改完 Kotlin 的验证命令不变：
+    `.\gradlew.bat :app:compileUniversalReleaseKotlin`；只改引导 Java 时记得先跑
+    `node scripts/build-android-boot.mjs`（`android:build` 不会自动重编 `boot.jar`）。
 - **版本号涉及五个文件**，必须同时改：`package.json` 的 `version`、`package-lock.json` 的
   `version` 与 `packages[""].version`、`src-tauri/tauri.conf.json` 的 `version`、
   `src-tauri/Cargo.toml` 的包版本，以及 `src-tauri/Cargo.lock` 内 `hcmcl-tauri` 的版本。
+  出 beta16 时就漏了 `package-lock.json`（停在 beta12 两处），而 versionCode 由 `build.gradle.kts`
+  按版本名算 `8000 + beta*100`——只改前三个会出现包名与 code 对不上的错配。核对方式：
+  ```bash
+  grep -n '"version": "0.8.0-beta' package.json package-lock.json
+  grep -n '^version = "0.8.0' src-tauri/Cargo.toml
+  grep -n -A2 'name = "hcmcl-tauri"' src-tauri/Cargo.lock
+  ```
 - 提交前的最低验证：`npm run typecheck` + 全量 `node scripts/test-*.mjs` + `npm run build:tauri:web`。
 
 ---
@@ -214,6 +365,23 @@ node scripts/fix-artifact-integrity.mjs --check   # 只检查，有 Low 则退�
 - **批量中途不要 `reload()`**：刷新会换掉 `currentResourceSnapshot`，后续项的前置校验
   （`scopedUpdates[up.path] === up` 与快照路径比对）全部失效。统一在全部结束后 reload。
 - 同样地，批量执行期间要禁用「检查更新」与单行删除 / 启停，否则会清空目标列表或改动文件集合。
+
+### 4.6 自定义主页：只启动核对一次，运行期占住文件
+
+- **联网核对只在启动时做一次**：`pages/customhome/probe.ts` 是模块级会话缓存，
+  `ensureProbe(id)` 对同一 id 只发一次请求，失败也保持失败（`force` 只给用户点「重试」用）。
+  `components/HomepageSession.tsx` 挂在 `Shell` 根上触发，所以用户不打开主页也会在启动时核对。
+  **不要**把核对逻辑塞回主页组件——切页重挂会变成反复联网。
+- **不再弹全屏闸门**：运行期给 `HomepageGate` 传 `inline`，卡片直接渲染在内容区，状态由
+  「启动游戏」导航图标呼吸（`index.css` 的 `.nav-blink`）表达。只有管理页（`HomepagePage`）仍用弹窗。
+- **旧哈希不能套到新内容**：`CustomHomePage` 放行时会重新 `read` 并比对 `sha256`，不一致就
+  `ensureProbe(id, true)` 重新核对并中止放行。改这块时别把比对删了——会话复用之后它是唯一的兜底。
+- **运行期占用主页文件**：`homepage:hold` 用 `Repository::hold` 打开 `homepages/<id>.html`
+  并**把句柄留在 `homepage::State.held` 里**。Windows 上该句柄只授予 `FILE_SHARE_READ`，
+  期间写入 / 改名 / 删除都会失败（`native.rs` 的 `homepage_native_windows_denies_shared_writes_and_deletion`
+  已锁定这条行为）；Unix 没有等价强制语义，只保证读的是同一 inode。
+  **改主页的通道（`importFile`/`download`/`installNumbered`/`update`/`remove`）会先自动释放占用**，
+  否则导入会报「文件正被占用」这种看起来像权限问题的错误。
 
 ---
 
@@ -312,6 +480,9 @@ done
 - [ ] `npm run build:tauri:web` 成功（需要安装包时 `npm run build:tauri`；本机打包前先按第 3 节注入 `LIB` 并清空 `NODE_OPTIONS`）
 - [ ] 新增/修改的 UI 文案三语齐全
 - [ ] 改动涉及构建产物时：`npm run fix:integrity:check` 无 Low
+- [ ] **改版本时五处一致**（第 3 节末尾的四个 `grep` 全部命中同一段版本号）
+- [ ] **出 Android 包时**：`:app:compileUniversalReleaseKotlin` 通过 → `zipalign -p 4` → `apksigner sign` →
+      `aapt2 dump badging` 的 `versionCode` 与 `native-code` 与预期一致 → 记录字节数与 sha256
 - [ ] 报告里**明确写出哪些没有实机验证**及残留风险
 
 ---
@@ -355,3 +526,4 @@ Tauri / SDL 已有部分隔离原生场景记录，只能证明对应平台与�
 - 联机 HUD 与 AI / 歌词共用同一窗口 owner，退房或 `closeHudWindow` 只能重算所有内容的需求，不能终止仍承载其它卡片的宿主。成员从真实活动会话投影，仅公开 `enabled` / `opacity` / 展示成员；HUD 内部快照不开放完整大厅、聊天、设置或主窗业务权限。设置在后台串行读取，只把小投影交付 UI；事件在短 UI 回合复核精确实例后按 label 投递并读取最新状态。前端等待 native listen 注册回执后再读无参快照，实时事件覆盖迟到快照，卸载须处理迟到 unlisten；Electron 与 Tauri 复用原卡片。`syncOverlays` 需要分别重算已接入的 HUD 与弹幕，不得用任一分支冒充其它联机浮层；编译 / 纯投影 / TSX 检查不证明真实窗口、玩家、DPI、穿透或组网验收。
 - Windows 弹幕窗口必须保持独立固定来源、固定 `danmaku` label、透明置顶不抢焦点和鼠标穿透；只接收当前受管会话同代次的真实聊天，配置只投影既有五字段，不能读取账号、密码或主窗设置。页面必须先注册 `launcher:event` 监听再请求 `mp:danmakuConfig`，实时消息优先于迟到快照，卸载清理 listener / resize / timer。窗口 owner 只有在精确 `Destroyed` 且 Window 与 Webview manager 双表为空后才释放；控制请求绑定单调意图序号，过期请求报 superseded。预构建边界失败可在 UI 确认无 native 副作用后恢复，builder/native/队列不确定状态必须保留 owner / Gate；源码夹具和编译不等于真实窗口、DPI、穿透、socket 或组网验收。
 - Windows 联机小窗使用固定 `mini` 来源、精确自有实例和独立窄白名单；外观只投影共享 Provider 所需字段，不读取壁纸、账号、目录或密钥。普通 close 只撤销本次显示请求并允许重开，应用退出才进入 terminal；二者都须等待精确 `Destroyed` 与 manager 双表为空后才释放 owner / Gate。状态与聊天投递不得在线程运行时内 `block_on`，前端先订阅再读快照，实时事件优先于迟到快照，卸载屏蔽迟到回调。内部 `mp:miniDrag` 不增加公开 LauncherApi 或通用 window capability；源码 / TSX 夹具不证明真实拖动、DPI、焦点、外观或联机验收。
+- Android 进程内 JVM 的边界必须原样保留：`JNI_CreateJavaVM` 只在 `surfaceCreated` 之后调用（GLFW 建窗要 `ANativeWindow`），屏幕尺寸与其它 JNI 查询一律带超时并可降级，跨线程调用先 `attach_current_thread` 再释放。运行时选择按 `javaVersion.majorVersion` 走「内置 / 已下载 / 有来源可下载 / 明确拒绝」四条分支，**不允许**在无来源时静默换用别的版本而不写明。`SOURCES` 只登记核对过 sha256 的条目；新增来源前先下载实测哈希，不能把「上游文件存在」当作可下载。声明的验证只到 `cargo check --target aarch64-linux-android` 与 Kotlin 编译，编译通过不等于 Forge 能起、运行时可解压、触控可用——设备端表现（尤其 Java 8/21 的真实启动与触控手感）一律标注未验证。

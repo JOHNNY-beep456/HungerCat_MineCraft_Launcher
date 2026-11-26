@@ -28,6 +28,8 @@ export interface HomepageFrameProps {
   onApproved: (next: HomepageEntry) => void
   /** 闸门关闭 / 取消回调。 */
   onCancel: () => void
+  /** 运行期使用页面内卡片而不是全屏弹窗（配合侧栏图标闪烁）。 */
+  inlineGate?: boolean
 }
 
 /** 「启动游戏」板块中自定义主页的渲染容器。 */
@@ -41,7 +43,8 @@ export function HomepageFrame({
   approved,
   frameRef,
   onApproved,
-  onCancel
+  onCancel,
+  inlineGate
 }: HomepageFrameProps): JSX.Element {
   const { t } = useApp()
 
@@ -73,6 +76,7 @@ export function HomepageFrame({
         <HomepageGate
           id={entry.id}
           cancelLabel={t('ch.useBuiltin')}
+          inline={inlineGate}
           onApproved={onApproved}
           onCancel={onCancel}
         />

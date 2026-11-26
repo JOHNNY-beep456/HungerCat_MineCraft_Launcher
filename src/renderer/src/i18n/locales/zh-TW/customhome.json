@@ -2,5 +2,7 @@
   "ch.loadFailed": "自訂主頁無法載入",
   "ch.loading": "正在載入自訂主頁…",
   "ch.frameTitle": "自訂主頁",
-  "ch.useBuiltin": "使用內建介面"
+  "ch.useBuiltin": "使用內建介面",
+  "ch.checking": "正在核對主頁…",
+  "ch.needsConfirm": "主頁需要確認後才能執行"
 }

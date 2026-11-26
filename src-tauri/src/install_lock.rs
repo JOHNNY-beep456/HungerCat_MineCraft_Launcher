@@ -5,10 +5,12 @@ use tokio::sync::{Mutex as AsyncMutex, OwnedMutexGuard};
 
 type Result<T> = std::result::Result<T, String>;
 
-fn reject_link(path: &Path) -> Result<()> {
+fn reject_link(path: &Path) -> Result<()> { reject_link_component(path, true) }
+/// 祖先级软链接只在桌面平台拒绝（Android 私有目录前缀是系统别名）。
+fn reject_link_component(path: &Path, final_segment: bool) -> Result<()> {
     match fs::symlink_metadata(path) {
         Ok(meta) => {
-            if meta.file_type().is_symlink() { return Err("拒绝符号链接锁路径".into()); }
+            if meta.file_type().is_symlink() && crate::path_alias::link_is_fatal(final_segment) { return Err("拒绝符号链接锁路径".into()); }
             #[cfg(windows)]
             {
                 use std::os::windows::fs::MetadataExt;
@@ -22,17 +24,28 @@ fn reject_link(path: &Path) -> Result<()> {
 }
 
 fn absolute_components(path: &Path) -> Result<PathBuf> {
+    walk_components(path).or_else(|error| match crate::path_alias::resolved_alias(path) {
+        // 系统别名落在末级时，规范化一次再复核；仍然失败则保留原始错误。
+        Some(canonical) => walk_components(&canonical).map_err(|_| error),
+        None => Err(error),
+    })
+}
+fn walk_components(path: &Path) -> Result<PathBuf> {
     if !path.is_absolute() || path.as_os_str().is_empty() { return Err("游戏目录锁路径必须是绝对路径".into()); }
     let mut current = PathBuf::new();
-    for component in path.components() {
+    let mut parts = path.components().peekable();
+    while let Some(component) = parts.next() {
+        // 锁作用域本身与启动器创建的后代必须无链接；Android 私有目录的祖先前缀由系统
+        // 维护成别名软链接（见 `crate::path_alias`），只在桌面平台逐级拒绝。
+        let final_segment = parts.peek().is_none();
         match component {
             // Windows 的 Prefix（例如 C:）本身是 drive-relative，不能在 RootDir 前做磁盘检查。
             Component::Prefix(prefix) => { current.push(prefix.as_os_str()); continue; },
-            Component::RootDir => { current.push(component.as_os_str()); reject_link(&current)?; continue; },
+            Component::RootDir => { current.push(component.as_os_str()); reject_link_component(&current, final_segment)?; continue; },
             Component::Normal(name) => current.push(name),
             Component::CurDir | Component::ParentDir => return Err("游戏目录锁路径不能含相对跳转".into()),
         }
-        reject_link(&current)?;
+        reject_link_component(&current, final_segment)?;
     }
     Ok(current)
 }
@@ -155,11 +168,16 @@ impl RootOperationGuard {
 async fn acquire_raw<F>(root: &Path, cancelled: F) -> Result<(PathBuf, RootOperationGuard)>
 where F: Fn() -> bool
 {
+    // 等锁必须有上限：真正的持锁者只会在一次目录事务里出现（安装/更新/启动准备），
+    // 若锁被别的进程长期占住，界面只会一直停在「启动中」，不如到点明确报错。
+    const WAIT_LIMIT: Duration = Duration::from_secs(120);
     let canonical = canonical_root(root)?;
     if cancelled() { return Err("操作已取消".into()); }
+    let started = std::time::Instant::now();
     let mutex = local_mutex(&canonical)?;
     let local = loop {
         if cancelled() { return Err("操作已取消".into()); }
+        if started.elapsed() > WAIT_LIMIT { return Err("实例目录被其他任务占用超过 120 秒，已放弃本次操作".into()); }
         match Arc::clone(&mutex).try_lock_owned() {
             Ok(guard) => break guard,
             Err(_) => tokio::time::sleep(Duration::from_millis(50)).await,
@@ -168,6 +186,7 @@ where F: Fn() -> bool
     let process = ProcessLock::open(&canonical)?;
     loop {
         if cancelled() { return Err("操作已取消".into()); }
+        if started.elapsed() > WAIT_LIMIT { return Err("实例目录被其他进程占用超过 120 秒，已放弃本次操作".into()); }
         if process.try_lock()? { break; }
         tokio::time::sleep(Duration::from_millis(50)).await;
     }

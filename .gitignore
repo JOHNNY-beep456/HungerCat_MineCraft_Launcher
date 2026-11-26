@@ -26,6 +26,10 @@ native/*/target
 /src-tauri/gen/android/.gradle/
 /src-tauri/gen/android/.kotlin/
 /src-tauri/gen/android/**/build/
+# Android 运行时：JRE 原生库与类库镜像由 scripts/prepare-android-runtime.mjs 从 .local 生成，
+# 属可再生成物且体积上百 MB，不进 Git。
+/src-tauri/gen/android/app/src/main/assets/runtime/
+/src-tauri/gen/android/app/src/main/jniLibs/
 /src-tauri/gen/android/local.properties
 /src-tauri/gen/android/keystore.properties
 /src-tauri/gen/android/*.jks

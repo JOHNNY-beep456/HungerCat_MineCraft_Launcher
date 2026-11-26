@@ -70,8 +70,9 @@ fn cancelled(cancel: &downloads::Cancel) -> Result<()> {
 }
 
 fn desktop_only() -> Result<()> {
-    if cfg!(target_os = "android") || cfg!(target_os = "ios") {
-        return Err("Android/iOS 尚未接入桌面 JRE 安装，未登记任务且未发起网络请求".into());
+    // 与 runtime 的平台边界保持同一句话：移动端不登记任务、不发起网络请求。
+    if !crate::runtime::native_game_supported() {
+        return Err(crate::runtime::MOBILE_JAVA_BOUNDARY.into());
     }
     Ok(())
 }

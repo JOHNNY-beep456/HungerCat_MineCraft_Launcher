@@ -3,7 +3,7 @@ use super::{access::{Directory, OpenedFile}, analyzer, native, Result, MAX_LOCAL
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-use std::{cell::Cell, collections::BTreeMap, io::{Read, Write}, path::Path, time::{SystemTime, UNIX_EPOCH}};
+use std::{cell::Cell, collections::BTreeMap, fs::File, io::{Read, Seek, SeekFrom, Write}, path::Path, time::{SystemTime, UNIX_EPOCH}};
 
 const STATE_LIMIT: u64 = 1024 * 1024;
 const ENTRY_LIMIT: usize = 1024;
@@ -123,6 +123,23 @@ impl Repository {
             "active":active == id,"content":text});
         if let Some(blocked) = &state.blocked { result["blocked"] = serde_json::to_value(blocked).map_err(|_| file_error())?; }
         Ok(result)
+    }
+    /// 占用正在运行的主页文件并核对内容哈希。
+    ///
+    /// 返回的句柄必须由调用方一直持有：Windows 上仓库打开文件时只授予
+    /// `FILE_SHARE_READ`，句柄活着期间同目录的写入、改名、删除都会失败，
+    /// 这就是「运行时主页文件不能被替换」。Unix 没有等价的强制共享语义，
+    /// 句柄只能保证我们读到的是同一份 inode，不阻止其它进程改写。
+    pub(super) fn hold(&self, id: &str, expected: &str) -> Result<File> {
+        checked_id(id)?;
+        let mut held = self.dir.source(&format!("{id}.html"))?.open()?;
+        held.verify()?;
+        let mut bytes = Vec::new();
+        (&mut held.file).take(MAX_LOCAL_SIZE + 1).read_to_end(&mut bytes).map_err(|_| file_error())?;
+        held.verify()?;
+        if bytes.len() as u64 > MAX_LOCAL_SIZE || hash(&bytes) != expected { return Err(changed()); }
+        held.file.seek(SeekFrom::Start(0)).map_err(|_| file_error())?;
+        Ok(held.file)
     }
     pub(super) fn list(&self, active: &str) -> Result<Value> {
         let mut budget = ENTRY_LIMIT * 2;
@@ -249,6 +266,24 @@ mod tests {
         r.replace(id, &old, b"<html><p>changed</p></html>", "").unwrap(); assert_eq!(r.source(id, "").unwrap()["confirmed"], false);
         r.block(id, "fixture").unwrap(); let new = r.source(id, "").unwrap()["sha256"].as_str().unwrap().to_owned(); r.replace(id, &new, b"<html><p>edited</p></html>", "").unwrap();
         assert!(r.confirm(id, true, &new, "").is_err()); drop(r); assert!(f.repo().source(id, "").unwrap()["blocked"].is_object());
+    }
+    /// 运行期占用只接受「当前字节」的哈希；占用期间 Windows 上不能再写入。
+    #[test] fn hold_pins_current_bytes_and_denies_rewrites_while_open() {
+        let f = Fixture::new(); let mut r = f.repo();
+        let e = r.import("pinned.html", b"<!doctype html><title>pinned</title><p>body</p>", "").unwrap();
+        let id = e["id"].as_str().unwrap().to_owned();
+        let sha = r.source(&id, "").unwrap()["sha256"].as_str().unwrap().to_owned();
+        // 旧哈希（内容已变）必须被拒绝：否则占用下来的就是未经核对的文件。
+        assert!(r.hold(&id, &"0".repeat(64)).is_err());
+        let file = r.hold(&id, &sha).unwrap();
+        #[cfg(windows)]
+        {
+            let path = f.0.join("homepages").join(format!("{id}.html"));
+            assert!(std::fs::OpenOptions::new().write(true).open(&path).is_err());
+            assert!(std::fs::rename(&path, f.0.join("homepages").join("moved.html")).is_err());
+        }
+        drop(file);
+        assert!(r.hold(&id, &sha).is_ok());
     }
     #[test] fn traversal_corrupt_state_oversize_and_remote_code_are_not_silently_approved() {
         assert!(!valid_id("../x")); assert!(!valid_id("CON")); let f = Fixture::new(); let mut r = f.repo();

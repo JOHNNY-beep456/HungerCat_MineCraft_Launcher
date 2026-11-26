@@ -78,5 +78,10 @@
   "cmp.javaPrompt.body": "未偵測到合適的 Java {n} 執行環境。你可以自動下載並安裝 Java {n}（Adoptium Temurin），或取消本次啟動。",
   "cmp.javaPrompt.cancel": "取消啟動",
   "cmp.javaPrompt.installing": "安裝中…",
-  "cmp.javaPrompt.install": "自動安裝 Java {n}"
+  "cmp.javaPrompt.install": "自動安裝 Java {n}",
+  "cmp.platformBlocked.title": "目前平台暫不支援啟動遊戲",
+  "cmp.platformBlocked.subtitle": "iOS 版本僅能作為管理端",
+  "cmp.platformBlocked.body": "iOS 不允許應用程式自帶可執行的 JVM，也無法載入自行分發的 Java 執行環境，因此無法啟動 Minecraft Java 版。Android 版已內建 Java 17 與 LWJGL 圖形層，可正常進入遊戲。",
+  "cmp.platformBlocked.hint": "版本安裝、模組與整合包管理、瀏覽伺服器與帳號仍可正常使用；進入遊戲請使用 Android / Windows / macOS / Linux 版。",
+  "cmp.platformBlocked.close": "知道了"
 }

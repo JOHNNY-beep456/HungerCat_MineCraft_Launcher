@@ -52,7 +52,9 @@ export function InstancesPage({ onManage }: { onManage: (versionId: string) => v
     try {
       setInstalled(await window.api.installed.list())
     } catch {
-      /* installed:list 失败时保持上次列表 */
+      /* installed:list 失败时保持上次列表；首次失败必须落到空列表，
+         否则页面会永远停在「正在获取已安装版本…」的加载态。 */
+      setInstalled((prev) => prev ?? [])
     }
   }, [])
 

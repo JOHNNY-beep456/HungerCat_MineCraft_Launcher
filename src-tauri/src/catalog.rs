@@ -1012,9 +1012,20 @@ fn linked(metadata: &Metadata) -> bool {
     false
 }
 fn checked_absolute(path: &Path) -> Result<PathBuf> {
+    walk_absolute(path).or_else(|error| match crate::path_alias::resolved_alias(path) {
+        // 系统别名落在末级时，规范化一次再复核；仍然失败则保留原始错误。
+        Some(canonical) => walk_absolute(&canonical).map_err(|_| error),
+        None => Err(error),
+    })
+}
+fn walk_absolute(path: &Path) -> Result<PathBuf> {
     if !path.is_absolute() { return Err("必须提供绝对路径".into()); }
     let mut cursor = PathBuf::new();
-    for component in path.components() {
+    let mut parts = path.components().peekable();
+    while let Some(component) = parts.next() {
+        // 末级由启动器自己创建，任何平台都拒绝链接；祖先级只在桌面平台拒绝
+        // （Android 私有目录前缀由系统维护，见 `crate::path_alias`）。
+        let final_segment = parts.peek().is_none();
         match component {
             Component::Prefix(prefix) => {
                 #[cfg(windows)] {
@@ -1035,7 +1046,9 @@ fn checked_absolute(path: &Path) -> Result<PathBuf> {
             _ => return Err("路径不得包含当前目录或上级目录段".into()),
         }
         match fs::symlink_metadata(&cursor) {
-            Ok(metadata) if linked(&metadata) => return Err("拒绝符号链接或重解析点路径".into()),
+            Ok(metadata) if linked(&metadata) && crate::path_alias::link_is_fatal(final_segment) => {
+                return Err("拒绝符号链接或重解析点路径".into());
+            }
             Ok(_) => {},
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {},
             Err(_) => return Err("无法检查路径状态".into()),
