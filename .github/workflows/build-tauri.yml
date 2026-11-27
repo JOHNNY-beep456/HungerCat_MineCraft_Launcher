@@ -73,6 +73,28 @@ jobs:
 
       - run: npm ci
 
+      # 联机内核（easytier-core / cli）不能随仓库分发：必须是「无 Npcap」的自建版本，
+      # 而且要按架构构建（启动器会比对 PE machine，错架构会被判成文件损坏）。
+      # 构建脚本克隆 EasyTier 源码现编，首次十几分钟；用缓存避免每次重编。
+      - name: 缓存联机内核
+        id: easytier-cache
+        uses: actions/cache@v4
+        with:
+          path: resources/easytier
+          key: easytier-v2.5.0-${{ matrix.arch }}-${{ hashFiles('scripts/build-easytier-npcap-free.ps1') }}
+
+      - name: 构建联机内核（无 Npcap，${{ matrix.arch }}）
+        if: steps.easytier-cache.outputs.cache-hit != 'true'
+        # x86 / arm64 是交叉编译，历史上前端从未真正打包过对应架构的内核；
+        # 失败不在这里拦，交给下一步判定是否降级。
+        continue-on-error: true
+        shell: pwsh
+        run: ./scripts/build-easytier-npcap-free.ps1 -Arch ${{ matrix.arch }}
+
+      - name: 校验联机内核（x64 缺失即失败；x86/arm64 可降级）
+        shell: pwsh
+        run: node scripts/ci-windows-resources.mjs --arch ${{ matrix.arch }} --allow-strip
+
       # tauri.conf.json 的 beforeBuildCommand 会自行执行 npm run build:tauri:web。
       # 显式给 --target，产物落在 target/<triple>/release 下。
       - name: 构建 NSIS(.exe) + MSI
@@ -303,6 +325,8 @@ jobs:
               - `.exe`（NSIS）、`.msi`：x64 / x86 / arm64
               - `.msix`：x64 / x86 / arm64，**自签名**（每次构建生成新的开发证书，随包附 `.cer`；
                 安装前需先信任证书。上架 Microsoft Store 时需把 Publisher 换成 Partner Center 的标识）
+              - 联机内核（easytier，无 Npcap 版）按架构单独构建并随包；x86 / arm64 若交叉构建失败，
+                包内不含内核，联机板块在该架构上不可用（构建日志会有 `::warning::`）
             - **Linux**：`.deb`（x86_64 / aarch64 / armv7l）、`.AppImage`（x86_64 / aarch64）
               - armv7l 为 x64 宿主交叉编译，只提供 `.deb`
             - **macOS**：`.dmg`（x86_64 / aarch64），**未签名**，首次打开需右键 →「打开」

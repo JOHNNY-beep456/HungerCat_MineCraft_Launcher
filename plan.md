@@ -1631,5 +1631,35 @@ AppxManifest.xml
 - x86 与 arm64 的 Windows 产物本机无法构建（缺对应 MSVC 库目录），完全依赖 CI。
 - macOS 产物仍未签名 / 未公证，首次打开需右键 →「打开」。
 
+### 首次 CI 运行：Windows 因联机内核缺失失败
+
+`v0.8.2` 第一次推送后，`Windows (x86)` 在 `tauri build` 阶段失败：
+
+```
+resource path `..\resources\easytier\easytier-cli.exe` doesn't exist
+```
+
+原因是 `resources/easytier/` **不入库**（体积 + 许可），而 `tauri.windows.conf.json` 把它声明为
+bundle resources；Linux / macOS 不读这份 Windows 专属配置，所以历史上只有 Windows 会踩到 ——
+而 Windows 以前一直在本机构建，那里恰好有产物。
+
+修法（三件）：
+
+1. `build-easytier-npcap-free.ps1` 增加 `-Arch x64|x86|arm64`：x86 / arm64 走 `cargo build --target`，
+   产物目录按 triple 取；构建完**自检 PE machine**（0x8664 / 0x14c / 0xaa64），不一致就中止，
+   避免把错架构的内核写进 `resources/`。
+2. 新增 `scripts/ci-windows-resources.mjs`：校验两个 exe 存在且架构正确；
+   x64 缺失 → 失败（主平台不能悄悄少联机能力）；x86 / arm64 缺失 → 删掉 `bundle.resources`
+   继续出包，并打 `::warning::`（该架构联机不可用）。
+3. Windows job 先按架构构建内核（`actions/cache` 缓存 `resources/easytier`，键含架构与脚本哈希），
+   再校验、再 `tauri build`。
+
+顺带发现既有缺陷：仓库/历史包里的 `resources/easytier` 只有 x64，而 0.8.0 出过 x86 / arm64 包 ——
+运行时 `multiplayer/resources.rs` 会比对 PE machine，把 x64 内核在 x86/arm64 上判为「文件损坏」。
+本次改为按架构分别构建，x64 之外若构建不出来则明确不带内核，而不是塞一个错架构的。
+
+本地已验：`ci-windows-resources.mjs --arch x64` 判定 ok；`--arch arm64 --allow-strip` 正确删掉
+resources 映射（随后已 `git checkout` 还原）。CI 侧仍待下一轮运行验证。
+
 
 

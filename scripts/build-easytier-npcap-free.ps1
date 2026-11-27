@@ -57,8 +57,25 @@
 [CmdletBinding()]
 param(
   [string]$Version = 'v2.5.0',
+  # 目标架构：产物是 PE 可执行文件，必须与安装包架构一致。
+  # 启动器侧的校验会读取 PE 头里的 machine 字段（见 src-tauri/src/multiplayer/resources.rs），
+  # 把 x64 内核塞进 x86 / arm64 包会被判为「文件损坏」，所以这里按架构分别构建。
+  [ValidateSet('x64', 'x86', 'arm64')]
+  [string]$Arch = 'x64',
   [switch]$KeepSource
 )
+
+$triple = switch ($Arch) {
+  'x64' { 'x86_64-pc-windows-msvc' }
+  'x86' { 'i686-pc-windows-msvc' }
+  'arm64' { 'aarch64-pc-windows-msvc' }
+}
+# PE/COFF Machine 字段，构建后据此自检，避免把错架构的产物写进 resources/
+$machine = switch ($Arch) {
+  'x64' { 0x8664 }
+  'x86' { 0x14c }
+  'arm64' { 0xaa64 }
+}
 
 $ErrorActionPreference = 'Stop'
 try { chcp 65001 | Out-Null } catch { }
@@ -604,12 +621,16 @@ if (Test-Path $protocExe) { $env:PROTOC = $protocExe }
 
 # ---- 5. 构建 ----
 Ensure-LibClang
-Info '开始构建（首次较慢，请耐心等待）…'
+# x64 直接按宿主构建（不传 --target，产物在 target/release）；
+# x86 / arm64 走 --target，产物在 target/<triple>/release。
+$cargoTarget = @()
+if ($Arch -ne 'x64') { $cargoTarget = @('--target', $triple) }
+Info "开始构建 $Arch（$triple，首次较慢，请耐心等待）…"
 Push-Location $crateDir
 try {
   $oldEAP = $ErrorActionPreference
   $ErrorActionPreference = 'Continue'
-  $buildOut = & $cargo build --release 2>&1 | Out-String
+  $buildOut = & $cargo build --release @cargoTarget 2>&1 | Out-String
   $buildCode = $LASTEXITCODE
   $ErrorActionPreference = $oldEAP
   Write-Host $buildOut
@@ -627,7 +648,9 @@ $suffix   = if ($env:OS -eq 'Windows_NT') { '.exe' } else { '' }
 $coreName = "easytier-core$suffix"
 $cliName  = "easytier-cli$suffix"
 $candidates = @(
+  (Join-Path $srcRoot "target\$triple\release"),
   (Join-Path $srcRoot "target\release"),
+  (Join-Path $crateDir "target\$triple\release"),
   (Join-Path $crateDir "target\release")
 ) | Select-Object -Unique
 $releaseDir = $null
@@ -656,6 +679,29 @@ if ((Test-NpcapImport $coreSrc) -or (Test-NpcapImport $cliSrc)) {
   Fail '产物仍包含 packet.dll / PacketGetAdapterNames 导入，补丁未生效，已中止拷贝。'
 }
 Info '通过：产物未导入 packet.dll，无 Npcap 依赖。'
+
+# ---- 6b. 架构自检：PE/COFF Machine 必须与目标架构一致 ----
+# 启动器运行时会比对 PE machine（src-tauri/src/multiplayer/resources.rs），
+# 不一致就把内核判成「文件损坏」。这里提前拦住，避免把错架构的产物打进安装包。
+function Get-PeMachine([string]$path) {
+  $stream = [System.IO.File]::OpenRead($path)
+  $reader = New-Object System.IO.BinaryReader($stream)
+  try {
+    $stream.Position = 0x3C
+    $peOffset = $reader.ReadInt32()
+    $stream.Position = $peOffset + 4
+    return $reader.ReadUInt16()
+  } finally {
+    $reader.Dispose(); $stream.Dispose()
+  }
+}
+foreach ($pair in @(@($coreSrc, 'easytier-core'), @($cliSrc, 'easytier-cli'))) {
+  $actual = Get-PeMachine $pair[0]
+  if ($actual -ne $machine) {
+    Fail ("{0} 的 PE machine 是 0x{1:X}，期望 0x{2:X}（{3}）—— 产物架构不对，已中止拷贝。" -f $pair[1], $actual, $machine, $Arch)
+  }
+}
+Info ("架构自检通过：{0}（0x{1:X}）。" -f $Arch, $machine)
 
 # ---- 7. 拷贝到正式目录 ----
 if (-not (Test-Path $targetDir)) { New-Item -ItemType Directory -Path $targetDir -Force | Out-Null }

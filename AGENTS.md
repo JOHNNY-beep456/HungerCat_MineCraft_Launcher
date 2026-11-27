@@ -102,6 +102,14 @@ node scripts/fix-artifact-integrity.mjs --check   # 只检查，有 Low 则退�
     否则 `LIB` 会指向 x64 的 `kernel32.lib`；arm64 还要把 `C:\Program Files\LLVM\bin` 加进 PATH
     （ring 的汇编需要 clang）。
   - 打标签会汇总成 **Draft Release**，正文即更新日志；需要人工核对后再「发布」。
+  - **联机内核必须按架构在 CI 里现编**：`resources/easytier/` 不入库，而
+    `tauri.windows.conf.json` 又把它列为 bundle resources —— 缺文件时 Tauri 直接报
+    `resource path ... doesn't exist` 而中止（0.8.2 的首次 CI 就是这么红的）。
+    Windows job 先用 `build-easytier-npcap-free.ps1 -Arch <arch>` 构建（结果走 actions/cache），
+    再由 `scripts/ci-windows-resources.mjs` 校验存在性与 **PE machine**：
+    x64 缺失直接失败；x86 / arm64 缺失则**删掉 resources 映射**降级出包并打 `::warning::`。
+    仓库里现有的 `resources/easytier` 只有 x64（历史包把 x64 内核塞进 x86/arm64 属既有缺陷，
+    运行时会因架构不符被判「文件损坏」）。
 - **MSIX 不在 Tauri 的打包目标里**（只有 `nsis` / `msi`）。本仓库用
   `scripts/package-msix.ps1` 调 Windows SDK 的 `makeappx` 手工封装：
   - 包内结构与 NSIS 安装后的文件一致：`hcmcl-tauri.exe` + `easytier/*.exe` + `Assets/*.png`
