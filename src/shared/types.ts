@@ -529,6 +529,24 @@ export interface LauncherSettings {
    */
   backgroundImage: string
   /**
+   * 自定义背景色总开关：开启后用 `customBackgroundColors` 生成纯色 / 渐变，
+   * 覆盖「背景」预设。仅在背景层真正生效时可用（皮肤未接管、无壁纸、非极简模式，
+   * 见 `@shared/settings` 的 `customBackgroundBlockedBy`）。
+   */
+  customBackgroundEnabled: boolean
+  /**
+   * 参与取色的颜色个数：1 = 纯色，2 = 双色渐变，3 = 三色渐变。
+   * 与 `customBackgroundColors` 的前 N 项配合，切换个数不会丢掉已选颜色。
+   */
+  customBackgroundCount: number
+  /** 渐变方向（仅在 2 色及以上有意义）：纵向 / 横向 / 斜向。 */
+  customBackgroundDirection: 'vertical' | 'horizontal' | 'diagonal'
+  /**
+   * 自定义背景色的三个槽位（始终保存 3 个，实际使用前 `customBackgroundCount` 项）。
+   * 固定长度是为了让「1 → 2 → 1 色」来回切换时颜色不丢。
+   */
+  customBackgroundColors: string[]
+  /**
    * 实验性（默认关闭）：设置自定义壁纸后，界面明暗按壁纸整体色调自动切换
    * （偏暗的壁纸 → 深色界面，偏亮的壁纸 → 浅色界面）。未设壁纸或采样失败时，
    * 仍由 theme 决定。与实验性界面皮肤相互独立。

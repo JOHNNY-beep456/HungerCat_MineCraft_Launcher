@@ -7,6 +7,7 @@ import {
   type PointerEvent as ReactPointerEvent
 } from 'react'
 import { useApp } from '../store'
+import { runWhenIdle } from '../startup'
 
 /**
  * 纯 CSS 3D 玩家模型：用皮肤贴图（64×64 PNG）分面拼出可缓慢自转的角色模型。
@@ -70,6 +71,10 @@ export function PlayerModel3D({
 
   // 皮肤 / 披风补全：第三方走认证站会话服；正版走 uapis.cn；离线不获取。
   // 两者都已具备时无需联网。
+  //
+  // 排到首个空闲帧再发：这是一次真实的外网请求（uapis / 认证站），在启动那一拍发出会
+  // 和首屏渲染、设置读取抢同一个网络与主线程。模型本身在拿到贴图前只占位，
+  // 晚一两帧补上贴图在观感上没有区别。
   useEffect(() => {
     if (isOffline || !name) return
     if (skinUrl && capeUrl) return
@@ -79,20 +84,24 @@ export function PlayerModel3D({
       if (!skinUrl && skin) setRemoteSkin(skin)
       if (!capeUrl && cape) setRemoteCape(cape)
     }
-    if (authType === 'yggdrasil') {
-      if (!yggdrasilServer || !uuid) return
-      void window.api.accounts
-        .yggdrasilSkin(yggdrasilServer, uuid)
-        .then((info) => apply(info?.skinUrl ?? '', info?.capeUrl ?? ''))
-        .catch(() => undefined)
-    } else {
-      void window.api.minecraft
-        .userinfo(name)
-        .then((info) => apply(info.skinUrl, info.capeUrl))
-        .catch(() => undefined)
-    }
+    const cancel = runWhenIdle(() => {
+      if (authType === 'yggdrasil') {
+        if (!yggdrasilServer || !uuid) return
+        void window.api.accounts
+          .yggdrasilSkin(yggdrasilServer, uuid)
+          .then((info) => apply(info?.skinUrl ?? '', info?.capeUrl ?? ''))
+          .catch(() => undefined)
+      } else {
+        void window.api.minecraft
+          .userinfo(name)
+          .then((info) => apply(info.skinUrl, info.capeUrl))
+          .catch(() => undefined)
+      }
+    })
+    // 卸载 / 换账号时既取消未执行的空闲任务，也作废已在途的响应。
     return () => {
       alive = false
+      cancel()
     }
   }, [isOffline, skinUrl, capeUrl, name, authType, yggdrasilServer, uuid])
 

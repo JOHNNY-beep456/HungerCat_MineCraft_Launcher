@@ -214,6 +214,15 @@ body {
   background: linear-gradient(165deg, #f4f4f6 0%, #ededf0 45%, #e6e6ea 100%);
 }
 
+/* 自定义背景色（设置 → 通用 → 自定义背景色）：`--custom-bg` 由 store 按设置生成
+   （1 色 = 纯色，2 / 3 色 = 指定方向的渐变），这里只负责在开关打开时替换掉预设渐变。
+   选择器写满 data-theme / data-skin 是为了压过浅色预设、皮肤等同样是
+   「属性 + .app-background」的规则；同时**必须放在壁纸规则之前** ——
+   两者特异性相同时靠来源顺序决胜，壁纸（更「上层」的背景）要能盖住它。 */
+:root[data-theme][data-skin][data-custom-bg='on'] .app-background {
+  background: var(--custom-bg);
+}
+
 /* 自定义壁纸（需求 4）：data-wallpaper='on' 时用图片替换上面的预设渐变。
    图片上再叠一层 --wallpaper-scrim 遮罩保证文字可读；关掉（off / 未设）时
    这些规则不生效，自动回落到上面的预设底色。

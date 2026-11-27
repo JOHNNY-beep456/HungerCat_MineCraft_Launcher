@@ -12,7 +12,7 @@
 | 技术栈 | 主产品为 Tauri v2 + Rust + React/TypeScript；**Electron 版已归档到 `HCMCL_old/`（2026-11-14），不再随根构建**，仅作对照；Lite 为独立产品 |
 | 样式 | **单文件** `src/renderer/src/index.css`（4000+ 行）+ Tailwind 工具类；皮肤靠 `[data-skin]` 切换 |
 | 服务端 | PHP，位于 `server/`，**gitignore，不入库**，手动部署 |
-| 当前版本 | 以 `package.json` 为准；当前 `0.8.0`（Android versionCode 9800，未出包），批次进度及验证时间点见 `plan.md` 第 43–55 节 |
+| 当前版本 | 以 `package.json` 为准；当前 `0.8.2`（正式版，Android versionCode 9850），批次进度及验证时间点见 `plan.md` 第 43–63 节 |
 
 ```bash
 npm run dev                # Tauri 开发（热更新）
@@ -95,8 +95,24 @@ node scripts/fix-artifact-integrity.mjs --check   # 只检查，有 Low 则退�
   $env:NODE_OPTIONS = ''; npx.cmd tauri build --bundles nsis
   ```
   别为此改 `vite.config` 的 `emptyOutDir`，也别删 `out/` 里别人的东西。
-- **mac 无法在 Windows 上构建**（需要 `hdiutil` / `codesign`）：走 GitHub Actions
-  `.github/workflows/build-mac.yml`，触发条件是 **push tag `v*`**。
+- **全平台出包都在 `.github/workflows/build-tauri.yml`**，触发条件是 **push tag `v*`**
+  （或手动 `workflow_dispatch`）。mac / Linux 本机做不了，Windows 的 x86 与 arm64 本机也缺
+  架构相关的库目录，所以三端一律走托管运行器；本机只用于快速验证 x64。
+  - Windows job 用 `ilammy/msvc-dev-cmd` 切目标架构（x64 / x86 / amd64_arm64），
+    否则 `LIB` 会指向 x64 的 `kernel32.lib`；arm64 还要把 `C:\Program Files\LLVM\bin` 加进 PATH
+    （ring 的汇编需要 clang）。
+  - 打标签会汇总成 **Draft Release**，正文即更新日志；需要人工核对后再「发布」。
+- **MSIX 不在 Tauri 的打包目标里**（只有 `nsis` / `msi`）。本仓库用
+  `scripts/package-msix.ps1` 调 Windows SDK 的 `makeappx` 手工封装：
+  - 包内结构与 NSIS 安装后的文件一致：`hcmcl-tauri.exe` + `easytier/*.exe` + `Assets/*.png`
+    + `AppxManifest.xml`（`Windows.FullTrustApplication` + `runFullTrust` 受限能力）。
+  - 图标用 `src-tauri/icons/icon.png`（1024²）按 contain 缩放出 50 / 44 / 71 / 150 / 310 / 310×150。
+  - **Manifest 的 Version 必须是四段纯数字**：脚本拒绝带 `-` 的预发布版本。
+  - CI 里用 `-Sign` 生成**每次构建都不同**的自签证书并导出 `.cer`：
+    用户装包前要信任该证书；上架 Store 必须把 `Publisher` 换成 Partner Center 的标识。
+    不要把自签 `.pfx` 传到产物里。
+  - MSIX 的沙箱语义与 NSIS 不同（安装钩子不执行、写安装目录会被重定向），
+    **安装行为未实机验证**，只验证了结构（makeappx pack / unpack 双向通过）。
 - **Tauri 安装包覆盖旧 Electron 版**（2026-11-14 已用真实 Electron HKLM 安装实测通过）：
   - 旧 Electron 的注册身份不是 `com.hungercat.launcher`，而是 GUID
     `92545c4c-67bc-5d37-9e32-fd7da970a258`。卸载键位于
@@ -135,11 +151,24 @@ node scripts/fix-artifact-integrity.mjs --check   # 只检查，有 Low 则退�
   # arm64 还要 clang（ring 的汇编），否则 cc-rs 报 failed to find tool "clang"
   $env:PATH = "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Tools\Llvm\x64\bin;$env:PATH"
   $env:NODE_OPTIONS = ''
-  npx tauri build --target aarch64-pc-windows-msvc --bundles nsis
-  npx tauri build --target i686-pc-windows-msvc    --bundles nsis
+  npx tauri build --target aarch64-pc-windows-msvc --bundles nsis,msi
+  npx tauri build --target i686-pc-windows-msvc    --bundles nsis,msi
   ```
-  产物在 `src-tauri/target/<triple>/release/bundle/nsis/`。**MSI 一律不要**：
-  预发布版本号（`0.8.0-beta5`）的预发布段不是纯数字，wix 直接失败。
+  产物在 `src-tauri/target/<triple>/release/bundle/{nsis,msi}`。**MSI 只被版本号的预发布段卡住**：
+  `0.8.0-beta5` 的 `beta5` 不是纯数字，wix 直接失败；`0.8.0`（2026-11-26 实测）x64 / x86 / arm64
+  三份 msi 都正常出包。
+  `vcvarsall.bat` 的架构参数与 Rust triple 不是一回事：x86 用 `x86`，**arm64 交叉环境用 `x64_arm64`**，
+  且 `LIB` 里 `.local/sdk-shim/<arch>` 必须排在最前。
+- **NSIS 安装器的退出码只有 0 和 1**（2026-11-26 核对生成的 `installer.nsi`）：模板全文没有
+  `SetErrorLevel`，成功是 0；section 内 `Abort`（旧版清理失败、WebView2 下载失败、写文件被拒）是 1；
+  **用户点「取消」同样是 0，和成功无法区分**。所以给 Microsoft Store 填「标准安装场景 / EXE 返回
+  代码值」时不能按 MSI 语义写 1602 / 1618 / 3010——那只是声明，安装器永远不返回；
+  它也没有单实例锁、从不要求重启。真要对齐标准码必须自定义 `bundle.windows.nsis.template`，
+  在 `.onUserAbort` 等处 `SetErrorLevel`（Tauri 的 hook 宏插不进这些位置）。
+- **Store 的「安装参数」填 `/S`**（NSIS 大小写敏感，`/s` 无效）。安装器实际支持 `/S` 静默、
+  `/P` 被动、`/NS` 不建快捷方式、`/UPDATE`、`/currentuser` / `/allusers`、`/R` + `/ARGS=`，
+  以及 `/D=<目录>`（必须是最后一个参数且不能加引号）。`INSTALLMODE` 默认就是 `both`
+  （`tauri.conf.json` 没写时 Tauri 也是 both），所以两个范围参数都在命令行生效。
 - **推送到 GitHub 时 schannel 报 `CRYPT_E_NO_REVOCATION_CHECK`**：这是网络侧吊销列表不可达，
   不是凭据问题。**不要关证书校验**；正解是换 TLS 后端并让它用系统根证书（校验照旧，只是不走 CRL）：
   ```powershell
@@ -317,11 +346,14 @@ node scripts/fix-artifact-integrity.mjs --check   # 只检查，有 Low 则退�
   `version` 与 `packages[""].version`、`src-tauri/tauri.conf.json` 的 `version`、
   `src-tauri/Cargo.toml` 的包版本，以及 `src-tauri/Cargo.lock` 内 `hcmcl-tauri` 的版本。
   出 beta16 时就漏了 `package-lock.json`（停在 beta12 两处），而 versionCode 由 `build.gradle.kts`
-  按版本名算 `8000 + beta*100`——只改前三个会出现包名与 code 对不上的错配。核对方式：
+  按版本名算 `8000 + beta*100`；**版本名里没有 `beta` 时它直接取 `tauri.conf.json` 的
+  `bundle.android.versionCode`**，所以 `0.8.0`（9800）/ `0.8.1-dev1`（9810）必须手动往大里改，
+  否则已装设备装不上。核对方式（把版本前缀换成本次的实际值）：
   ```bash
-  grep -n '"version": "0.8.0-beta' package.json package-lock.json
-  grep -n '^version = "0.8.0' src-tauri/Cargo.toml
+  grep -n '"version": "0.8.1-dev1"' package.json package-lock.json
+  grep -n '^version = "0.8.1-dev1"' src-tauri/Cargo.toml
   grep -n -A2 'name = "hcmcl-tauri"' src-tauri/Cargo.lock
+  grep -n '"version": "0.8.1-dev1"\|versionCode' src-tauri/tauri.conf.json
   ```
 - 提交前的最低验证：`npm run typecheck` + 全量 `node scripts/test-*.mjs` + `npm run build:tauri:web`。
 
@@ -378,7 +410,8 @@ node scripts/fix-artifact-integrity.mjs --check   # 只检查，有 Low 则退�
 
 - **联网核对只在启动时做一次**：`pages/customhome/probe.ts` 是模块级会话缓存，
   `ensureProbe(id)` 对同一 id 只发一次请求，失败也保持失败（`force` 只给用户点「重试」用）。
-  `components/HomepageSession.tsx` 挂在 `Shell` 根上触发，所以用户不打开主页也会在启动时核对。
+  `components/HomepageSession.tsx` 挂在 `Shell` 根上触发，所以用户不打开主页也会在启动时核对；
+  但**这一次排到首个空闲帧**（`runWhenIdle`），不挡首帧——`verify` 要读文件、算 SHA-256 再联网。
   **不要**把核对逻辑塞回主页组件——切页重挂会变成反复联网。
 - **不再弹全屏闸门**：运行期给 `HomepageGate` 传 `inline`，卡片直接渲染在内容区，状态由
   「启动游戏」导航图标呼吸（`index.css` 的 `.nav-blink`）表达。只有管理页（`HomepagePage`）仍用弹窗。
@@ -390,6 +423,91 @@ node scripts/fix-artifact-integrity.mjs --check   # 只检查，有 Low 则退�
   已锁定这条行为）；Unix 没有等价强制语义，只保证读的是同一 inode。
   **改主页的通道（`importFile`/`download`/`installNumbered`/`update`/`remove`）会先自动释放占用**，
   否则导入会报「文件正被占用」这种看起来像权限问题的错误。
+
+---
+
+### 4.7 启动链路：首帧骨架、并行加载与空闲帧排期
+
+「打开启动器」这一段由三层组成，改任何一层都要同时看另外两层，否则会把白闪或卡顿装回去。
+
+- **首帧底色 + 静态骨架都在 `src/renderer/index.html` 的内联 `<style>` 里**（Tauri CSP 的
+  `style-src` 含 `'unsafe-inline'`，所以能内联样式；但 `script-src` 只有 `'self'`，
+  **绝不能**内联 `<script>`——`test-tauri-html-policy.mjs` 会拦）。
+  `html { background-color }` 是 WebView 在样式表到达前的兜底底色；`#hc-boot` 是骨架本体。
+- **骨架只对主窗口显示**：`html[data-window='main'] #hc-boot` 才 `display:flex`，
+  `main.tsx` 在模块顶层按 `?window=` 参数写这个标记。受限窗口（`debug` / `devtools` / `hud` /
+  `danmaku` / `ai-hud` / `ai-ball` / `mini`）共用同一份 `index.html`，若骨架默认可见，
+  它们会在透明窗口里先闪一块不透明底板。
+- **淡出靠 `html[data-boot='ready']`，靠 CSS 隐藏，不做 DOM 查询**：`main.tsx` 在界面提交后
+  先 `await waitForBoot(3000)`（见下一条），再由双 `requestAnimationFrame` 置这个标记，
+  **失败分支也要置**，否则错误文字会被骨架盖住，表现成「永远转圈」。
+  不要改成 `document.getElementById('hc-boot').remove()`：`test-tauri-ai-hud.mjs` 的入口夹具里
+  `document` 只有 `getElementById('root')`，也不带 `documentElement`——写上就是新的假失败。
+  `main.tsx` 里所有访问 `document.documentElement` 的写法都必须能容忍它不存在。
+- **桥接安装是同步的，入口 chunk 要并行加载**：`installTauriApi()` 返回时 `window.api` 已在位，
+  所以 `bootstrap()` 在 `await installation.ready` 之前就发起 `import('./App')`（仅主窗口），
+  事件注册的 IPC 往返与入口 chunk 的解析重叠。**不要改回「先 await ready 再 import App」**——
+  那是白等一个往返。前提是 App 模块顶层只读 `window.api`、不依赖已注册的事件订阅。
+- **分清「看不见的杂活」与「用户看得见的检查」**：
+  - 看不见的（`installed:list`、`versionDirs:list` + `system:memory`、主页皮肤 / 披风补全）
+    一律 `runWhenIdle`（`src/renderer/src/startup.ts`），不占首帧；保留各自的 `alive` / 取消语义
+    （卸载后迟到回调不得 `setState`）。
+  - **看得见的检查一律 `bootStep()`，在载入遮罩里做完**（主页联网核对就是这一类）。
+    以前它走 `runWhenIdle`，结果是界面先出来、侧栏首页图标一边闪一边提示「正在核对」，
+    看起来像「界面都能用了却还没准备完」。现在 `bootStep(label)` 登记一步，
+    `main.tsx` 在撤骨架前 `await waitForBoot(3000)`，步骤做完才淡出。
+  - **上限是硬要求**：`waitForBoot` 超时后照常撤骨架，剩下的检查继续在后台跑。
+    不要把上限调大到「等网络一定返回」——那就是拿启动时间赌网络。
+  - **`markBootReady()` 只能放在 `App.tsx` 的 `Shell` 里**（`if (ready) markBootReady()`）。
+    React 的 effect 是**子先父后**，Shell 是 `HomepageSession` 的祖先，所以它标记就绪时
+    子组件登记的步骤已经在册；挪到 provider / `main.tsx` 就会变成「先判定没有步骤 →
+    遮罩撤掉 → 检查才开始」，正好退回要修的那个毛病。`scripts/test-boot-gate.mjs` 守着这条。
+  - 载入界面里的步骤文字写的是 `#hc-boot-task`（`index.html` 的静态节点），
+    由 `startup.ts` 直接写 `textContent`，**不要**为此把 React 挂到骨架上。
+- **除首页外，页面全部按需加载**（`pages/router.tsx` 的 `React.lazy`）。加页面时照抄现有写法：
+  `const XxxPage = lazy(() => import('./XxxPage').then((m) => ({ default: m.XxxPage })))`，
+  **保持变量名与导出名一致**，switch 分支里继续写 `return <XxxPage />` ——
+  `scripts/test-tauri-ai-chat.mjs` 对 `case 'chat': … return <AiChatPage />` 这段源码文本做正则断言，
+  改名或改写这一行会直接把测试判红。三条硬约束：
+  1. `HomeRoute`（内置主页 / 自定义主页）必须**静态导入**，它是首屏；
+  2. Suspense 边界收在 `router.tsx` 的 `withSuspense` 里，调用方（`App` / `Win10Desktop`）不要再包一层；
+  3. 不经过 `renderPage` 的实例管理页用导出的 `LazyInstanceManagePage`，两个入口都要包
+     `<Suspense fallback={<PageFallback />}>`。占位刻意留空（本地 chunk 只要几毫秒，画「加载中」反而闪）。
+  改完看 `npm run build:tauri:web` 的产物：`App-*.js` 应保持在 160 kB 量级，
+  若某次改动把它顶回 400 kB，说明有页面又被静态引入了。
+- **外壳是 `fixed inset-0`，不要改回 `relative h-full`**：外壳的定位基准必须是视口。
+  用 `h-full` 时它依赖「祖先高度链」，一旦 `#root` 或其上游多出顶部间距（实测 151 px，
+  来源与本机 Chromium 离线渲染不符，只在真实 WebView2 上出现），外壳会整体下移而高度仍按
+  100% 算 —— 顶部一条空白带、底部（含主页启动按钮）被裁掉；而 `.app-background` 是 fixed，
+  照样铺满视口，肉眼极难判断是「空了」还是「被推下去了」。
+  定位手法见 `plan.md` 第 60 节：把 `out/tauri` 拷出来注入假 `window.api`，
+  用 `chrome --headless --dump-dom` 把 `getBoundingClientRect()` 写进 `document.title` 直接读坐标；
+  再注入 `#root{padding-top:151px}` 做加压实验。
+
+---
+
+### 4.8 新增设置字段：TS 注册表与 Rust 默认值必须同时改
+
+`src/shared/settings.ts` 的 `SETTINGS_DEFS` 只是「前端认为有这些字段」。主进程另有一份口径：
+
+- `storage.rs` 的 `defaults()` 决定**允许哪些键**——`apply_settings` 遇到未注册的键直接返回
+  「未知设置字段」，整条 `settings:set` 失败（界面上表现为「点了没反应」）；
+- `validate_setting()` 决定**取值是否合法**：枚举 / 数字范围 / 布尔都必须在对应表里登记，
+  否则会落到「当字符串校验」的默认分支，数组和对象会被判非法；
+- `decode_state()` 从 `defaults()` 起算再叠加磁盘快照，所以**老配置缺新键会自动补默认值，不需要迁移**。
+
+因此新增一项设置的顺序是：`types.ts` 加字段 → `SETTINGS_DEFS` 加 `default`（+ 可选 `ui`）→
+`storage.rs` 的 `defaults()` 加同名键 → `validate_setting()` / `BOOLEAN_FIELDS` 加校验 →
+（`control: 'custom'` 时）`rows.tsx` 的 `CUSTOM_ROWS` 登记组件。少任何一步都不会在编译期报错。
+
+背景色自定义（`plan.md` 第 61 节）的三个额外约定：
+
+- **`customBackgroundColors` 固定 3 槽位**，不按 `customBackgroundCount` 截断数组 ——
+  截断式存储会让用户 1 → 2 → 1 色来回切时必须重挑颜色；Rust 侧要求恰好 3 个 `#RRGGBB`。
+- **生效判定只有 `customBackgroundBlockedBy()` 一个口**（皮肤接管背景 / 有壁纸 / 极简模式）。
+  设置页置灰与 `store.tsx` 是否下发 `data-custom-bg` 都走它，不要在别处再写一份判断。
+- **CSS 规则必须排在壁纸规则之前**：`:root[data-theme][data-skin][data-custom-bg='on'] .app-background`
+  与壁纸规则特异性相同，同特异性靠来源顺序决胜，壁纸必须能压住自定义色。
 
 ---
 

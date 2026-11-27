@@ -9,6 +9,111 @@
       content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https: http:; font-src 'self' data:; connect-src 'self' https: http: ws: wss:;"
     />
     <title>HungerCat MineCraft Launcher</title>
+    <!--
+      启动骨架（首帧占位 + 底色兜底）。
+
+      两件事：
+        1) `html` 上的底色让 WebView 在样式表解析完成之前就有正确的深色，
+           否则 Windows WebView2 会先画一帧白底，再被 `.app-background` 盖住 —— 就是那道白闪；
+        2) `#hc-boot` 是静态骨架，JS 不必等 React 挂载就能画出品牌字与进度条。
+
+      只对主窗口生效：受限窗口（AI HUD / 弹幕 / 小窗 / 日志）共用同一份 index.html，
+      它们在 `<html>` 上没有 `data-window="main"`，骨架默认 `display:none`，
+      不会在透明窗口里闪出一块底板。挂载完成后由 `main.tsx` 写 `data-boot="ready"` 淡出；
+      `pointer-events:none` 保证即使淡出过程中也不会挡住点击。
+    -->
+    <style>
+      html {
+        background-color: #04060f;
+      }
+      html[data-theme='light'] {
+        background-color: #eef1fa;
+      }
+      #hc-boot {
+        display: none;
+      }
+      html[data-window='main'] #hc-boot {
+        position: fixed;
+        inset: 0;
+        z-index: 2147483000;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 16px;
+        pointer-events: none;
+        opacity: 1;
+        background: linear-gradient(160deg, #04060f 0%, #0b1330 45%, #10101c 100%);
+        color: rgba(255, 255, 255, 0.9);
+        font-family: 'Segoe UI Variable', 'Segoe UI', 'Microsoft YaHei UI', system-ui, sans-serif;
+        transition: opacity 220ms ease-out;
+      }
+      html[data-boot='ready'] #hc-boot {
+        opacity: 0;
+        visibility: hidden;
+      }
+      #hc-boot .hc-boot-mark {
+        font-size: 15px;
+        font-weight: 600;
+        letter-spacing: 0.16em;
+      }
+      #hc-boot .hc-boot-sub {
+        font-size: 10px;
+        letter-spacing: 0.32em;
+        opacity: 0.42;
+      }
+      #hc-boot .hc-boot-bar {
+        position: relative;
+        width: 132px;
+        height: 3px;
+        overflow: hidden;
+        border-radius: 999px;
+        background: rgba(255, 255, 255, 0.12);
+      }
+      /* 当前启动步骤（如「正在校验主页安全性…」）。
+         由 startup.ts 的 bootStep 直接写 textContent 与 data-on，不经过 React：
+         骨架本身是静态 HTML，不该为了改一行字把界面树拉起来。
+         默认空且 opacity:0，最小高度预留出来，避免出现文字时整块骨架跳动。 */
+      #hc-boot .hc-boot-task {
+        min-height: 14px;
+        font-size: 11px;
+        letter-spacing: 0.06em;
+        color: rgba(255, 255, 255, 0.55);
+        opacity: 0;
+        transition: opacity 160ms ease-out;
+      }
+      #hc-boot .hc-boot-task[data-on='true'] {
+        opacity: 1;
+      }
+      #hc-boot .hc-boot-bar span {
+        position: absolute;
+        inset: 0;
+        width: 42%;
+        border-radius: inherit;
+        background: linear-gradient(
+          90deg,
+          rgba(255, 255, 255, 0) 0%,
+          rgba(255, 255, 255, 0.85) 50%,
+          rgba(255, 255, 255, 0) 100%
+        );
+        animation: hc-boot-sweep 1.05s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+      }
+      @keyframes hc-boot-sweep {
+        0% {
+          transform: translateX(-120%);
+        }
+        100% {
+          transform: translateX(320%);
+        }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        #hc-boot .hc-boot-bar span {
+          width: 100%;
+          opacity: 0.5;
+          animation: none;
+        }
+      }
+    </style>
   </head>
   <body>
     <!-- 液态玻璃折射滤镜（来源：Apple Liquid Glass 演示的 SVG 方案） -->
@@ -30,6 +135,13 @@
         </filter>
       </defs>
     </svg>
+    <!-- 首帧骨架：纯静态，不依赖任何脚本；挂载完成后由 main.tsx 置 data-boot="ready" 淡出。 -->
+    <div id="hc-boot" aria-hidden="true">
+      <div class="hc-boot-mark">HUNGER CAT</div>
+      <div class="hc-boot-sub">MINECRAFT LAUNCHER</div>
+      <div class="hc-boot-bar"><span></span></div>
+      <div class="hc-boot-task" id="hc-boot-task"></div>
+    </div>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>

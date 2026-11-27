@@ -109,7 +109,9 @@ CustomHomePage（组合根）
 | 文件 | 职责 |
 | --- | --- |
 | [App.tsx](../src/renderer/src/App.tsx) | 应用外壳：标题栏、导航（侧栏 / 顶栏）、页面切换、全局弹窗编排 |
-| [store.tsx](../src/renderer/src/store.tsx) | 全局状态（设置 / 账号 / 公告 / 更新提示等），`useApp()` 的提供者 |
+| [store.tsx](../src/renderer/src/store.tsx) | 全局状态（设置 / 账号 / 公告 / 更新提示等），`useApp()` 的提供者；外观类设置的下发口：`--accent-user`、`data-bg`、`data-wallpaper` / `--wallpaper-image`、`--custom-bg` / `data-custom-bg` |
 | [runtime.tsx](../src/renderer/src/runtime.tsx) | 运行时状态（下载任务等），`useRuntime()` 的提供者 |
-| [pages/router.tsx](../src/renderer/src/pages/router.tsx) | 页面路由表 |
-| [startup.ts](../src/renderer/src/startup.ts) | `runWhenIdle`：把非首屏必需的联网 / 扫描推迟到首个空闲帧，压低启动瞬时占用 |
+| [pages/router.tsx](../src/renderer/src/pages/router.tsx) | 页面路由表：除首页外均为 `React.lazy` 按需加载，Suspense 边界收在本文件（`withSuspense` / `PageFallback`） |
+| [startup.ts](../src/renderer/src/startup.ts) | 启动期两件相反的事：`runWhenIdle` 把看不见的联网 / 扫描推迟到首个空闲帧；`bootStep` / `markBootReady` / `waitForBoot` 把**看得见的**启动检查（主页核对）压在载入遮罩背后做完再露界面 |
+| [main.tsx](../src/renderer/src/main.tsx) | 入口：安装桥接后并行加载业务入口，挂载完成写 `data-boot='ready'` 淡出 `index.html` 里的首帧骨架 |
+| [index.html](../src/renderer/index.html) | 共享入口：首帧兜底底色与静态启动骨架（仅 `data-window='main'` 显示），另有液态玻璃滤镜定义 |

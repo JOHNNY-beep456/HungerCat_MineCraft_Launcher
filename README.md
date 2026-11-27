@@ -2,24 +2,56 @@
 
 # HungerCat MineCraft Launcher
 
-跨 **Windows / macOS** 的 Minecraft Java 版启动器，功能对标 **现有开源启动器**，界面采用 **Apple Design** 风格，微软登录使用**免申请的 OAuth 设备代码流**。
+基于 **Tauri v2 + Rust + React** 的 Minecraft Java 版启动器，覆盖 **Windows / macOS / Linux / Android**，界面采用 **Apple Design** 风格，微软登录使用**免申请的 OAuth 设备代码流**。
 
 ---
 
-## 当前版本：0.7.6-dev2
+## 当前版本：0.8.2
 
-- 新增 **账号导入**：在「账号 → 导入账号」选择 PCL2、HMCL 或官方启动器，先预览名称、类型和状态，再导入所选账号。
-- 支持 HMCL 新旧账号格式及新版配套私密数据文件；PCL2 可读取注册表导出文件，Windows 上也可只读访问本机当前用户的账号设置。
-- 在线账号导入时验证角色身份，已有 UUID 跳过；缺少源授权参数的账号仅临时可用或要求重新登录。普通 PCL 发行版的加密数据不能保证恢复，详见 [账号导入说明](./docs/account-import.md)。
-- 保留已有 **PCL2 主题**、全部业务功能和导航位置设置，无需 WPF 组件或 .NET Framework。
+正式版：新增**背景色自定义**，把启动检查收进载入界面，并把三端出包全部交给 GitHub Actions。
 
-本次更新源码版本，尚未生成 0.7.6-dev2 安装包；公开发布以 [Releases](https://github.com/JOHNNY-beep456/HungerCat_MineCraft_Launcher/releases) 中实际上传的文件为准。本机 Electron 存在启动即退出的环境限制，账号导入界面和真实账号端到端迁移尚未实机验证。
+- **启动检查在载入界面里完成**：主页安全联网核对这类「启动时只做一次」的操作，现在由载入
+  遮罩等它结束（最长 3 秒）再露出界面，遮罩上会显示「正在校验主页安全性…」。
+  以前是界面先出来、侧栏首页图标再一边闪一边提示「正在核对」，看起来像还没准备完。
+  超过 3 秒会先放行，检查在后台继续（结果照常更新）。
+- **背景色自定义**（设置 → 通用 → 自定义背景色）：可选 1 / 2 / 3 种颜色 ——
+  1 种为纯色，2 种为渐变并可选择**纵向 / 横向 / 斜向**，3 种为三色渐变，带实时预览。
+  **仅在背景色真正生效时可调**：界面主题固定了背景、已设置自定义壁纸、或处于极简模式时，
+  子控件会置灰并写明原因（总开关仍可关掉，避免卡在「开着但不生效」的死角）。
+- **修复外壳整体下移**：主页曾出现「标题栏下一条空白带 + 启动按钮消失」。原因是外壳用
+  `h-full` 依赖祖先高度链，被上游间距推下去的同时高度仍按 100% 计算，底部正好被裁掉。
+  现在外壳固定为 `fixed inset-0`（钉在视口上），不再受任何祖先影响。
+- **启动提速**：首帧静态骨架（不再闪白底）、入口 chunk 并行加载、页面按需加载
+  （`App-*.js` 437 kB → 164 kB）、非首屏请求改到首个空闲帧。
+- **全平台产物由 `build-tauri` 工作流构建**（推 `v*` 标签触发，汇总成 Draft Release）：
+  - Windows：`.exe`（NSIS）与 `.msi`，各 x64 / x86 / arm64；`.msix` 三架构（自签名，附 `.cer`）
+  - Linux：`.deb`（x86_64 / aarch64 / armv7l）、`.AppImage`（x86_64 / aarch64）
+  - macOS：`.dmg`（Intel / Apple Silicon），**未签名**，首次打开需右键 →「打开」
+- **版本号**：`0.8.2`（Android `versionCode` 9850）。
+
+> MSIX 由 `scripts/package-msix.ps1` 调用 Windows SDK 的 `makeappx` 封装（Tauri 只支持 NSIS / MSI）：
+> 安装前需信任随包的开发证书；上架 Microsoft Store 时要把 `Publisher` 换成 Partner Center 的标识。
+> 各平台的验证边界见 [`plan.md`](./plan.md) 第 58–63 节。
+
+### 已发布的 0.8.0（首个正式版）
+
+线上正式版仍是 0.8.0，重点是把桌面三端的安装包补齐。
+
+- **Windows**：x64 / x86 / ARM64，各提供 `.exe`（NSIS）与 `.msi`。
+- **Linux**：x86_64 / aarch64 的 `.deb` 与 `.AppImage`；armv7l 的 `.deb`（交叉编译）。
+- **macOS**：Intel 与 Apple Silicon 各一个 `.dmg`，**未签名**，首次打开需右键 →「打开」。
+- **Android**：完整启动链路、可自定义的触控布局、多 Java 运行时（17 内置 / 21 / 25 下载）；APK 需自行对齐与签名，未随 0.8.0 出包。
+
+安装包以 [Releases](https://github.com/JOHNNY-beep456/HungerCat_MineCraft_Launcher/releases) 中实际上传的文件为准。
+只有 Windows x64 在本机做过安装与启动验证；x86 / ARM64、Linux armv7l、macOS 与 Android 均为构建层验证，见 [`plan.md`](./plan.md) 第 56 节。
+
+Electron 版已归档到 `HCMCL_old/`（仅本地保留、不入库），不再随根项目构建。
 
 ## 功能特性
 
 | 模块 | 说明 |
 | --- | --- |
-| 🪟 跨平台 | Electron + electron-builder，同时输出 Windows `nsis` 与 macOS `dmg` |
+| 🪟 多平台 | Tauri v2 + Rust 内核，输出 Windows `NSIS`/`MSI`、Linux `deb`/`AppImage`、macOS `dmg` |
 | 🎨 Apple Design | 液态玻璃材质、圆角、弹簧动画、动态渐变壁纸、浅色/深色/跟随系统主题 |
 | 🔐 微软登录 | **设备代码流**，使用公共 client_id |
 | 🌐 第三方登录 | Yggdrasil 外置登录（LittleSkin 等），支持自定义认证服务器地址 |
@@ -38,42 +70,43 @@
 | 🚀 国内加速 | 下载镜像可在设置中切换：Mojang 官方 / BMCLAPI 国内镜像（资源、库、客户端 jar 全覆盖） |
 | ⚙️ 设置 | 主题、内存、镜像、并发数、Java 路径、游戏目录等持久化 |
 | 🎵 网易云歌词浮层 | 实验性（默认关闭）：读取系统媒体会话里网易云音乐的「正在播放」，在游戏内 HUD 浮层上逐句显示歌词（仅 Windows；歌词经网易云接口实时获取） |
+| 📱 Android | 进程内 JNI 启动 JRE（17 内置，21/25 按清单下载），LWJGL for Android 图形桥；可自定义触控布局（摇杆 / 键盘 / 陀螺仪）、游戏内输入法、运行时管理 |
+| 🧱 覆盖安装 | Windows NSIS 可识别并清理旧 Electron 版与其它版本，复用原安装目录、保留用户数据 |
 
 ## 技术栈
 
-- **桌面框架**：Electron 33（主进程 Node.js 负责下载/校验/启动）
-- **构建**：electron-vite（Vite 5 + TypeScript）
-- **界面**：React 18 + Tailwind CSS 4 + `motion`（弹簧动画）
-- **打包**：electron-builder
+- **桌面框架**：Tauri v2（Rust 后端 + 系统 WebView 前端）
+- **构建**：Vite 5 + TypeScript（`vite.tauri.config.mts`）
+- **界面**：React 18 + Tailwind CSS 4 + `motion`（弹簧动画）；主样式集中在单文件 `src/renderer/src/index.css`
+- **打包**：Tauri Bundler（NSIS / MSI / deb / AppImage / dmg）+ Gradle（Android）
+- **移动端**：进程内 JVM（JNI）+ LWJGL for Android + 自研 Kotlin 触控层（`HCMCL PE/`）
 - **第三方认证**：Yggdrasil API + authlib-injector（自动下载并注入 JVM 参数）
 - **头像服务**：LittleSkin 官方头像接口 `littleskin.cn/avatar/player/{name}`（含皮肤纹理裁切兜底）
 
 ## 目录结构
 
 ```
+src-tauri/
+├── src/                    # Rust 后端（组合根：lib.rs / main.rs）
+│   ├── runtime.rs          # 启动编排（桌面 spawn 子进程 / Android 进程内 JVM）
+│   ├── downloads.rs        # 下载与校验
+│   ├── auth.rs             # 微软登录（设备代码流）
+│   ├── account_import.rs   # PCL2 / HMCL / 官方启动器账号导入
+│   ├── java_runtime.rs     # Java 检测与多运行时
+│   ├── android_host.rs     # Android Activity 与图形桥（JNI）
+│   ├── android_jvm.rs      # 进程内 HotSpot 与输入事件
+│   ├── android_runtime.rs  # Android Java 运行时下载与校验
+│   ├── homepage/           # 自定义主页与会话
+│   ├── modpack/            # 整合包导入导出
+│   ├── multiplayer/        # 联机（大厅 / 信令 / 语音中继）
+│   └── services.rs         # 发布清单与更新通道选择
+├── installer-hooks.nsh     # NSIS 覆盖安装与旧版清理钩子
+└── gen/android/            # Android Gradle 工程
 src/
-├── main/                 # 主进程（后端 / 编排）
-│   ├── index.ts          # 组合根：窗口、生命周期、托盘、IPC 插桩
-│   ├── handlers/         # IPC 处理器（按域拆分：versions / mods / homepage / window …）
-│   ├── network/          # 网络进程（utilityProcess）：专职网络 IO
-│   ├── multiplayer/      # 联机（EasyTier / 大厅 / 信令 / 语音中继）
-│   ├── netease/          # 网易云歌词浮层（系统媒体会话采样 + 歌词接口 + 逐句同步）
-│   ├── ai/               # AI 助手（对话编排 / 工具授权 / 悬浮球）
-│   ├── downloader.ts     # 下载引擎（资源/库/客户端/SHA1）
-│   ├── launcher.ts       # JVM 参数构建 + 子进程启动
-│   ├── store.ts          # 设置/账号持久化
-│   └── …                 # auth / yggdrasil / versions / loaders / forge / modrinth /
-│                         # modpack / manage / resources / server / mirror / wallpaper …
-├── preload/index.ts      # contextBridge 安全桥接（window.api）
-├── shared/               # 跨进程契约（types.ts 的 LauncherApi、net-protocol.ts …）
-└── renderer/             # 渲染进程（React）
-    └── src/
-        ├── components/   # 通用组件与弹窗
-        ├── pages/        # 页面（settings / customhome / instance-manage 已按板块拆目录）
-        ├── i18n/         # 多语言（locales/<语言>/<板块>.json）
-        ├── store.tsx     # 设置/账号/内存状态
-        ├── runtime.tsx   # 下载/启动运行状态
-        └── assets/       # logo 等静态资源
+├── renderer/src/           # React 前端（pages / components / i18n / index.css）
+├── shared/                 # 跨端类型契约
+└── tauri/                  # 前端调用 Rust 命令的 bridge
+HCMCL PE/                   # Android 自有源码（引导 Java + 手写 Kotlin）
 ```
 
 > 架构、各板块职责、i18n 规范与构建调试流程详见 [docs/](./docs/README.md)。
@@ -84,54 +117,57 @@ src/
 # 安装依赖
 npm install
 
-# 开发模式（热更新）
+# 开发模式（Tauri，热更新）
 npm run dev
 
-# 运行已构建的产物
-npm run start
-
-# 类型检查
+# 类型检查（web tsconfig）
 npm run typecheck
 
-# 构建产物到 out/
-npm run build
+# 前端构建到 out/tauri
+npm run build:tauri:web
 
-# Windows x64：原生下载器、EasyTier、安装版和便携版
-node scripts/build-all.mjs --platform win --arch x64
-
-# 已安装依赖时可跳过安装步骤
-node scripts/build-all.mjs --platform win --arch x64 --skip-install
-
-# Windows 全架构（arm64 原生下载器不可用时降级为 TS 下载器）
-node scripts/build-all.mjs --platform win --arch all
-
-# 仅对当前构建环境执行 Electron 打包
-npm run dist:win
-
-# 自动回归（不包含需真实媒体会话的 SMTC live 检查）
-node scripts/verify-publication.mjs
-
-# 检查 Windows 产物完整性标签
-node scripts/fix-artifact-integrity.mjs --check
+# 当前平台完整构建 + 打包（Windows 出 NSIS + MSI）
+npm run build:tauri
 ```
 
-> 项目已内置 `.npmrc`，Electron 与 electron-builder 二进制默认从
-> **npmmirror 国内镜像**（`npmmirror.com/mirrors/`）下载，无需直连 GitHub。
-> 若仍处于 TLS 拦截代理环境导致证书校验失败，可再设置
-> `$env:NODE_OPTIONS="--use-system-ca"` 后重新 `npm install`。
+### Windows（本地三架构）
 
-Windows 打包所需的 NSIS、winCodeSign 等组件同样走
-`electron_builder_binaries_mirror`（已在 `.npmrc` 配置）。若需临时切换镜像，可在命令前设置环境变量：
+需要 Visual Studio Build Tools；本机缺 `combase.lib` 时用 `.local/sdk-shim` 垫片补齐，
+ARM64 还要 LLVM 的 `clang`：
 
-```bash
-# Windows (PowerShell)
-$env:ELECTRON_MIRROR="https://npmmirror.com/mirrors/electron/"
-$env:ELECTRON_BUILDER_BINARIES_MIRROR="https://npmmirror.com/mirrors/electron-builder-binaries/"
+```powershell
+$env:NODE_OPTIONS = ''          # 避开沙箱删除钩子，否则 vite 清 out/tauri 会超时
 
-# macOS / Linux
-export ELECTRON_MIRROR="https://npmmirror.com/mirrors/electron/"
-export ELECTRON_BUILDER_BINARIES_MIRROR="https://npmmirror.com/mirrors/electron-builder-binaries/"
+npx tauri build --bundles nsis,msi                                     # x64
+npx tauri build --target i686-pc-windows-msvc    --bundles nsis,msi    # x86
+npx tauri build --target aarch64-pc-windows-msvc --bundles nsis,msi    # ARM64
 ```
+
+产物在 `src-tauri/target/<triple>/release/bundle/{nsis,msi}`（x64 不带 triple 前缀）。
+**MSI 要求版本号没有非数字预发布段**：`0.8.0` 能出包，`0.8.0-beta12` 与 `0.8.1-dev1` 都会被 wix 拒绝。
+
+### Linux / macOS（GitHub Actions）
+
+由 `.github/workflows/build-tauri.yml` 构建，推送 `v*` 标签触发，产物汇总到草稿 Release：
+
+- Linux：x86_64 / aarch64 出 `deb` + `AppImage`，armv7l 交叉编译出 `deb`
+- macOS：Intel 与 Apple Silicon 各一个 `dmg`（未签名）
+
+### Android
+
+```powershell
+$env:ANDROID_HOME='F:\Android\Sdk'
+$env:ANDROID_SDK_ROOT=$env:ANDROID_HOME
+$env:NDK_HOME="$env:ANDROID_HOME\ndk\27.2.12479018"
+$env:NODE_OPTIONS=''
+
+npm run android:runtime      # 先把 JRE 原生库与 LWJGL for Android 装进 jniLibs/assets
+npm run android:build:arm64  # 或 android:build:x86
+```
+
+`tauri android build` 出的是未签名 APK，需要自行 `zipalign` + `apksigner`；同一应用升级必须沿用同一签名。
+
+> SDK 垫片、证书、交叉编译这些环境坑都记在 [`AGENTS.md`](./AGENTS.md)。
 
 ## 微软登录原理（免申请）
 
@@ -142,7 +178,7 @@ export ELECTRON_BUILDER_BINARIES_MIRROR="https://npmmirror.com/mirrors/electron-
 3. 轮询 `login.live.com/oauth20_token.srf`（携带设备码响应返回的 Cookie）取得微软访问令牌
 4. 令牌链：**Xbox Live (XBL) → XSTS → Minecraft 服务 → 玩家档案**
 
-官方 Minecraft Launcher 的 client_id `000000004C12AE6F` 为等价备选方案，在 `src/main/auth.ts` 中可一行切换。
+官方 Minecraft Launcher 的 client_id `000000004C12AE6F` 为等价备选方案，在 `src-tauri/src/auth.rs` 中可一行切换。
 
 ## 第三方登录原理（Yggdrasil）
 
@@ -162,6 +198,8 @@ export ELECTRON_BUILDER_BINARIES_MIRROR="https://npmmirror.com/mirrors/electron-
 - Forge / NeoForge 通过运行官方安装器（需 Java）生成版本；支持现代版本（1.13+），旧版（≤1.12.2）的 Swing 安装器暂不支持无头安装。
 - 离线模式仅用于单机游戏，无法进入开启正版验证的服务器。
 - 内存分配上限由系统剩余可用内存动态限制，避免启动时预留内存超出系统内存导致卡死。
+- **Android 版**：图形层只有 GL4ES 一套转发，没有渲染器切换与分辨率缩放；摇杆输出的是离散方向键组合（图形层没有轴通道，不冒充模拟量）；Forge / NeoForge / OptiFine 依赖桌面 `java -jar` 安装器语义，手机上不提供安装入口；退出游戏后的二次启动尚未验证。
+- **Windows 覆盖安装**：NSIS 安装器会识别旧 Electron 版与其它版本目录，复用原安装目录并保留 `%APPDATA%\HungerCatLauncher` 数据；卸载或清理失败时中止安装，不会形成两版并存。
 
 ## License
 

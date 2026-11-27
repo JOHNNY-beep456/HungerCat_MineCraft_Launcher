@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { Suspense, useEffect, useRef, useState } from 'react'
 import { AnimatePresence, MotionConfig, motion } from 'motion/react'
 import { effectiveNavPosition } from '@shared/settings'
 import { AppProvider, useApp } from './store'
@@ -22,12 +22,12 @@ import { AiToolPrompt } from './components/AiToolPrompt'
 import { Win10Desktop } from './components/Win10Desktop'
 import { FileManager } from './components/FileManager'
 import { Button, Icon, Markdown, ProgressBar } from './components/ui'
-import { renderPage, type ResourcePreset } from './pages/router'
-import { InstanceManagePage } from './pages/InstanceManagePage'
+import { renderPage, LazyInstanceManagePage, PageFallback, type ResourcePreset } from './pages/router'
 import { bakeBlobTextures, clearBlobTextures } from './blob-texture'
+import { markBootReady } from './startup'
 
 function Shell(): JSX.Element {
-  const { settings, t, reloadAccounts, reloadSettings, securityAlert, clearSecurityAlert, fileManagerPath, closeFileManager, launcherUpdateNotice, dismissLauncherUpdateNotice, needAgreement, announcements, dismissAnnouncements, navRequest } = useApp()
+  const { settings, ready, t, reloadAccounts, reloadSettings, securityAlert, clearSecurityAlert, fileManagerPath, closeFileManager, launcherUpdateNotice, dismissLauncherUpdateNotice, needAgreement, announcements, dismissAnnouncements, navRequest } = useApp()
   const { launchReport, analyzingReport, dismissLaunchReport } = useRuntime()
   const [page, setPage] = useState<PageId>('home')
   const [managingId, setManagingId] = useState<string | null>(null)
@@ -43,6 +43,17 @@ function Shell(): JSX.Element {
   useEffect(() => {
     if (!needAgreement && !settings.onboardingDone) setOnboardingOpen(true)
   }, [needAgreement, settings.onboardingDone])
+
+  /**
+   * 设置就绪 = 启动装配阶段结束：告诉载入骨架「可以开始判定何时撤掉了」。
+   *
+   * 必须放在 Shell（`HomepageSession` 的祖先）里：React 的 effect 是**子先父后**，
+   * 所以这一步执行时，子组件登记的启动检查（主页核对等）已经在册，不会出现
+   * 「父组件先判定为空 → 骨架撤掉 → 检查才开始」的竞态。反过来放在 provider 层就不成立。
+   */
+  useEffect(() => {
+    if (ready) markBootReady()
+  }, [ready])
 
   const navigate = (p: PageId): void => {
     setManagingId(null)
@@ -205,7 +216,13 @@ function Shell(): JSX.Element {
 
   return (
     <MotionConfig reducedMotion={settings.reducedMotion ? 'always' : 'user'}>
-      <div className="relative h-full">
+      {/* 外壳直接钉在视口上（fixed inset-0），不用 `h-full` 依赖祖先的高度链。
+          踩过的坑：一旦 `#root` 或被注入的任何祖先多出上内边距 / 前置元素（实测 151px），
+          `h-full` 的外壳会被整体推下去，而高度仍按 100% 算 —— 结果是顶部一条空白带、
+          底部（启动按钮所在的那一截）被裁掉。`.app-background` 是 fixed，会照样铺满，
+          所以这条空白带看起来像正常背景，很难第一眼发现。
+          fixed 的定位基准是视口，上面的偏移与前置元素都被绕开；窗口尺寸变化照常生效。 */}
+      <div className="fixed inset-0">
         <HomepageSession />
         {desktop ? (
           <Win10Desktop />
@@ -257,11 +274,14 @@ function Shell(): JSX.Element {
                   >
                     <div className="h-full">
                       {managingId ? (
-                        <InstanceManagePage
-                          versionId={managingId}
-                          onBack={() => setManagingId(null)}
-                          onRename={setManagingId}
-                        />
+                        // 实例管理整页同样是懒加载（不经过 renderPage），边界与页面共用一份占位。
+                        <Suspense fallback={<PageFallback />}>
+                          <LazyInstanceManagePage
+                            versionId={managingId}
+                            onBack={() => setManagingId(null)}
+                            onRename={setManagingId}
+                          />
+                        </Suspense>
                       ) : (
                         renderPage(page, setManagingId, resourcePreset, navigate, settings.enableMultiplayer, settings.aiEnabled)
                       )}

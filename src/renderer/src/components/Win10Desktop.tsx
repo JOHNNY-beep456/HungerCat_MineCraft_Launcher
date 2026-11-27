@@ -11,14 +11,13 @@
 // 与「液态玻璃」皮肤互斥：设置里两者共用一个 experimental 字段。
 // ---------------------------------------------------------------------------
 
-import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
 // NAV 用于查图标 / 标题元数据（不受可见性影响）；visibleNav 用于实际渲染哪些入口。
 import { NAV, visibleNav, type PageId } from './Sidebar'
 import { Avatar, Icon } from './ui'
 import { activeGameDir, useApp } from '../store'
 import { useRuntime } from '../runtime'
-import { renderPage } from '../pages/router'
-import { InstanceManagePage } from '../pages/InstanceManagePage'
+import { LazyInstanceManagePage, PageFallback, renderPage } from '../pages/router'
 import { FileManager } from './FileManager'
 
 /** 启动器 logo 的 URL（与 TitleBar 同一份文件；理由见该处注释）。 */
@@ -450,11 +449,13 @@ export function Win10Desktop(): JSX.Element {
               // 自实现资源管理器：key 用当前目录，换目录时整块重挂载，内部状态干净
               <FileManager key={w.filePath} initialPath={w.filePath} editOnDoubleClick />
             ) : w.managingId ? (
-              <InstanceManagePage
-                versionId={w.managingId}
-                onBack={() => closeWin(w.key)}
-                onRename={(id) => renameManage(w.key, id)}
-              />
+              <Suspense fallback={<PageFallback />}>
+                <LazyInstanceManagePage
+                  versionId={w.managingId}
+                  onBack={() => closeWin(w.key)}
+                  onRename={(id) => renameManage(w.key, id)}
+                />
+              </Suspense>
             ) : (
               renderPage(w.page, openManage, null, undefined, settings.enableMultiplayer, settings.aiEnabled)
             )}

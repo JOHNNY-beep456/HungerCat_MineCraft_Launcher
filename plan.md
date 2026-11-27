@@ -1,6 +1,7 @@
 # HCMCL / HCMCLL 进度与接续计划
 
-> 更新时间：2026-11-25，Asia/Shanghai（UTC+08:00）。此前迁移、真实 Electron 覆盖安装及用户数据补迁记录见第 1–29 节；HUD 阴影、AI 悬浮球与 `0.8.0-dev2` 见第 30 节；`0.8.0-dev3` 的三项修复见第 33–35 节；实例遍历预算与资源扫描降级、液态玻璃与中文安装器、后端三语文案、小文件下载与安装白名单、全链路下载瓶颈、可更新分栏批量更新、首次入库与三系统打包见第 36–42 节；**Android 全链路见第 43–54 节**（43 打通与 x86 出包、44 路径误判、47 平台边界、48 内置运行时、49 图形层、50 触控层、51 移动端启动尺寸、52 卡住可观测性与运行时调研、53 多 Java 运行时、54 启动参数与布局管理），**当前版本 `0.8.0`（versionCode 9800）**。完整原生窗口、DPI、鼠标穿透、socket、组网、真实账号与游戏行为仍未验收；未执行发布、提交或推送。当前根项目版本以 [package.json](<package.json>) 为准。
+> 更新时间：2026-11-27，Asia/Shanghai（UTC+08:00）。此前迁移、真实 Electron 覆盖安装及用户数据补迁记录见第 1–29 节；HUD 阴影、AI 悬浮球与 `0.8.0-dev2` 见第 30 节；`0.8.0-dev3` 的三项修复见第 33–35 节；实例遍历预算与资源扫描降级、液态玻璃与中文安装器、后端三语文案、小文件下载与安装白名单、全链路下载瓶颈、可更新分栏批量更新、首次入库与三系统打包见第 36–42 节；**Android 全链路见第 43–55 节**（43 打通与 x86 出包、44 路径误判、47 平台边界、48 内置运行时、49 图形层、50 触控层、51 移动端启动尺寸、52 卡住可观测性与运行时调研、53 多 Java 运行时、54 启动参数与布局管理、55 游戏内输入与运行时管理）；**0.8.0 正式版与三平台打包见第 56 节**（本节另有同号「PE 版独立目录」小节，编号重复未调整），Store 提交参数与文档同步见第 57 节，**启动速度优化与 `0.8.1-dev1` 见第 58 节**，
+页面级按需加载与 Windows x64 出包见第 59 节，外壳整体下移的显示修复（`0.8.1-dev2`）见第 60 节，**背景色自定义与 `0.8.2-dev1` 见第 61 节，启动检查移入载入界面（`0.8.2-dev2`）见第 62 节，`0.8.2` 正式版与全平台 CI / MSIX 流水线见第 63 节**。**当前版本 `0.8.2`（versionCode 9850）**；线上草稿 Release 仍对应 `0.8.0`（13 个产物），`v0.8.2` 标签会由 CI 重新生成草稿，**尚未点「发布」**。完整原生窗口、DPI、鼠标穿透、socket、组网、真实账号与游戏行为仍未验收。当前根项目版本以 [package.json](<package.json>) 为准。
 >
 > **整体仍在迁移与补齐阶段，尚未完成全功能验收。** 下文分别标明源码落盘、本地测试通过、平台限制和未验证事项，不以文件存在、分支数量或旧包代替产品完成。
 
@@ -1098,6 +1099,45 @@ macOS 两架构推送 GitHub 工作流」。
 - Linux aarch64 的 AppImage 与 macOS 两个 dmg 同样未在真机启动过。
 - macOS 产物未签名，首次打开需右键 →「打开」（历史限制，本轮未改）。
 
+## 57. Store 提交参数核对与文档同步（2026-11-27，UTC+08:00）
+
+用户在 Microsoft Store 后台填写「标准安装场景 / EXE 返回代码值」与「安装参数」，需要给出与真实安装器
+一致的值，而不是照 MSI 语义填一套。
+
+### 安装参数
+
+- 「安装参数」填 **`/S`**（NSIS 大小写敏感，`/s` 不生效）。
+- 安装器实际支持：`/S`、`/P`、`/NS`、`/UPDATE`、`/currentuser`、`/allusers`、`/R` + `/ARGS=`，
+  以及 `/D=<目录>`（必须是最后一个参数且不能加引号）。`INSTALLMODE` 的编译值是 `both`，
+  所以两个范围参数都能在命令行生效。
+- 依据是生成出来的 `target/release/nsis/x64/installer.nsi` 的 `.onInit` / `.onInstSuccess`，
+  以及模板里的 `MultiUser.nsh`。
+
+### 退出码
+
+- 生成的 `installer.nsi` 全文没有 `SetErrorLevel`：成功是 0，section 内 `Abort` 是 1，
+  **用户点「取消」同样返回 0，与成功无法区分**。
+- 安装器没有单实例锁，也从不要求重启，所以 `1618` / `3010` 永远不会返回。
+- 结论：Store 那页只填「安装成功 = 0」；磁盘已满、WebView2 下载失败、脚本中止都可以归到
+  「其他安装失败情形 = 1」。按 MSI 语义填 `1602` / `1618` / `3010` 属于不实声明，Store 永远识别不到。
+- 真要对齐标准码，需要自定义 `bundle.windows.nsis.template`，在 `.onUserAbort` 等处 `SetErrorLevel`；
+  Tauri 的 hook 宏插不进这些位置。
+
+### 文档同步
+
+- `README.md` 从「0.7.6-dev2 + Electron」改为「0.8.0 + Tauri v2」：版本段、特性表（多平台 / Android /
+  覆盖安装）、技术栈、目录结构（`src-tauri` / `src` / `HCMCL PE`）、开发与构建（本地三架构命令、CI、
+  Android）、登录原理里的文件路径，以及说明中的 Android 与覆盖安装限制。
+- 删掉 Electron 时代的 `scripts/build-all.mjs`、`npm run dist:win`、`npm run build` 与 npm 镜像段落
+  ——这些脚本已随归档移进 `HCMCL_old/`，留在 README 里是跑不通的命令。
+- `AGENTS.md`：把「MSI 一律不要」修正为「只受非数字预发布段影响」（`0.8.0` 三架构实测可出），
+  补上 `vcvarsall` 的 `x64_arm64` 用法，并新增「NSIS 退出码只有 0/1」「Store 安装参数」两条。
+
+### 未验证
+
+退出码结论来自生成脚本的静态核对，**没有用 Store 客户端实际触发过失败场景**；四个 `Abort` 分支里
+只有 WebView2 下载失败在普通机器上可能自然发生，其余三个依赖旧版残留与文件占用。
+
 ## 56. PE 版独立目录、主页启动核对与会话内文件占用（2026-11-26，UTC+08:00）
 
 ### A. Android 版自有源码迁到 `HCMCL PE/`
@@ -1164,3 +1204,432 @@ macOS 两架构推送 GitHub 工作流」。
 
 `HCMCL PE/` 只收纳本项目自写源码；FCL 对照结论不变
 （[`docs/android-fcl-parity.md`](./docs/android-fcl-parity.md)）。
+
+## 58. 启动速度优化与 0.8.1-dev1（2026-11-27，UTC+08:00）
+
+用户要求「优化启动速度并更新到 0.8.1-dev1」。本轮只动启动链路的前端与窗口配置，
+**不改任何业务功能、不新增依赖**。
+
+### A. 首帧：从「空白窗 + 白闪」到「底色 + 静态骨架」
+
+原状态：`index.html` 的 `<body>` 只有空的 `<div id="root">`，主窗口 `visible: true` 且没有
+`backgroundColor`。真实顺序是「窗口立刻出现 → WebView2 画白底 → 解析 1.05 MB JS / 139 KB CSS
+→ React 挂载」，中间的空白期用户能明确看到。
+
+- `index.html` 内联 `<style>`（Tauri CSP 的 `style-src` 含 `'unsafe-inline'`，`script-src` 仍只有
+  `'self'`，所以**不写内联脚本**）：
+  - `html { background-color: #04060f }`（浅色主题覆盖为 `#eef1fa`）——样式表到达前的兜底底色；
+  - `#hc-boot` 静态骨架：品牌字 + 呼吸进度条，纯 CSS 动画，`prefers-reduced-motion` 下退化为静态条。
+- 骨架**只对主窗口生效**：`html[data-window='main'] #hc-boot { display:flex }`，`main.tsx` 在模块顶层
+  按 `?window=` 参数写标记。受限窗口（`debug` / `devtools` / `hud` / `danmaku` / `ai-hud` /
+  `ai-ball` / `mini`）共用同一份 `index.html`，默认 `display:none`，不会在透明窗口里闪一块底板。
+- 淡出用 `html[data-boot='ready']`（CSS 隐藏，`pointer-events:none` 保证淡出期间不挡点击），
+  由 `main.tsx` 在挂载后用双 `requestAnimationFrame` 置位；**失败分支同样置位**，
+  否则错误文字会被骨架盖住，表现成「永远转圈」。
+- `tauri.conf.json` 主窗口补 `"backgroundColor": "#04060f"`，窗口层与 WebView 层同色，
+  消除 WebView2 自身的白底帧。
+
+### B. 并行加载：入口 chunk 不再排在事件注册之后
+
+`main.tsx` 原来严格串行：`import('.tauri/bridge')` → `installTauriApi()` → `await ready`
+（一次 `listen` IPC 往返）→ `import('./App')`。而 `installTauriApi()` 是**同步**的，
+返回时 `window.api` 已在位，因此现在：
+
+- 桥接安装后立刻把平台标记写进 `<html>`（提前到等 ready 之前，首帧布局更早稳定）；
+- 主窗口随即 `import('./App')`，与 `await installation.ready` 并行；
+- 两个 await 结束后才 `mount()`。
+
+前提（已核对）：`App` 模块顶层只读 `window.api`（`runtime.tsx` 的 `NATIVE_GAME_SUPPORTED`），
+所有真实调用内部自己等 `ready`，不依赖「订阅已注册」。非主窗口不预载，保持原来的串行语义。
+
+### C. 空闲帧排期：启动瞬间少 4 条并发请求
+
+沿用既有的 `runWhenIdle`（`src/renderer/src/startup.ts`），把下面四处从「挂载那一拍」移到首帧之后：
+
+| 位置 | 原来的启动开销 |
+| --- | --- |
+| `components/HomepageSession.tsx` | `homepage:verify`：读主页文件 + SHA-256 + 联网核对 |
+| `pages/HomePage.tsx` | `versionDirs:list`（磁盘）与 `system:memory` 各一次 IPC |
+| `components/PlayerModel3D.tsx` | 正版 / 第三方账号的皮肤与披风补全（外网请求） |
+
+`installed:list` 早在 0.8.0 之前就已经是空闲帧执行，本轮只是把同类项对齐。
+三处都保留原有语义：`HomepageSession` 仍是「启动时核对一次」（失败不重试），
+`PlayerModel3D` 的 `alive` 标记与 `runWhenIdle` 的取消函数在卸载 / 换账号时同时触发，
+迟到响应不 `setState`。
+
+### D. 版本号与文档
+
+- 五处版本统一为 `0.8.1-dev1`：`package.json`、`package-lock.json`（两处）、
+  `src-tauri/tauri.conf.json`、`src-tauri/Cargo.toml`、`src-tauri/Cargo.lock`。
+- `bundle.android.versionCode` 9800 → **9810**：`build.gradle.kts` 只在版本名含 `beta` 时自己算，
+  `0.8.1-dev1` 不含 `beta`，它会直接取配置值，沿用 9800 会让已装 0.8.0 的设备无法覆盖升级。
+  本轮没出 APK。
+- `AGENTS.md`：速览表版本、新增 §4.7「启动链路」四条红线、版本号一节的 grep 与 versionCode 说明；
+  `README.md`：当前版本段改为 0.8.1-dev1，MSI 段补上 `dev1` 也会被 wix 拒绝；
+  `CHANGELOG.md`：新增 0.8.1-dev1 条目。
+
+### 验证（构建 / 源码层）
+
+- `npm run typecheck`：0 错误。
+- `NODE_OPTIONS= npm run build:tauri:web`：成功。产物 `index.html` 47.80 kB（含内联骨架样式）、
+  `index-*.js` 148.86 kB、`ui-*.js` 369.25 kB、`App-*.js` 437.40 kB、`index-*.css` 139.23 kB。
+- `cargo check --lib`：通过（`generate_context!` 读了新的 `tauri.conf.json`，
+  `backgroundColor` 与 `0.8.1-dev1` 都合法）。
+- `node scripts/test-*.mjs`：全量跑完，失败集合与 0.8.0 完全一致
+  （`ai-hud` 4 / `android-launcher` 1 / `homepage` 2 / `log-forwarding` 16 / `progress` 10），
+  **无新增失败**；`test-tauri-html-policy` 4/0（内联 `<style>` 不影响单条 CSP 的替换与校验）。
+
+### 未验证
+
+- **没有帧级计时**：本机 Electron 启动即退出，Tauri 需要注入 `LIB` 垫片并清空 `NODE_OPTIONS`
+  才能出包，本轮没有跑 `tauri build` 装包实测。因此节省的绝对值（预期几十毫秒级）**没有任何测量数据**，
+  只能给出结构上的结论：少一次串行往返、少 4 条启动期并发请求、白底帧被同色窗口背景覆盖。
+- 骨架在**浅色主题 / 各皮肤**下的观感（深色骨架淡出到浅色界面时的过渡）未在真机确认。
+- 受限窗口（AI HUD / 弹幕 / 小窗）不显示骨架这一点只在源码与 CSS 选择器层面保证，
+  **没有逐个开窗确认**没有底板闪现。
+- `backgroundColor` 只在 Windows WebView2 上有效果判断；macOS（WKWebView）/ Linux（WebKitGTK）
+  的白底行为不同，未验证。
+
+## 59. 页面级按需加载与 Windows x64 出包（2026-11-27，UTC+08:00）
+
+接第 58 节。上一轮已把启动期的 IO / 网络排到空闲帧，剩下最大的一块是**入口 chunk 的解析量**：
+`pages/router.tsx` 用静态 `import` 引了 11 个页面，所有页面（约 9.7 千行 TSX）都打进首屏 bundle。
+
+### A. 除首页外全部改成 `React.lazy`
+
+- `router.tsx`：`HomeRoute`（内置主页 / 自定义主页）保持静态导入——它就是首屏；
+  其余 10 个页面改为
+  `const XxxPage = lazy(() => import('./XxxPage').then((m) => ({ default: m.XxxPage })))`，
+  **变量名与导出名保持一致**，switch 分支里的 `return <XxxPage />` 一字未改。
+- Suspense 边界收在 `router.tsx` 的 `withSuspense` + `PageFallback`：调用方
+  （`App` 的普通外壳、`Win10Desktop` 的窗口体）不需要各自包一层，也就不会出现某个入口漏包而整页白掉。
+  占位刻意留空（`aria-busy` + `h-full`）：chunk 在本地 `tauri://` 上命中只需几毫秒，
+  画一个「加载中」反而会闪一下，还会撑开布局。
+- 实例管理整页不经过 `renderPage`（由 `managingId` 直接渲染），单独导出 `LazyInstanceManagePage`，
+  `App.tsx` 与 `Win10Desktop.tsx` 两处各自包一层 `<Suspense fallback={<PageFallback />}>`。
+  两个入口都必须改：只要有一处还静态 `import`，Vite 就会把整棵 `instance-manage/`（13 个文件）
+  重新算进入口 chunk，拆分失效。
+- `ResourceDownloadPage` 的 `Tab` 类型改为 `import type`，避免为了一个类型把页面模块拉回首屏。
+
+### B. 拆包结果（同一台机器、同一份源码，只差这一处改动）
+
+| 产物 | 改动前 | 改动后 |
+| --- | --- | --- |
+| `App-*.js` | 437.40 kB（gzip 114.47） | **163.62 kB（gzip 52.21）** |
+| 页面 chunk | — | 10 个：`SettingsPage` 51.22 / `InstanceManagePage` 47.93 / `MultiplayerPage` 39.67 / `ResourceDownloadPage` 38.27 / `InstancesPage` 24.26 / `AccountsPage` 23.96 / `FeedbackPage` 18.09 / `HomepagePage` 16.15 / `DownloadsPage` 5.78 / `AboutPage` 4.40（均 kB） |
+| `index-*.js` / `ui-*.js` / `bridge-*.js` | 148.86 / 369.25 / 37.85 | 148.88 / 369.25 / 37.85（不变） |
+
+冷启动需要解析的 JS 从约 991 kB 降到约 719 kB（未压缩），少掉的部分（约 274 kB）
+只在用户真正切到对应页面时才下载与求值。`ui-*.js` 仍是 369 kB——它是首屏就在用的组件库
+（图标、Markdown、Button 等），属于下一步可拆的对象，本轮未动。
+
+### C. 约束与回归
+
+- `scripts/test-tauri-ai-chat.mjs` 对 `router.tsx` 做**源码正则**断言：
+  `case 'chat': … if (!aiEnabled) return <HomeRoute /> return <AiChatPage />`。
+  因此懒加载组件必须沿用原名、分支必须仍是 `return <XxxPage />` 形态——
+  为此把 switch 放进 `renderPage` 内部的闭包，返回值统一由 `withSuspense` 包一层。
+- 全量 `node scripts/test-*.mjs`：失败集合与 0.8.0 完全一致
+  （`ai-hud` 4 / `android-launcher` 1 / `homepage` 2 / `log-forwarding` 16 / `progress` 10），
+  无新增失败；`test-tauri-ai-chat` 2/0、`test-mod-compat` 7/0 均通过。
+- `npm run typecheck` 0 错误。
+
+### D. Windows x64 出包
+
+```bash
+LIB="<项目根>/.local/sdk-shim;C:/…/MSVC/14.44.35207/lib/x64;C:/…/Windows Kits/10/Lib/10.0.26100.0/um/x64;C:/…/ucrt/x64" \
+NODE_OPTIONS= npx tauri build --bundles nsis
+```
+
+- `NODE_OPTIONS` 置空以绕开沙箱的删除钩子（否则 `beforeBuildCommand` 的 `out/tauri` 清空会超时）。
+- `LIB` 里 `.local/sdk-shim` 必须排最前（`keyring` → `windows-sys` 缺 `combase.lib`）。
+- `--bundles nsis`：`0.8.1-dev1` 的预发布段不是纯数字，**MSI 会被 wix 拒绝**，本轮不出 MSI。
+- 结果：`src-tauri/target/release/bundle/nsis/HungerCat MineCraft Launcher_0.8.1-dev1_x64-setup.exe`，
+  **14,118,195 B（13.46 MiB）**，编译 2 分 53 秒，`makensis` 正常结束；
+  `icacls` 核对产物完整性为 **Medium**（未触发第 2 节的 Low 继承问题）。
+- 打包过程重新生成了 `out/tauri`（20:09:59），主程序与安装器为 20:13，即安装包里是拆分后的 bundle。
+
+### 未验证
+
+- **没有运行安装器，也没有启动新构建的主程序**：本机已装 0.8.0，静默安装会覆盖它，
+  属于用户环境改动，本轮未执行（用户只要求出包）。因此「安装后能启动、切页正常」仍属未验收。
+- 懒加载页面的**首次切换观感**（占位为空 → 内容出现）没有在真机上看过；理论上被 200ms 淡入覆盖，
+  但没有任何实测。
+- 没有帧级计时，171 kB 的解析收益只有体积数据，没有换算成毫秒。
+- 拆包只针对桌面（Tauri）构建；Android 共用同一份前端，行为应一致但未出 APK 验证。
+
+## 60. 外壳整体下移 / 启动按钮被裁的显示修复（0.8.1-dev2，2026-11-27，UTC+08:00）
+
+用户贴图报告主页显示异常：标题栏下方一条空白带、左侧卡片的「启动 Minecraft」按钮消失。
+
+### 现象与测量（对截图逐像素核对）
+
+- 导航项行距 **45 px**，同一份构建的离线渲染是 **44.5 px** → **不是缩放 / DPI / 字体差异**。
+- 配色逐点一致：页面底色 `(245,250,255)`、卡片 `(235,245,255)`、侧栏 `(216,235,255)`，
+  与 `experimental=material` + 浅色主题的本地渲染完全相同 → 皮肤与主题也一致。
+- 唯一差异是**整块外壳下移约 151 px**：首屏标题的 `y` 从 68 变成 219，侧栏面板顶边从 57 变成 ~208；
+  而外壳高度仍按 `100%` 计算，因此**底部被同一段 151 px 裁掉**，正好切掉启动按钮。
+- 空白带之所以看起来像正常背景，是因为 `.app-background` 是 `position: fixed`，
+  它会照常铺满视口 —— 肉眼很难判断"内容被推下去了"还是"上面本来就是空的"。
+
+### 根因定位方法（可复用）
+
+本机没有 Electron、直接跑 GUI 也不便，改用「离线同源渲染 + 探针」：
+
+1. 把 `out/tauri` 拷到临时目录，注入一个假的 `window.api`（Proxy，按路径返回桩数据：
+   `settings.get` / `accounts.*` / `installed.list` / `system.memory` …），去掉 CSP meta；
+2. `python -m http.server` + `chrome --headless=new --dump-dom`，
+   在页面里把 `getBoundingClientRect()` 写进 `document.title`，直接读出 `shell / row / main / .launch-home` 的坐标；
+3. 加压实验：注入 `#root{padding-top:151px}` 后，`home.y` 恰好变成 **219**、外壳高度仍是 100%，
+   **与用户截图完全一致** → 确认成因是「外壳的某个祖先多出顶部间距」这一形态。
+
+### 修复
+
+`App.tsx` 的外壳由 `relative h-full` 改为 **`fixed inset-0`**：
+
+- 定位基准从「祖先高度链」改成**视口**，任何祖先的上内边距 / 前置元素都不再能推它；
+- 外壳高度恒等于视口高度，不会再出现「下移 151 px 同时按 100% 算高度」导致的底部裁切；
+- `.app-background`（fixed、`z-index:-1`）仍按视口铺满，皮肤渐变与光斑不受影响（浅色 / 深色均已离线比对）。
+
+### 验证
+
+- 离线渲染（1200×802，`material` + 浅色 + 多开联机）：
+  - 修复前：`home.y=68 shell.y=0 h=707`；注入 151 px 祖先内边距 → `home.y=219 shell.y=151 h=556`（复现截图）；
+  - 修复后：上面两种情形**都是** `home.y=68 shell.y=0 h=707`。
+- 小窗口（视口高 465）下启动按钮仍然可见，布局按比例收敛。
+- `npm run typecheck` 0 错误；全量 `node scripts/test-*.mjs` 失败集合与 0.8.1-dev1 完全一致
+  （ai-hud 4 / android-launcher 1 / homepage 2 / log-forwarding 16 / progress 10），无新增失败。
+- `NODE_OPTIONS= npx tauri build --bundles nsis`（`LIB` 带 `.local/sdk-shim`）出包成功。
+
+### 未验证
+
+- **没有在真实 WebView2 里复现那个 151 px 的来源**：本机离线渲染（Chromium）在相同设置下是正常的，
+  说明触发条件与 WebView2 / 该机器环境有关。修复是让外壳「不依赖祖先」而不是消除那个间距，
+  所以即便来源未查明，下移与裁切都不会再发生；但**如果是别的东西在推内容（而非祖先间距），本修复不覆盖**。
+- 新包只做了构建层验证，**没有安装到本机运行**（本机已装 dev1，安装会覆盖）。
+
+### 版本
+
+`0.8.1-dev2`（五处同步，Android `versionCode` 9810 → 9820），便于用界面上的版本号确认装的是修复版。
+
+## 61. 背景色自定义（0.8.2-dev1，2026-11-27，UTC+08:00）
+
+### 需求
+
+「设置 → 通用」新增「自定义背景色」：用户可选 1 / 2 / 3 种颜色，分别生成
+单色、双色渐变（可选纵向 / 横向 / 斜向）与三色渐变；**仅在背景色真正生效时可用**。
+
+### 数据模型（4 个字段）
+
+| 字段 | 默认 | 说明 |
+| --- | --- | --- |
+| `customBackgroundEnabled` | `false` | 总开关；关掉即回「背景」预设 |
+| `customBackgroundCount` | `2` | 参与取色的个数 1–3 |
+| `customBackgroundDirection` | `'diagonal'` | `vertical` / `horizontal` / `diagonal` |
+| `customBackgroundColors` | 3 个 hex | **固定 3 槽位**，实际只用前 `count` 个 |
+
+槽位固定 3 个而不是按 `count` 截断数组：`1 → 2 → 1 色` 来回切换时，
+第 2 / 3 个颜色不会被丢掉（截断式存储会让用户每次都要重新挑色）。
+
+### 生效判定
+
+`@shared/settings` 的 `customBackgroundBlockedBy()` 是唯一判定口，返回三个原因之一：
+
+| 原因 | 触发条件 | 对应 CSS 事实 |
+| --- | --- | --- |
+| `skin` | `SKIN_LOCKS.background` 为真（github / material / minecraft / winui2 / winui3 / win10 / pcl2） | 这些皮肤重绘或隐藏 `.app-background` |
+| `wallpaper` | `backgroundImage` 非空 | 壁纸规则用图片整层替换背景 |
+| `minimal` | `mode === 'minimal'` | `[data-mode='minimal'] .app-background` 用 `--bg-flat` + `!important` |
+
+命中任一条件时：**子控件整块置灰并写明原因，总开关保持可点**。
+只锁子控件而不锁开关，是为了避免「开着但改不了、也关不掉」的死角 —— 用户先设壁纸再看设置页时，
+至少还能把开关关掉。设置页的「背景」预设行另有说明：被自定义色覆盖时提示「点任一预设即可切回」，
+且点预设会自动把 `customBackgroundEnabled` 置 `false`（否则点了预设没反应）。
+
+### 渲染路径
+
+- **生成**：`customBackgroundCss()` 把设置解析成 CSS 值（1 色 → `#rrggbb`；2/3 色 →
+  `linear-gradient(<角度>deg, …)`，角度 180 / 90 / 135，色标按数量均分 0/100 或 0/50/100）。
+  预览条与实际下发**共用这一个函数**，不存在「预览一套、界面另一套」。
+- **下发**：`store.tsx` 的 layout effect 只写两个东西 —— `--custom-bg` 内联变量 +
+  `data-custom-bg='on' | 'off'`，与主题色 `--accent-user` 同一套「种子 + 样式表」写法。
+  不直接改 `.app-background` 的 `element.style`：内联样式会盖掉皮肤 / 壁纸 / 极简模式的规则，也不好收回。
+- **样式表**：`:root[data-theme][data-skin][data-custom-bg='on'] .app-background`，
+  特异性与壁纸规则相同（都是 5 个类级选择器），**因此必须写在壁纸规则之前** —— 同特异性靠来源顺序，
+  壁纸要能压住自定义色。已用计算样式实测（见下）。
+
+### 主进程约束（踩坑点）
+
+`settings:set` 对未知字段直接报「未知设置字段」，`decode_state` 又要求快照包含全部默认键。
+所以新增设置**必须同时改 Rust**：`defaults()` 注册键、`validate_setting()` 补类型校验、
+布尔键还要进 `BOOLEAN_FIELDS`。只改 TS 注册表的话，界面点一下就会整条 IPC 失败。
+
+校验口径：颜色必须是 3 个 `#RRGGBB`（与 `accentColor` 一致，非法值不拼进 CSS）、
+个数 1–3 整数、方向必须在枚举内。老配置缺这些键时由 `defaults()` 补齐，无需迁移。
+
+### 验证
+
+- `customBackgroundCss` 逐项输出：1 色 → `#ff0000`；2 色纵向 / 横向 / 斜向 →
+  `linear-gradient(180deg|90deg|135deg, …)`；3 色 → `… 0%, … 50%, … 100%`；
+  关闭 / 有壁纸 / 皮肤接管 / 极简 → 均返回 `null`；非法色被过滤、`count=9` 夹到 3。
+- 计算样式实测（headless Chromium + 构建产物 CSS）：
+  | 组合 | 结果 |
+  | --- | --- |
+  | 深色 + midnight | 预设渐变 |
+  | 浅色 + sunset | 浅色预设渐变 |
+  | 自定义 on（深色 / 浅色） | 自定义渐变（两种主题都盖住预设） |
+  | 自定义 off | 回到预设 |
+  | 自定义 on + 壁纸 on | **壁纸胜出**（关键：确认规则顺序正确） |
+- 设置行离线渲染（1240×900）三态：关闭 / 开启 2 色 / 开启但被壁纸覆盖，标签与控件同行、
+  预览条整宽、置灰态可读，无重叠或裁切。
+- `npm run typecheck` 0 错误；全量 `node scripts/test-*.mjs` 失败集合与 0.8.1-dev2 一致
+  （ai-hud 4 / android-launcher 1 / homepage 2 / log-forwarding 16 / progress 10），无新增失败；
+  `test-custom-rows` 9/0、`test-i18n` 14/0。
+- Rust：`cargo test --lib storage::tests::` 39/0，新增
+  `custom_background_settings_round_trip`（写盘 → 解码 → 值不变、默认值补齐），
+  并在既有的「非法补丁」测试里加了 6 条（个数越界、方向非法、颜色个数不对、非 hex、开关类型不对）。
+
+### 未验证
+
+- **没有真机点过**：新包只做构建层验证，未安装运行；取色器在 WebView2 里的原生弹层观感未确认。
+- 自定义纯色（尤其浅色）与文字对比度**不做自动校正**：选到接近文字色的底色时可读性下降，
+  这是明确交给用户的自由度，没有加「对比度警告」。
+- 只验证了桌面构建；Android 共用同一份前端，行为应一致但未出 APK。
+
+### 版本
+
+`0.8.2-dev1`（五处同步，Android `versionCode` 9820 → 9830）。预发布段非纯数字，MSI 仍无法出包。
+
+## 62. 启动检查移入载入界面（0.8.2-dev2，2026-11-27，UTC+08:00）
+
+### 需求
+
+启动时的各类操作（如主页安全联网核对）应在载入界面里完成，而不是等界面出现后再单独显示进度。
+
+### 原来的样子（要修的现象）
+
+主页核对原先走 `runWhenIdle`（第 58 节为压首帧占用而改）：界面先出来，随后侧栏首页图标
+一边闪一边给出「正在核对主页…」的提示；用户若是直接进主页，闸门还会单独转一圈
+`LoadingState`。观感是「界面已经能用了，却还有事没做完」，与「载入中」这件事割裂。
+
+### 方案：载入遮罩兼做启动检查面板
+
+`src/renderer/src/startup.ts` 新增三个 API（与既有的 `runWhenIdle` 并列，职责相反）：
+
+| API | 作用 |
+| --- | --- |
+| `bootStep(label)` | 登记一步启动检查，返回幂等的「完成」回调；同时把 `label` 写进骨架的 `#hc-boot-task` |
+| `markBootReady()` | 设置已就绪，允许开始判定「何时撤骨架」 |
+| `waitForBoot(ms)` | 等到「就绪 + 所有步骤完成」，或到上限 |
+
+- `main.tsx`：主窗口在界面提交后 `await waitForBoot(3000)`，再走原有的双 rAF 淡出。
+  **只对 `windowKind === null` 生效**：受限浮层（HUD / 弹幕 / 小窗 / 日志）没有骨架，
+  也没有 App 去 `markBootReady`，干等只会白占 3 秒。
+- `HomepageSession`：`runWhenIdle(...)` → 登记 `bootStep` + 立即 `ensureProbe(id)`，
+  `finally` 里释放（换主页 / 卸载时也在清理函数里释放，否则会白等到超时）。
+- `App.tsx` 的 `Shell`：`useEffect(() => { if (ready) markBootReady() }, [ready])`。
+- `index.html`：骨架里加一个 `#hc-boot-task` 空节点 + 样式（`min-height` 预留、`opacity`
+  由 `data-on` 切），默认不占视觉；`startup.ts` 直接写 `textContent`，不为此把 React 挂到骨架上。
+
+### 时序为什么成立
+
+`markBootReady` 必须放在 `Shell`（`HomepageSession` 的祖先）里：React 的 effect 是
+**子先父后**，所以父组件判定就绪时，子组件登记的步骤已经在册。若放在 provider 或
+`main.tsx` 里，就会出现「先判定没有步骤 → 遮罩撤掉 → 检查才开始」——正好退回要修的现象。
+`scripts/test-boot-gate.mjs` 对这条接线与闸门行为一起做断言。
+
+### 上限与取舍
+
+3 秒是刻意的兜底：网络卡住时不能拿启动时间赌网络。超时后照常撤骨架，未完成的检查
+继续在后台跑（结果仍会更新，只是不再有独立的加载指示，侧栏图标会照旧闪）。
+换句话说：**常规网络下检查全部发生在遮罩背后；异常网络下退回旧观感，而不是把界面钉死。**
+
+### 验证
+
+- `scripts/test-boot-gate.mjs`（新增，22/0）：无步骤立即放行（<80ms）、有步骤必须等完、
+  多步骤全部完成才放行、完成回调幂等、超时兜底在 ~600ms 放行、放行后再登记是空操作；
+  另加三处源码接线断言（`main.tsx` 的等待顺序、`HomepageSession` 不再用空闲帧、`App` 调 `markBootReady`）。
+- 载入界面离线渲染（1180×800）：品牌字 → 副标题 → 进度条 → 「正在校验主页安全性…」一行，
+  间距正常、文字可读；`#hc-boot-task` 默认 `opacity:0` 不占视觉。
+- `npm run typecheck` 0 错误；全量 `node scripts/test-*.mjs` 失败集合与 0.8.2-dev1 一致
+  （ai-hud 4 / android-launcher 1 / homepage 2 / log-forwarding 16 / progress 10），无新增失败。
+
+### 未验证
+
+- **没有真机测过实际耗时**：只在 node 里对闸门做了毫秒级断言，真实 `homepage:verify`
+  （读文件 + SHA-256 + 联网）通常几百毫秒，但没有帧级/秒级实测数据。
+- 若核对长期超过 3 秒，用户仍会看到旧的「界面先出、图标再闪」行为——这是刻意的降级，不是回归。
+- 动画与淡出观感（骨架 → 界面）未在 WebView2 上目视确认。
+
+### 版本
+
+`0.8.2-dev2`（五处同步，Android `versionCode` 9830 → 9840）。预发布段非纯数字，MSI 仍无法出包。
+
+## 63. 0.8.2 正式版：全平台 CI 出包与 MSIX 流水线（2026-11-28，UTC+08:00）
+
+### 版本
+
+`0.8.2`（正式版，无预发布段）：五处同步，Android `versionCode` 9840 → **9850**。
+自 0.8.0 起的三批开发内容（启动提速 / 显示修复 / 背景色自定义 / 载入界面检查）一并收口。
+
+### 出包方式改为「全部走 CI」
+
+此前 `build-tauri.yml` 只做 Linux 与 macOS，Windows 三架构靠本机手动构建后上传。本机只能出 x64：
+x86 / arm64 需要目标架构的 MSVC 库目录（`LIB` 指向 x86 / ARM64），arm64 还要 clang 给 ring 编汇编。
+这次把 Windows 也搬进托管运行器，矩阵如下：
+
+| job | 产物 |
+| --- | --- |
+| `windows`（x64 / x86 / arm64） | `.exe`(NSIS)、`.msi`、`.msix` |
+| `linux`（x86_64 / aarch64） | `.deb`、`.AppImage` |
+| `linux-armv7`（交叉） | `.deb` |
+| `macos`（x86_64 / aarch64 交叉） | `.dmg` |
+| `release` | 汇总成 **Draft Release**，正文即更新日志 |
+
+Windows job 的关键点：
+- `ilammy/msvc-dev-cmd` 按架构切换工具链（x64 / x86 / amd64_arm64）。少这一步，
+  `LIB` 会指向 x64 的 `kernel32.lib`，x86 直接链接失败；`arch: x86` 而不是 `amd64_x86`，
+  因为要的是 **x86 的库** 而不是 32 位宿主工具。
+- arm64 额外把 `C:\Program Files\LLVM\bin` 加进 PATH：ring 的汇编靠 clang。
+- 显式 `--target <triple>`，产物落在 `target/<triple>/release`，artifact 路径按 triple 取。
+
+### MSIX（Tauri 没有这个目标）
+
+`scripts/package-msix.ps1` 调 Windows SDK 的 `makeappx` 手工封装，包内结构与 NSIS 安装后的文件一致：
+
+```
+hcmcl-tauri.exe
+easytier/easytier-core.exe, easytier-cli.exe
+Assets/{StoreLogo,Square44,Square71,Square150,Square310,Wide310x150}.png
+AppxManifest.xml
+```
+
+- 清单用 `Windows.FullTrustApplication` + `rescap:runFullTrust`：仍是普通 Win32 进程，
+  继续写 `%APPDATA%`、继续能拉起随包的 easytier（这两点对 NSIS 与 MSIX 必须一致）。
+- 图标从 `src-tauri/icons/icon.png`（1024²）按 contain 缩放，避免非等比拉伸。
+- **Identity 的 Version 必须是四段纯数字**：脚本遇到含 `-` 的预发布版本直接报错
+  （`0.8.2` → `0.8.2.0`）。这与 MSI 的限制同源。
+- CI 用 `-Sign`：每次构建生成一张**新的**自签证书，签包并导出公开的 `.cer`。
+  产物里不含 `.pfx`。用户侧要先信任该 `.cer` 才能侧载；上架 Store 必须把 `Publisher`
+  换成 Partner Center 的标识，由微软重签。
+
+### 验证
+
+- 本机 `tauri build --bundles nsis,msi`（0.8.2）：`.exe` 13.48 MiB、`.msi` 19.43 MiB 均出包，
+  **证明纯数字版本号下 MSI 可用**（0.8.2-dev1/dev2 阶段 MSI 被 wix 拒绝）。
+- MSIX：用 0.8.2 的 release 产物打包成功（20,810,749 B），`makeappx unpack` 双向通过，
+  清单与 10 个条目逐一核对；`-Sign` 分支同样成功（自签 + 导出 `.cer`）。
+- `npm run typecheck` 0 错误；全量 `node scripts/test-*.mjs` 失败集合与 0.8.2-dev2 一致。
+
+### 未验证
+
+- **CI 尚未真正跑过**：矩阵、`ilammy/msvc-dev-cmd` 的架构切换、arm64 的 clang 路径、
+  x86/arm64 的 NSIS/MSI 产物，都只有静态推断 + 本机 x64 实测，没有一次完整的远端绿跑。
+  打 `v0.8.2` 标签后的首次运行结果才算数，失败时要按 job 日志逐项修。
+- **MSIX 没有安装过**：只验证了结构（pack/unpack）与签名，没在真机侧载验证启动、
+  WebView2、随包 easetier 拉起，也没验证 MSIX 沙箱对写安装目录 / 注册表的影响。
+- x86 与 arm64 的 Windows 产物本机无法构建（缺对应 MSVC 库目录），完全依赖 CI。
+- macOS 产物仍未签名 / 未公证，首次打开需右键 →「打开」。
+
+
+

@@ -55,3 +55,6 @@ scripts/_*.out.txt
 /.workbuddy/
 /nul
 /session.md
+
+# 工具侧工程配置（与 .vscode / .idea 同类，不入库）。
+.codebuddy/

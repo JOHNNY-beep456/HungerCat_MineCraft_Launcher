@@ -11,7 +11,7 @@ import {
 } from 'react'
 import { isTauri } from '@tauri-apps/api/core'
 import type { AgreementStatus, Announcement, HomepageUpdate, LauncherSettings, MinecraftAccount, UpdateInfo, VersionDir } from '@shared/types'
-import { defaultSettings, skinTakesOver } from '@shared/settings'
+import { customBackgroundCss, defaultSettings, skinTakesOver } from '@shared/settings'
 import { dataUrlToBlobUrl, detectWallpaperTone } from './wallpaper'
 import { runWhenIdle } from './startup'
 import { selectPendingAnnouncements, seenPatch } from './announcement'
@@ -324,7 +324,34 @@ export function AppProvider({ children, scope = 'main' }: { children: ReactNode;
     // （它正是从 --fill-primary 取种子）行为不变，GitHub 却能接管。
     root.style.setProperty('--accent-user', settings?.accentColor ?? '#0a84ff')
     root.dataset['bg'] = settings?.background ?? 'midnight'
-  }, [settings?.accentColor, settings?.background])
+    /*
+     * 自定义背景色：与主题色同样的「种子 + 样式表」两级写法 —— 这里只写
+     * `--custom-bg` 与 `data-custom-bg`，由样式表决定挂到 `.app-background` 上。
+     * 不直接写 element.style.background：`.app-background` 由 React 渲染，
+     * 内联样式会盖掉皮肤/极简模式/壁纸的规则，切回预设时也难收回。
+     *
+     * 这里同样不能绕过 `customBackgroundBlockedBy`：皮肤接管背景、设了壁纸、
+     * 极简模式下即使开着开关也不下发，否则会在「自定义壁纸」上凭空盖一层渐变。
+     */
+    const customBg = settings ? customBackgroundCss(settings) : null
+    if (customBg) {
+      root.style.setProperty('--custom-bg', customBg)
+      root.dataset['customBg'] = 'on'
+    } else {
+      root.style.removeProperty('--custom-bg')
+      root.dataset['customBg'] = 'off'
+    }
+  }, [
+    settings?.accentColor,
+    settings?.background,
+    settings?.customBackgroundEnabled,
+    settings?.customBackgroundCount,
+    settings?.customBackgroundDirection,
+    settings?.customBackgroundColors,
+    settings?.experimental,
+    settings?.backgroundImage,
+    settings?.mode
+  ])
 
   /**
    * 自定义壁纸：把主进程读出的图片挂到 --wallpaper-image 上，并用 data-wallpaper

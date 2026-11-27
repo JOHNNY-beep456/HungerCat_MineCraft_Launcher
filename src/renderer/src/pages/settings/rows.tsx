@@ -9,7 +9,7 @@ import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from 
 import { AnimatePresence, motion } from 'motion/react'
 import { createPortal } from 'react-dom'
 import type { AndroidRuntimeEntry, JavaRuntime, LauncherSettings } from '@shared/types'
-import { skinTakesOver } from '@shared/settings'
+import { customBackgroundBlockedBy, customBackgroundCss, skinTakesOver } from '@shared/settings'
 import { useApp } from '../../store'
 import { Button, Checkbox, Icon, Segmented, Select, Switch } from '../../components/ui'
 import { dataUrlToBlobUrl } from '../../wallpaper'
@@ -98,13 +98,24 @@ function BackgroundRow(): JSX.Element {
   // 固定/隐藏整窗背景的皮肤（github / material / minecraft / winui2 / winui3 / win10）
   const locked = skinTakesOver(settings).background
   return (
-    <Row label={t('settings.row.background')} desc={locked ? t('settings.skin.locked') : undefined}>
+    <Row
+      label={t('settings.row.background')}
+      desc={
+        locked
+          ? t('settings.skin.locked')
+          : settings.customBackgroundEnabled
+            ? t('settings.bg.overridden')
+            : undefined
+      }
+    >
       <LockedWrap locked={locked}>
         {BACKGROUNDS.map((b) => (
           <button
             key={b.key}
             title={t(b.label)}
-            onClick={() => void updateSettings({ background: b.key })}
+            // 点预设 = 明确要回预设，顺手关掉自定义背景色；否则点了没反应
+            // （自定义色的优先级更高，会盖住刚点的预设）。
+            onClick={() => void updateSettings({ background: b.key, customBackgroundEnabled: false })}
             disabled={locked}
             className="h-8 w-8 rounded-xl border-2 no-drag"
             style={{
@@ -115,6 +126,103 @@ function BackgroundRow(): JSX.Element {
         ))}
       </LockedWrap>
     </Row>
+  )
+}
+
+/**
+ * 自定义背景色：总开关 + 颜色个数（1 / 2 / 3）+ 三个颜色槽位 + 渐变方向 + 实时预览。
+ *
+ * 生成规则：1 色 = 纯色；2 / 3 色 = 按所选方向的渐变（纵向 / 横向 / 斜向）。
+ * 取色与预览都走 `@shared/settings` 的 `customBackgroundCss`，与实际下发给
+ * `.app-background` 的是**同一个函数**，避免「预览一套、界面另一套」。
+ *
+ * 「仅在背景色生效时可使用」：皮肤接管背景 / 设了壁纸 / 极简模式下自定义色根本不会显示，
+ * 此时子控件整块置灰（`LockedWrap`）并给出原因；总开关**保持可点**，
+ * 否则会把人卡在「开着但改不了、也关不掉」的状态里。
+ */
+function CustomBackgroundRow(): JSX.Element {
+  const { settings, updateSettings, t } = useApp()
+  const blocked = customBackgroundBlockedBy(settings)
+  const enabled = settings.customBackgroundEnabled
+  const count = Math.min(3, Math.max(1, Math.trunc(Number(settings.customBackgroundCount) || 1)))
+  // 槽位固定 3 个：1 → 2 → 1 色来回切换时已选的颜色不丢。
+  const colors = Array.from({ length: 3 }, (_, i) => settings.customBackgroundColors?.[i] ?? '#000000')
+  const css = customBackgroundCss(settings)
+
+  const setColor = (index: number, value: string): void => {
+    const next = [...colors]
+    next[index] = value
+    void updateSettings({ customBackgroundColors: next })
+  }
+
+  return (
+    <div className="space-y-3">
+      <Row
+        label={t('settings.row.customBackground')}
+        desc={blocked ? t(`settings.customBg.blocked.${blocked}`) : undefined}
+      >
+        <Switch
+          checked={enabled}
+          onChange={(v) => void updateSettings({ customBackgroundEnabled: v })}
+        />
+      </Row>
+
+      {enabled && (
+        <LockedWrap locked={Boolean(blocked)}>
+          <div className="w-full space-y-3">
+            <Row label={t('settings.row.customBgCount')}>
+              <Segmented
+                value={String(count)}
+                onChange={(v) => void updateSettings({ customBackgroundCount: Number(v) })}
+                options={[1, 2, 3].map((n) => ({
+                  value: String(n),
+                  label: t('settings.customBg.count', { n })
+                }))}
+              />
+            </Row>
+            <Row label={t('settings.row.customBgColors')}>
+              <div className="flex items-center gap-2">
+                {colors.map((c, i) => (
+                  <input
+                    key={i}
+                    type="color"
+                    value={c}
+                    disabled={i >= count}
+                    onChange={(e) => setColor(i, e.target.value)}
+                    aria-label={t('settings.customBg.colorN', { n: i + 1 })}
+                    className="h-7 w-9 cursor-pointer rounded border-0 bg-transparent p-0 no-drag"
+                    style={{ opacity: i >= count ? 0.35 : 1 }}
+                  />
+                ))}
+              </div>
+            </Row>
+            {count >= 2 && (
+              <Row label={t('settings.row.customBgDirection')}>
+                <Segmented
+                  value={settings.customBackgroundDirection}
+                  onChange={(v) => void updateSettings({ customBackgroundDirection: v })}
+                  options={[
+                    { value: 'vertical', label: t('settings.customBg.direction.vertical') },
+                    { value: 'horizontal', label: t('settings.customBg.direction.horizontal') },
+                    { value: 'diagonal', label: t('settings.customBg.direction.diagonal') }
+                  ]}
+                />
+              </Row>
+            )}
+            {/* 预览：与实际背景同源，改颜色 / 方向立即能看到结果 */}
+            <div
+              className="h-10 w-full rounded-xl"
+              style={{
+                background: css ?? 'var(--fill-secondary)',
+                border: '1px solid var(--divider)'
+              }}
+              aria-hidden
+            />
+            <p className="caption opacity-70">{t('settings.customBg.hint')}</p>
+          </div>
+        </LockedWrap>
+      )}
+    </div>
   )
 }
 
@@ -1530,6 +1638,7 @@ export const CUSTOM_ROWS: Partial<Record<keyof LauncherSettings, () => JSX.Eleme
   language: LanguageRow,
   accentColor: AccentRow,
   background: BackgroundRow,
+  customBackgroundEnabled: CustomBackgroundRow,
   backgroundImage: WallpaperRow,
   reducedMotion: ReducedMotionRow,
   experimental: SkinThemeRow,

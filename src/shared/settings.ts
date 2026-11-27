@@ -79,8 +79,70 @@ export function skinTakesOver(s: Pick<LauncherSettings, 'experimental'>): {
 }
 
 /**
- * 导航栏位置的实际生效值。
+ * 自定义背景色**此刻是否真的会显示**。返回阻止原因，可用时返回 null。
  *
+ *   skin     当前皮肤固定 / 隐藏了整窗背景（SKIN_LOCKS.background）
+ *   wallpaper 设了自定义壁纸，图片会盖住整层背景
+ *   minimal  极简模式把 `.app-background` 强制成 `--bg-flat`（`!important`）
+ *
+ * 这三条与 index.css 的实际规则一一对应：只要其中一条成立，自定义背景色就算设了也看不见，
+ * 所以设置页据此整组置灰并说明原因（只置灰不说话，用户会以为功能坏了）。
+ */
+export type CustomBackgroundBlocker = 'skin' | 'wallpaper' | 'minimal'
+
+export function customBackgroundBlockedBy(
+  s: Pick<LauncherSettings, 'experimental' | 'backgroundImage' | 'mode'>
+): CustomBackgroundBlocker | null {
+  if (skinTakesOver(s).background) return 'skin'
+  if (s.backgroundImage) return 'wallpaper'
+  if (s.mode === 'minimal') return 'minimal'
+  return null
+}
+
+/** 渐变方向 → CSS 角度。纵向 = 从上到下；横向 = 从左到右；斜向 = 左上到右下。 */
+const CUSTOM_BG_ANGLE: Record<LauncherSettings['customBackgroundDirection'], number> = {
+  vertical: 180,
+  horizontal: 90,
+  diagonal: 135
+}
+
+/** 合法颜色：只认 `#RRGGBB`（与主进程 accentColor 的校验口径一致）。 */
+export function isHexColor(value: unknown): value is string {
+  return typeof value === 'string' && /^#[0-9a-fA-F]{6}$/.test(value)
+}
+
+/**
+ * 把设置解析成可直接交给 CSS 的 `background` 值；未启用或当前不生效时返回 null。
+ *
+ * 生成规则由「颜色个数」决定：1 色 → 纯色；2 / 3 色 → 均匀色标的多段渐变。
+ * 颜色先按 `isHexColor` 过滤：旧配置 / 手改过文件时宁可少一段也不要把非法值拼进 CSS。
+ */
+export function customBackgroundCss(
+  s: Pick<
+    LauncherSettings,
+    | 'experimental'
+    | 'backgroundImage'
+    | 'mode'
+    | 'customBackgroundEnabled'
+    | 'customBackgroundCount'
+    | 'customBackgroundDirection'
+    | 'customBackgroundColors'
+  >
+): string | null {
+  if (!s.customBackgroundEnabled) return null
+  if (customBackgroundBlockedBy(s)) return null
+  const count = Math.min(3, Math.max(1, Math.trunc(Number(s.customBackgroundCount) || 1)))
+  const colors = (s.customBackgroundColors ?? []).slice(0, count).filter(isHexColor)
+  if (colors.length === 0) return null
+  if (colors.length === 1) return colors[0]
+  const angle = CUSTOM_BG_ANGLE[s.customBackgroundDirection] ?? CUSTOM_BG_ANGLE.diagonal
+  const step = 100 / (colors.length - 1)
+  const stops = colors.map((c, i) => `${c} ${Math.round(i * step)}%`).join(', ')
+  return `linear-gradient(${angle}deg, ${stops})`
+}
+
+/**
+ * 导航栏位置的实际生效值。
  * App（真正渲染导航）与设置页（显示当前值）都走这一个函数，避免显示与实际不一致。
  */
 export function effectiveNavPosition(
@@ -148,7 +210,7 @@ export const SETTINGS_DEFS: SettingsDefs = {
   /* ============ 通用（板块 id：general） ============ */
   /* 顺序即渲染顺序，按「设置页 → 通用」的条目次序排列：
      明暗模式 → 运行模式 → 主题 → 减少动态效果 → uapis.cn API KEY
-     → 背景 → 自定义壁纸 → 导航栏位置 → 显示服务器状态 → 关闭按钮行为 */
+     → 背景 → 自定义背景色 → 自定义壁纸 → 导航栏位置 → 显示服务器状态 → 关闭按钮行为 */
   /* 明暗模式（light/dark/system）：文档把它列在「通用」的首位。 */
   theme: {
     default: 'system',
@@ -182,6 +244,13 @@ export const SETTINGS_DEFS: SettingsDefs = {
      排不到中间去。 */
   uapisApiKeySet: { default: false, ui: { section: 'general', control: 'custom' } },
   background: { default: 'midnight', ui: { section: 'general', control: 'custom' } },
+  /* 自定义背景色：只有总开关带 `ui`，整组（开关 + 颜色个数 + 方向 + 三个颜色槽位）
+     由渲染层的同一个自定义行渲染；后三项是它的子字段，与「主题类型 / 主题色」同一模式。
+     顺序排在「背景」之后、「自定义壁纸」之前：壁纸会盖住整个背景层，说在它后面才合逻辑。 */
+  customBackgroundEnabled: { default: false, ui: { section: 'general', control: 'custom' } },
+  customBackgroundCount: { default: 2 },
+  customBackgroundDirection: { default: 'diagonal' },
+  customBackgroundColors: { default: ['#0a84ff', '#bf5af2', '#ff9f0a'] },
   backgroundImage: { default: '', ui: { section: 'general', control: 'custom' } },
   /* 导航栏位置：上 / 下 / 左 / 右。上、下是横向长条，左、右是竖栏。
      老配置里的布尔值 topNav 在读取时迁移成 'top' / 'left'（见 main/store.ts）。 */

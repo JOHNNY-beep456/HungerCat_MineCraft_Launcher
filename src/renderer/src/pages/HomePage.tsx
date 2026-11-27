@@ -4,6 +4,7 @@ import type { InstalledVersion, SystemMemoryInfo, VersionDir } from '@shared/typ
 import type { TFunction } from '../i18n'
 import { activeGameDir, useAdaptivePolling, useApp, versionDirLabel } from '../store'
 import { useRuntime } from '../runtime'
+import { runWhenIdle } from '../startup'
 import { Avatar, Button, Icon, ProgressBar, Select } from '../components/ui'
 import { PlayerModel3D } from '../components/PlayerModel3D'
 
@@ -93,12 +94,14 @@ export function HomePage({ onManage }: { onManage?: (versionId: string) => void 
     void updateSettings({ selectedVersionId: id })
   }
 
+  // 版本目录列表与首帧无关（只在「切换目录」下拉里用到），与 installed:list 一样
+  // 挪到首个空闲帧：三条启动 IPC（getVersion / versionDirs / memory）不再挤在
+  // 首屏渲染的那几毫秒里抢主进程的磁盘与序列化。
   useEffect(() => {
-    void window.api.versionDirs.list().then(setDirs).catch(() => undefined)
-  }, [])
-
-  useEffect(() => {
-    refreshMemory()
+    return runWhenIdle(() => {
+      void window.api.versionDirs.list().then(setDirs).catch(() => undefined)
+      refreshMemory()
+    })
   }, [])
   // 已用内存轮询：常规 30s。
   useAdaptivePolling(refreshMemory, 30000)

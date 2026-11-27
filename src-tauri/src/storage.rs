@@ -829,6 +829,9 @@ fn defaults(context: &Context) -> Map<String, Value> {
         "theme" => "system", "mode" => "normal", "experimental" => "off",
         "materialStyle" => "you", "githubStyle" => "system", "accentColor" => "#0a84ff",
         "reducedMotion" => false, "background" => "midnight", "backgroundImage" => "",
+        "customBackgroundEnabled" => false, "customBackgroundCount" => 2,
+        "customBackgroundDirection" => "diagonal",
+        "customBackgroundColors" => json!(["#0a84ff", "#bf5af2", "#ff9f0a"]),
         "navPosition" => "left", "showServerStatus" => true, "closeBehavior" => "ask",
         "language" => "zh-CN", "autoTranslateResources" => false, "translateResourceNames" => true,
         "autoThemeFromWallpaper" => false, "enableMultiplayer" => false, "hardwareAcceleration" => false,
@@ -910,6 +913,7 @@ fn validate_setting(key: &str, value: &Value) -> Result<()> {
         "materialStyle" => Some(&["baseline", "you", "expressive"]),
         "githubStyle" => Some(&["system", "light", "dark", "dimmed", "light-hc", "dark-hc"]),
         "navPosition" => Some(&["top", "bottom", "left", "right"]),
+        "customBackgroundDirection" => Some(&["vertical", "horizontal", "diagonal"]),
         "closeBehavior" => Some(&["ask", "tray", "quit"]),
         "gameWindowSize" => Some(&["720p", "1080p", "maximized", "fullscreen", "custom"]),
         "downloadSource" | "versionListSource" | "communitySource" => Some(&["mirror-first", "auto", "official-first"]),
@@ -929,6 +933,7 @@ fn validate_setting(key: &str, value: &Value) -> Result<()> {
         "downloadConnections" => Some((1.0, 256.0, true)),
         "gameWindowWidth" | "gameWindowHeight" => Some((1.0, 32768.0, true)),
         "aiHistoryTurns" => Some((1.0, 50.0, true)),
+        "customBackgroundCount" => Some((1.0, 3.0, true)),
         "aiBallX" | "aiBallY" => Some((-1.0, 1_000_000.0, false)),
         "hudOpacity" | "multiplayerSoundVolume" | "multiplayerDanmakuOpacity" => Some((0.0, 1.0, false)),
         "multiplayerDndStart" | "multiplayerDndEnd" => Some((0.0, 1439.0, true)),
@@ -1001,6 +1006,16 @@ fn validate_setting(key: &str, value: &Value) -> Result<()> {
             let color = value.as_str().ok_or_else(bad)?;
             if color.len() != 7 || !color.starts_with('#') || !color[1..].bytes().all(|c| c.is_ascii_hexdigit()) { return Err(bad()); }
         }
+        // 自定义背景色：固定三个槽位（未参与取色的槽位也保留上一次的值，供来回切换）。
+        // 只在前端校验是不够的：settings.json 可被手改，非法值会原样拼进 CSS。
+        "customBackgroundColors" => {
+            let colors = value.as_array().ok_or_else(bad)?;
+            if colors.len() != 3 { return Err(bad()); }
+            for color in colors {
+                let color = color.as_str().ok_or_else(bad)?;
+                if color.len() != 7 || !color.starts_with('#') || !color[1..].bytes().all(|c| c.is_ascii_hexdigit()) { return Err(bad()); }
+            }
+        }
         "gameDir" | "javaPath" => { text(value, 32768, key == "gameDir")?; }
         "language" => { text(value, 64, true)?; }
         _ => {
@@ -1024,6 +1039,7 @@ const BOOLEAN_FIELDS: &[&str] = &[
     "feedbackLogConsent", "hardwareChecked", "devModeEnabled", "multiplayerUsePrivateServer",
     "multiplayerUseDomain", "multiplayerAutoLobbyEnabled", "multiplayerSoundNewMsg", "multiplayerSoundJoined",
     "multiplayerSoundLeft", "multiplayerDndEnabled", "multiplayerDanmakuEnabled",
+    "customBackgroundEnabled",
 ];
 
 fn create_offline(name: &str) -> Value {
@@ -1554,11 +1570,41 @@ mod tests {
             json!({"unknownField":true}), json!({"memoryMb":"4096"}), json!({"mode":"invalid"}),
             json!({"showServerStatus":1}), json!({"aiHistoryTurns":0}), json!({"portable":true}),
             json!({"gameDirAbs":"fake"}), json!({"aiApiKeySet":true}), json!({"aiToolPolicy":{"tool":"invalid"}}),
+            // 自定义背景色：个数越界 / 方向不在枚举内 / 颜色不是 3 个与非法色值都必须拒绝
+            json!({"customBackgroundCount":4}), json!({"customBackgroundDirection":"upside"}),
+            json!({"customBackgroundColors":["#ffffff"]}), json!({"customBackgroundEnabled":"yes"}),
+            json!({"customBackgroundColors":["#ffffff","#000000","red"]}),
+            json!({"customBackgroundColors":["#ffffff","#000000","#12345"]}),
         ] {
             assert!(storage.call("settings:set", &[patch]).is_err());
             assert_eq!(fixture.bytes(), before);
             assert_eq!(call(&storage, "settings:get", &[])["theme"], "dark");
         }
+    }
+
+    #[test]
+    fn custom_background_settings_round_trip() {
+        let fixture = Fixture::new();
+        let storage = fixture.storage(false);
+        let saved = call(&storage, "settings:set", &[json!({
+            "customBackgroundEnabled": true, "customBackgroundCount": 3,
+            "customBackgroundDirection": "horizontal",
+            "customBackgroundColors": ["#112233", "#445566", "#778899"]
+        })]);
+        assert_eq!(saved["customBackgroundEnabled"], true);
+        assert_eq!(saved["customBackgroundCount"], 3);
+        assert_eq!(saved["customBackgroundDirection"], "horizontal");
+        assert_eq!(saved["customBackgroundColors"], json!(["#112233", "#445566", "#778899"]));
+        // 从磁盘快照解码一次：确认布尔 / 数组真的落盘，且校验放行
+        let disk: Value = serde_json::from_slice(&fixture.bytes()).expect("读取快照");
+        let decoded = decode_state(disk, &fixture.context(false)).expect("解码快照");
+        assert_eq!(decoded.settings["customBackgroundEnabled"], true);
+        assert_eq!(decoded.settings["customBackgroundColors"][2], "#778899");
+        // 未设置过该功能的老配置：读出的是默认值，不会因为缺字段而拒绝整份快照
+        let fresh = Fixture::new();
+        let defaults = call(&fresh.storage(false), "settings:get", &[]);
+        assert_eq!(defaults["customBackgroundEnabled"], false);
+        assert_eq!(defaults["customBackgroundColors"].as_array().map(Vec::len), Some(3));
     }
 
     #[test]

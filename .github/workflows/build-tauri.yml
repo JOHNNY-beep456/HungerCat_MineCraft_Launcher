@@ -1,7 +1,10 @@
 name: build-tauri
 
-# Linux / macOS 安装包由 GitHub 托管运行器构建（本机只有 Windows 工具链）。
-# 触发：手动 workflow_dispatch，或推送 v* 标签（打标签时会额外创建 Draft Release 并附上全部产物）。
+# 全平台安装包统一在这里构建：Windows（x64 / x86 / arm64）、Linux（x86_64 / aarch64 / armv7l）、
+# macOS（x86_64 / aarch64）。Windows 之所在放在托管运行器上，是因为本机只能出 x64：
+# x86 / arm64 需要对应的 MSVC 库目录，arm64 还要 clang 给 ring 编汇编。
+#
+# 触发：手动 workflow_dispatch，或推送 v* 标签（打标签时额外创建 Draft Release 并附上全部产物）。
 on:
   workflow_dispatch:
   push:
@@ -15,6 +18,89 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  windows:
+    name: Windows (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # msvc 是 ilammy/msvc-dev-cmd 的 arch 参数：
+          #   x64   → 本机工具链 + x64 库
+          #   x86   → 32 位工具链 + x86 库（不是 amd64_x86：LIB 必须指向 x86）
+          #   amd64_arm64 → x64 宿主工具 + ARM64 库（交叉）
+          - arch: x64
+            target: x86_64-pc-windows-msvc
+            msvc: x64
+          - arch: x86
+            target: i686-pc-windows-msvc
+            msvc: x86
+          - arch: arm64
+            target: aarch64-pc-windows-msvc
+            msvc: amd64_arm64
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      # 让 link.exe / LIB / INCLUDE 指向目标架构。缺了这一步，x86 会去链 x64 的
+      # kernel32.lib，arm64 则直接报找不到库。
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: ${{ matrix.msvc }}
+
+      # ring 的 arm64 分支会自己去找 clang；托管镜像自带 LLVM，只是不在 PATH 上。
+      - name: 把 LLVM 加进 PATH（arm64 需要）
+        if: matrix.arch == 'arm64'
+        shell: pwsh
+        run: |
+          if (Test-Path 'C:\Program Files\LLVM\bin') {
+            'C:\Program Files\LLVM\bin' | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+          } else {
+            Write-Error 'LLVM not found; aarch64 ring build needs clang'
+          }
+
+      - run: npm ci
+
+      # tauri.conf.json 的 beforeBuildCommand 会自行执行 npm run build:tauri:web。
+      # 显式给 --target，产物落在 target/<triple>/release 下。
+      - name: 构建 NSIS(.exe) + MSI
+        run: npx tauri build --target ${{ matrix.target }} --bundles nsis,msi
+
+      # Tauri 没有 MSIX 目标，用 Windows SDK 的 makeappx 单独封装；
+      # 结构（exe + easytier/ + Assets + AppxManifest）与 NSIS 安装后的文件一致。
+      - name: 封装 MSIX
+        shell: pwsh
+        run: |
+          $v = (Get-Content 'src-tauri/tauri.conf.json' -Raw | ConvertFrom-Json).version
+          ./scripts/package-msix.ps1 `
+            -Arch '${{ matrix.arch }}' `
+            -Version $v `
+            -ExeDir "src-tauri/target/${{ matrix.target }}/release" `
+            -OutDir 'dist-msix' `
+            -Sign
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hcmcl-windows-${{ matrix.arch }}
+          if-no-files-found: error
+          path: |
+            src-tauri/target/${{ matrix.target }}/release/bundle/nsis/*.exe
+            src-tauri/target/${{ matrix.target }}/release/bundle/msi/*.msi
+            dist-msix/*.msix
+            dist-msix/*.cer
+
   linux:
     name: Linux (${{ matrix.arch }})
     strategy:
@@ -172,7 +258,7 @@ jobs:
 
   release:
     name: 汇总到 Draft Release
-    needs: [linux, linux-armv7, macos]
+    needs: [windows, linux, linux-armv7, macos]
     # always()：armv7 交叉编译依赖 ports 源的包，历史上没跑过；某个架构失败时
     # 仍要把已成功的产物汇总成草稿，发布前人工核对缺了哪一项。
     if: always() && startsWith(github.ref, 'refs/tags/v')
@@ -188,10 +274,37 @@ jobs:
           draft: true
           files: dist/**
           body: |
-            由 `build-tauri` 工作流自动构建的 Linux / macOS 产物。
+            ## 更新日志
 
-            - Linux：`.deb`（x86_64 / aarch64 / armv7l）、`.AppImage`（x86_64 / aarch64）
+            ### 新增
+            - **自定义背景色**（设置 → 通用 → 自定义背景色）：可选 1 / 2 / 3 种颜色 ——
+              1 种为纯色，2 种为渐变并可选择纵向 / 横向 / 斜向，3 种为三色渐变，带实时预览。
+              仅在背景色真正生效时可调：界面主题固定了背景、已设置自定义壁纸、或处于极简模式时，
+              子控件会置灰并写明原因（总开关仍可关闭）。
+
+            ### 变更
+            - **启动检查移入载入界面**：主页安全联网核对改为在载入遮罩里完成（最长 3 秒）再露出界面，
+              遮罩上显示当前步骤。超过 3 秒会先放行，检查在后台继续。
+            - 点任一背景预设会自动关闭自定义背景色，回到预设。
+
+            ### 性能
+            - 首帧静态启动骨架，样式表解析前不再闪白底。
+            - 桥接安装后业务入口 chunk 与原生事件注册并行加载。
+            - 页面按需加载：入口 bundle 437 kB → 164 kB（未压缩），冷启动需解析的 JS 约少 27%。
+            - 皮肤 / 披风补全、版本目录、内存读数等非首屏请求改到首个空闲帧。
+
+            ### 修复
+            - 主页「标题栏下一条空白带 + 启动按钮消失」：外壳改用 `fixed inset-0` 钉在视口上，
+              不再受祖先高度链影响。
+
+            ## 产物
+
+            - **Windows**
+              - `.exe`（NSIS）、`.msi`：x64 / x86 / arm64
+              - `.msix`：x64 / x86 / arm64，**自签名**（每次构建生成新的开发证书，随包附 `.cer`；
+                安装前需先信任证书。上架 Microsoft Store 时需把 Publisher 换成 Partner Center 的标识）
+            - **Linux**：`.deb`（x86_64 / aarch64 / armv7l）、`.AppImage`（x86_64 / aarch64）
               - armv7l 为 x64 宿主交叉编译，只提供 `.deb`
-            - macOS：`.dmg`（x86_64 / aarch64），**未签名**，首次打开需右键 →「打开」
+            - **macOS**：`.dmg`（x86_64 / aarch64），**未签名**，首次打开需右键 →「打开」
 
-            Windows 安装包（x64 / arm64 / ia32，`.exe` + `.msi`）在本地构建后手动上传。
+            > Windows 安装包与 MSIX 均由本工作流构建；草稿状态需人工核对后再点「发布」。
