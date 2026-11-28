@@ -3,6 +3,11 @@ use super::*;
 use std::{ffi::c_void, thread::JoinHandle};
 use windows::Media::Control::{GlobalSystemMediaTransportControlsSessionManager as MediaManager, GlobalSystemMediaTransportControlsSessionPlaybackStatus as Playback};
 use windows::ApplicationModel::AppInfo;
+// RoInitialize / RoUninitialize 走 windows crate，而不是自己声明 extern：
+// combase.dll 是系统组件，但**现代 Windows SDK 不提供 combase.lib**，`#[link(name = "combase")]`
+// 会在链接期报 LNK1181（本机曾靠手搓 .local/sdk-shim 垫片绕过，CI 上没有垫片就必红）。
+// windows crate 通过自带的 umbrella 导入库链接同一批符号，不再需要额外的 .lib。
+use windows::Win32::System::WinRT::{RoInitialize, RoUninitialize, RO_INIT_MULTITHREADED};
 const MODIFIERS: u32 = 0x0001 | 0x0002;
 const NO_REPEAT: u32 = 0x4000;
 const KEYS: [(i32, u32, i32); 2] = [(0x4c31, 0xdb, -1), (0x4c32, 0xdd, 1)];
@@ -10,8 +15,6 @@ const KEYS: [(i32, u32, i32); 2] = [(0x4c31, 0xdb, -1), (0x4c32, 0xdd, 1)];
 struct Point { x: i32, y: i32 }
 #[repr(C)]
 struct Message { hwnd: *mut c_void, message: u32, wparam: usize, lparam: isize, time: u32, point: Point, private: u32 }
-#[link(name = "combase")]
-extern "system" { fn RoInitialize(kind: u32) -> i32; fn RoUninitialize(); }
 #[link(name = "user32")]
 extern "system" {
     fn RegisterHotKey(hwnd: *mut c_void, id: i32, modifiers: u32, key: u32) -> i32;
@@ -133,7 +136,8 @@ impl Worker {
             struct Finished(tokio::sync::watch::Sender<bool>);
             impl Drop for Finished { fn drop(&mut self) { self.0.send_replace(true); } }
             let _finished = Finished(finished);
-            if unsafe { RoInitialize(1) } < 0 { return; }
+            // RO_INIT_MULTITHREADED：SMTC 的异步操作在当前线程上以 MTA 完成。
+            if unsafe { RoInitialize(RO_INIT_MULTITHREADED) }.is_err() { return; }
             struct Apartment; impl Drop for Apartment { fn drop(&mut self) { unsafe { RoUninitialize(); } } }
             let _apartment = Apartment; let mut manager = None; let mut hotkeys = Hotkeys::new();
             let mut next = std::time::Instant::now(); let mut manager_retry = next;

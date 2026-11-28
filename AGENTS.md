@@ -71,16 +71,14 @@ node scripts/fix-artifact-integrity.mjs --check   # 只检查，有 Low 则退�
 ## 3. 构建与发布
 
 - **Windows 构建 / 测试的两道坎**（2026-11-14 定位，2026-11-22 再次确认后者仍在）：
-  - `LINK : fatal error LNK1181: 无法打开输入文件“combase.lib”`：本机 Windows SDK
-    （10.0.26100.0 `um/x64`，482 个 lib）**偏偏缺 `combase.lib`**（`keyring` → `windows-sys` 需要）。
-    正规修复是 Visual Studio Installer 修复 / 重装 Windows 11 SDK；本机临时垫片在
-    `.local/sdk-shim/combase.lib`（由 `dumpbin //exports C:\Windows\System32\combase.dll` +
-    `lib //def` 生成，gitignore 不入库）。**`cargo test` 与 `tauri build` 都要带**，缺了只在前者或后者之一暴露：
-    ```bash
-    LIB="<项目根>/.local/sdk-shim" cargo test --lib
-    ```
-    PowerShell 下注意 `LIB` 用 `;` 分隔，且**必须把 sdk-shim 放最前**再拼 MSVC `lib/x64` 与 SDK 的
-    `um/x64`、`ucrt/x64`，否则会先命中同名但缺失的目录而报同样的 LNK1181。
+  - ~~`LINK : fatal error LNK1181: 无法打开输入文件“combase.lib”`~~ —— **0.8.2 已从根上修掉**：
+    根因不是 SDK 缺文件，而是 `src-tauri/src/lyrics/native.rs` 自己写了
+    `#[link(name = "combase")]` 声明 `RoInitialize` / `RoUninitialize`，而现代 Windows SDK
+    **本来就不提供 `combase.lib`**（combase.dll 是系统组件，只有 DLL 没有导入库）。
+    本机曾用 `.local/sdk-shim/combase.lib` 垫片绕过，CI 上没有垫片就直接红。
+    现在改为 `windows::Win32::System::WinRT::RoInitialize`（Cargo.toml 的 windows features
+    需含 `Win32_System_WinRT`），链接走 crate 自带的 umbrella 库，**不再需要任何垫片**。
+    `.local/sdk-shim` 可以留着不用，但新代码不要再 `#[link(name = "combase")]`。
   - 链接过后测试 exe 启动即 `0xc0000139 (STATUS_ENTRYPOINT_NOT_FOUND)`：**测试可执行文件没有应用清单**，
     静态导入的 `comctl32.dll!TaskDialogIndirect` 只会绑定到 System32 的 v5.82（无此导出）。
     修复：`src-tauri/build.rs` 在 Windows target 输出

@@ -1661,5 +1661,29 @@ bundle resources；Linux / macOS 不读这份 Windows 专属配置，所以历�
 本地已验：`ci-windows-resources.mjs --arch x64` 判定 ok；`--arch arm64 --allow-strip` 正确删掉
 resources 映射（随后已 `git checkout` 还原）。CI 侧仍待下一轮运行验证。
 
+### 第二次 CI 运行：`combase.lib` 链接失败（真根因）
+
+修完内核后，Windows x64 / x86 都倒在链接阶段：
+
+```
+LINK : fatal error LNK1181: cannot open input file 'combase.lib'
+```
+
+此前一直以为是「本机 SDK 少了 combase.lib」，靠 `.local/sdk-shim/combase.lib` 垫片绕过 ——
+CI 上没有垫片，于是暴露了真根因：**是项目自己在引用它**。
+
+`src-tauri/src/lyrics/native.rs` 为了调 SMTC 的 `RoInitialize` / `RoUninitialize`，写了
+`#[link(name = "combase")] extern "system"`。而 combase.dll 是系统组件，**现代 Windows SDK
+本来就不提供 `combase.lib`**（SDK 里没有这个导入库），所以这个链接必然失败；
+本机能过纯粹是因为垫片把同名 .lib 塞进了 `LIB` 搜索路径。
+
+修法：改用 `windows` crate 已有的绑定
+（`windows::Win32::System::WinRT::{RoInitialize, RoUninitialize, RO_INIT_MULTITHREADED}`，
+Cargo.toml 的 windows features 加 `Win32_System_WinRT`），删掉自定义 extern 与 `#[link]`。
+crate 通过自带 umbrella 导入库链接同一批符号，不需要额外 .lib。
+
+验证：`cargo build --release`（**不设 `LIB`、不带任何垫片**）在本机链接通过 ——
+这正是此前必须加垫片的那一步。`.local/sdk-shim` 从此不再是构建前提。
+
 
 

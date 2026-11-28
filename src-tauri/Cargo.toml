@@ -51,7 +51,7 @@ chrono = { version = "0.4", default-features = false, features = ["std"] }
 webview2-com = "=0.39.1"
 windows-core = "=0.62.2"
 # 只读取系统公开媒体会话与来源名称，版本与现有 Tauri 依赖相同。
-windows = { version = "=0.62.2", features = ["Foundation", "Media_Control", "ApplicationModel", "Win32_Security_Cryptography"] }
+windows = { version = "=0.62.2", features = ["Foundation", "Media_Control", "ApplicationModel", "Win32_Security_Cryptography", "Win32_System_WinRT"] }
 keyring = { version = "3.6.3", features = ["windows-native"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
