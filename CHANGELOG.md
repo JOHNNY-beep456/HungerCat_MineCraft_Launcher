@@ -35,8 +35,14 @@
 ### 发布产物（GitHub Actions 自动构建）
 - **Windows**：`.exe`（NSIS）与 `.msi` 各三个架构（x64 / x86 / arm64）；
   `.msix` 三个架构，由 Windows SDK 的 `makeappx` 单独封装，**自签名**并附 `.cer`。
+  联机内核（easytier，无 Npcap 版）按架构单独构建后随包。
 - **Linux**：`.deb`（x86_64 / aarch64 / armv7l）、`.AppImage`（x86_64 / aarch64）。
 - **macOS**：`.dmg`（Intel / Apple Silicon），未签名。
+
+### 修复（构建链）
+- 修掉一个一直靠本机垫片掩盖的链接错误：`lyrics/native.rs` 自己
+  `#[link(name = "combase")]`，而现代 Windows SDK 不提供 `combase.lib`。
+  改用 `windows` crate 的 `RoInitialize`，从此 `cargo build` / 打包都不再需要 `.local/sdk-shim`。
 
 ### 已知限制
 - MSIX 为**自签名**开发包：安装前需信任随包的 `.cer`；上架 Microsoft Store 需把 `Publisher`
