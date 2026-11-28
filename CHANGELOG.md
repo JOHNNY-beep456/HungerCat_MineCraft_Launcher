@@ -3,6 +3,32 @@
 本项目自 0.8.0 起主产品迁移为 **Tauri v2 + React + Rust**，Electron 版归档到 `HCMCL_old/`（仅本地保留，不入库）。
 下面按版本倒序记录面向用户的变更；内部实现细节与验证边界见 `plan.md`。
 
+## 0.8.3（Microsoft Store 上架准备，2026-11-28）
+
+面向商店分发的准备版本。功能不变，改的是「打包成商店包之后必须换掉的行为」。
+商店包仍在构建阶段，**尚未提交认证**。
+
+### 变更
+- **包形态下更新改由商店负责**：以 MSIX 包身份运行时，检查更新不再提示自建源的新版本，
+  下载 / 自动安装通道直接拒绝并提示去 Microsoft Store 更新。
+  商店版若用自下载的安装器覆盖，会在 `WindowsApps` 之外多装一份，两份争同一份用户数据。
+- **MSIX 清单补齐 Windows 10 2004+ 的标记**：新增 `uap10:RuntimeBehavior="packagedClassicApp"`
+  与 `uap10:TrustLevel="mediumIL"`，与原有的 `EntryPoint` 并存。缺这两个属性时进程会被当作
+  appContainer，表现为装完启动即崩。
+- 版本号 `0.8.3`（Android `versionCode` 9860）。
+
+### 构建
+- `scripts/package-msix.ps1` 新增 `-Store`：强制使用 Partner Center 的 Identity，
+  拒绝侧载默认值，并强制签名以便本机验收。
+- 新增 `scripts/package-msix-bundle.ps1`：把三个架构的商店 MSIX 合成 `.msixbundle`
+  与可直接上传的 `.msixupload`，合成后用 `makeappx unbundle` 回读校验。
+- CI 增加 `store-bundle` job：配置仓库变量 `STORE_IDENTITY_NAME` / `STORE_PUBLISHER` /
+  `STORE_PUBLISHER_DISPLAY_NAME` 后自动产出商店包；未配置时跳过，不影响常规产物。
+  商店包不进 GitHub Release，只作为 Actions 产物交付。
+- 新增 `scripts/test-msix-store.mjs`（33 项）与 `packaged.rs` 的单元测试。
+
+操作手册：[`docs/store-submission.md`](./docs/store-submission.md)。
+
 ## 0.8.2（正式版：背景色自定义、启动检查移入载入界面、全平台自动化出包，2026-11-28）
 
 自 0.8.0 起的开发版内容一并进入本版：0.8.1 的启动提速与显示修复、0.8.2-dev1 的背景色自定义、

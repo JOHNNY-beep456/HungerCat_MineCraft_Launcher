@@ -35,6 +35,8 @@ mod mobile_security;
 mod loaders;
 mod minecraft;
 mod modpack;
+/// MSIX / Microsoft Store 运行形态判定（见 `packaged.rs` 顶部的形态对照表）。
+mod packaged;
 mod path_alias;
 mod runtime;
 mod services;

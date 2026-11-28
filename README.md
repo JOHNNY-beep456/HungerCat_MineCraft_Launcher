@@ -6,9 +6,27 @@
 
 ---
 
-## 当前版本：0.8.2
+## 当前版本：0.8.3
 
-正式版：新增**背景色自定义**，把启动检查收进载入界面，并把三端出包全部交给 GitHub Actions。
+面向 **Microsoft Store** 的分发准备版：功能不变，改的是「打包成商店包之后必须换掉的行为」。
+商店包可以产出，**尚未提交认证**。
+
+- **包形态下更新交给商店**：以 MSIX 包身份运行时，检查更新不再提示自建源的新版本，
+  下载 / 自动安装通道直接拒绝并提示去 Microsoft Store 更新。
+- **MSIX 清单补齐 Windows 10 2004+ 的标记**（`uap10:RuntimeBehavior` + `uap10:TrustLevel`），
+  与原有的 `EntryPoint` 并存；缺这两个属性时会被当作 appContainer，装完启动即崩。
+- **商店包产出方式**：`scripts/package-msix.ps1 -Store` 打单架构商店包，
+  `scripts/package-msix-bundle.ps1` 合成 `.msixbundle` / `.msixupload`；
+  CI 配置三个仓库变量（`STORE_IDENTITY_NAME` / `STORE_PUBLISHER` / `STORE_PUBLISHER_DISPLAY_NAME`）
+  后自动产出，未配置时跳过。商店包不进 Release，只作为 Actions 产物交付。
+- **版本号**：`0.8.3`（Android `versionCode` 9860）。
+- **上架操作手册**：[`docs/store-submission.md`](./docs/store-submission.md)
+  （含 Partner Center 步骤、清单要点、AppData 重定向等这个应用特有的坑）。
+
+> 商店版与直接下载版是**两套用户数据**：MSIX 会把 `%APPDATA%` 重定向到包私有目录，
+> 重装 / 卸载会连带清理；默认游戏目录在「文档」下，不受影响。
+
+### 上一版：0.8.2（背景色自定义、启动检查移入载入界面、全平台自动化出包）
 
 - **启动检查在载入界面里完成**：主页安全联网核对这类「启动时只做一次」的操作，现在由载入
   遮罩等它结束（最长 3 秒）再露出界面，遮罩上会显示「正在校验主页安全性…」。
@@ -27,11 +45,9 @@
   - Windows：`.exe`（NSIS）与 `.msi`，各 x64 / x86 / arm64；`.msix` 三架构（自签名，附 `.cer`）
   - Linux：`.deb`（x86_64 / aarch64 / armv7l）、`.AppImage`（x86_64 / aarch64）
   - macOS：`.dmg`（Intel / Apple Silicon），**未签名**，首次打开需右键 →「打开」
-- **版本号**：`0.8.2`（Android `versionCode` 9850）。
 
 > MSIX 由 `scripts/package-msix.ps1` 调用 Windows SDK 的 `makeappx` 封装（Tauri 只支持 NSIS / MSI）：
-> 安装前需信任随包的开发证书；上架 Microsoft Store 时要把 `Publisher` 换成 Partner Center 的标识。
-> 各平台的验证边界见 [`plan.md`](./plan.md) 第 58–63 节。
+> 侧载包安装前需信任随包的开发证书。各平台的验证边界见 [`plan.md`](./plan.md) 第 58–64 节。
 
 ### 已发布的 0.8.0（首个正式版）
 

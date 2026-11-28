@@ -1024,6 +1024,16 @@ async fn open_tauri_installer(app: &tauri::AppHandle, path: std::path::PathBuf, 
 }
 async fn update_call(app: &tauri::AppHandle, channel: &str, args: &[Value], settings: &Value) -> Result<Value,String> {
     let current=app.package_info().version.to_string();let target=release_target();
+    // MSIX（商店 / 侧载）版本必须由 Microsoft Store 更新：安装目录是只读的 WindowsApps，
+    // 下载 NSIS 安装器去覆盖只会留下一个「第二份免安装副本」，与包版本争同一份用户数据。
+    // 因此这里既不查自建更新源（避免「有新版本」的误导提示），也拒绝下载与执行安装器。
+    if crate::packaged::is_packaged() {
+        return if channel=="update:check" {
+            Ok(update_check_value(&current, None))
+        } else {
+            Err("商店版本由 Microsoft Store 负责更新：请打开「Microsoft Store → 库 → 获取更新」".into())
+        };
+    }
     if channel=="update:check"{
         let latest=match update_metadata(settings).await{Ok(remote)=>selected_update(&remote,&target),Err(_)=>None};
         return Ok(update_check_value(&current,latest));

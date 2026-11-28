@@ -5,6 +5,14 @@ name: build-tauri
 # x86 / arm64 需要对应的 MSVC 库目录，arm64 还要 clang 给 ring 编汇编。
 #
 # 触发：手动 workflow_dispatch，或推送 v* 标签（打标签时额外创建 Draft Release 并附上全部产物）。
+#
+# Microsoft Store 通道（可选）：在仓库 Variables 里配置下面三项后，Windows 三个架构会额外
+# 打一份「商店 Identity」的 MSIX，并合成 .msixbundle / .msixupload 作为 `hcmcl-store-upload` 产物。
+# 三值必须从 Partner Center → 应用管理 → 应用标识 原样复制，差一个字符上传就会被拒。
+#   STORE_IDENTITY_NAME           例：12345PublisherName.HCMCL
+#   STORE_PUBLISHER               例：CN=1A2B3C4D-...（发布者证书主题，不是显示名）
+#   STORE_PUBLISHER_DISPLAY_NAME  例：HungerCat
+# 未配置时整段跳过；商店包不进 GitHub Release，只作为 Actions 产物交付。
 on:
   workflow_dispatch:
   push:
@@ -122,6 +130,73 @@ jobs:
             src-tauri/target/${{ matrix.target }}/release/bundle/msi/*.msi
             dist-msix/*.msix
             dist-msix/*.cer
+
+      # 商店包的 payload 与侧载包完全相同，只有 Identity（Name / Publisher /
+      # PublisherDisplayName）换成 Partner Center 预留的那一组。三个变量没配就整段跳过，
+      # 不影响正常出包；变量来源见仓库 Settings → Secrets and variables → Actions → Variables。
+      - name: 封装商店 MSIX
+        if: vars.STORE_IDENTITY_NAME != ''
+        shell: pwsh
+        run: |
+          $v = (Get-Content 'src-tauri/tauri.conf.json' -Raw | ConvertFrom-Json).version
+          ./scripts/package-msix.ps1 `
+            -Arch '${{ matrix.arch }}' `
+            -Version $v `
+            -ExeDir "src-tauri/target/${{ matrix.target }}/release" `
+            -OutDir 'dist-msix-store' `
+            -IdentityName '${{ vars.STORE_IDENTITY_NAME }}' `
+            -Publisher '${{ vars.STORE_PUBLISHER }}' `
+            -PublisherDisplayName '${{ vars.STORE_PUBLISHER_DISPLAY_NAME }}' `
+            -Store
+
+      - uses: actions/upload-artifact@v4
+        if: vars.STORE_IDENTITY_NAME != ''
+        with:
+          name: hcmcl-store-msix-${{ matrix.arch }}
+          if-no-files-found: error
+          path: dist-msix-store/*.msix
+
+  store-bundle:
+    name: Store 上传包（.msixbundle / .msixupload）
+    needs: windows
+    # 没有配置商店 Identity 时整段跳过：这是可选的发布通道，不该挡住常规产物。
+    if: vars.STORE_IDENTITY_NAME != ''
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: hcmcl-store-msix-*
+          path: store-msix
+          merge-multiple: true
+
+      # 三个架构合成一个 bundle，商店按设备架构自动挑包；.msixupload 是 bundle 的 zip 封装，
+      # 带符号时可让商店侧做崩溃分析。两者都接受，这里都出。
+      - name: 合成 bundle 与上传文件
+        shell: pwsh
+        run: |
+          $v = (Get-Content 'src-tauri/tauri.conf.json' -Raw | ConvertFrom-Json).version
+          ./scripts/package-msix-bundle.ps1 -PackagesDir 'store-msix' -OutDir 'dist-store' -Version $v
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hcmcl-store-upload
+          if-no-files-found: error
+          path: |
+            dist-store/*.msixbundle
+            dist-store/*.msixupload
+
+      - name: 写入任务摘要
+        shell: pwsh
+        run: |
+          Add-Content $env:GITHUB_STEP_SUMMARY '### Microsoft Store 上传包'
+          Add-Content $env:GITHUB_STEP_SUMMARY ''
+          Add-Content $env:GITHUB_STEP_SUMMARY '在本次运行的 Artifacts 里下载 `hcmcl-store-upload`，把 `.msixupload` 上传到 Partner Center 提交。'
+          Add-Content $env:GITHUB_STEP_SUMMARY ''
+          Get-ChildItem 'dist-store' -File | ForEach-Object {
+            Add-Content $env:GITHUB_STEP_SUMMARY ("- ``{0}`` — {1:N1} MiB" -f $_.Name, ($_.Length / 1MB))
+          }
 
   linux:
     name: Linux (${{ matrix.arch }})
@@ -324,7 +399,7 @@ jobs:
             - **Windows**
               - `.exe`（NSIS）、`.msi`：x64 / x86 / arm64
               - `.msix`：x64 / x86 / arm64，**自签名**（每次构建生成新的开发证书，随包附 `.cer`；
-                安装前需先信任证书。上架 Microsoft Store 时需把 Publisher 换成 Partner Center 的标识）
+                安装前需先信任证书）。商店提交用的包不在这里——见下方说明
               - 联机内核（easytier，无 Npcap 版）按架构单独构建并随包；x86 / arm64 若交叉构建失败，
                 包内不含内核，联机板块在该架构上不可用（构建日志会有 `::warning::`）
             - **Linux**：`.deb`（x86_64 / aarch64 / armv7l）、`.AppImage`（x86_64 / aarch64）
@@ -332,3 +407,5 @@ jobs:
             - **macOS**：`.dmg`（x86_64 / aarch64），**未签名**，首次打开需右键 →「打开」
 
             > Windows 安装包与 MSIX 均由本工作流构建；草稿状态需人工核对后再点「发布」。
+            > 商店提交包（`.msixbundle` / `.msixupload`）不在 Release 里，在本次运行的
+            > Artifacts → `hcmcl-store-upload` 下载，操作见 `docs/store-submission.md`。

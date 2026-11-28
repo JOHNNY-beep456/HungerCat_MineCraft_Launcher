@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
     Wrap a Tauri Windows build into an MSIX package.
@@ -34,6 +34,14 @@
     public .cer next to it. The certificate is generated per run and never leaves the
     runner except as a public .cer; install that .cer as trusted before sideloading.
 
+.PARAMETER Store
+    Validate and pack for **Microsoft Store submission** instead of sideloading.
+    IdentityName / Publisher / PublisherDisplayName must be copied verbatim from
+    Partner Center (App management -> App identity); the defaults are rejected because
+    a mismatched identity is refused at upload time. Implies -Sign: the Store replaces
+    the signature during publishing anyway, but a signed package is the only way to
+    verify the payload locally (Add-AppxPackage) before uploading.
+
 .NOTES
     Publisher must equal the certificate subject. For Microsoft Store submission the
     Publisher has to be replaced with the value Partner Center assigned to the app.
@@ -49,13 +57,35 @@ param(
     [string]$Publisher = 'CN=HungerCat',
     [string]$DisplayName = 'HungerCat MineCraft Launcher',
     [string]$PublisherDisplayName = 'HungerCat',
-    [switch]$Sign
+    [switch]$Sign,
+    [switch]$Store
 )
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
 function Write-Step([string]$text) { Write-Host "==> $text" }
+
+# ---- store identity ------------------------------------------------------
+# 商店提交时 Identity/@Name 与 @Publisher 必须与 Partner Center 里预留的名称逐字符一致，
+# 差一个字符上传就会被拒。这里挡在打包前，避免出包后才发现。
+if ($Store) {
+    if ($IdentityName -eq 'top.johnnyblog.hcmcl' -or $Publisher -eq 'CN=HungerCat') {
+        throw "Store packaging needs the Partner Center identity, not the sideload defaults. Pass -IdentityName / -Publisher / -PublisherDisplayName."
+    }
+    if (-not $Publisher.StartsWith('CN=')) {
+        throw "Publisher must be a certificate subject starting with 'CN=' (got '$Publisher')."
+    }
+    if ($IdentityName -notmatch '^[A-Za-z0-9.\-]+$') {
+        throw "IdentityName may only contain letters, digits, dots and hyphens (got '$IdentityName')."
+    }
+    if ([string]::IsNullOrWhiteSpace($PublisherDisplayName)) {
+        throw 'PublisherDisplayName is required for Store packaging.'
+    }
+    # 商店包也要签名：商店发布时会用 Microsoft 证书覆盖，但没签名就没法本机
+    # Add-AppxPackage 验收，也过不了 Partner Center 的包校验。
+    $Sign = $true
+}
 
 # ---- version ----------------------------------------------------------------
 # MSIX Identity/@Version is Major.Minor.Build.Revision, each 0-65535, numeric only.
@@ -132,6 +162,11 @@ try {
     } finally { $src.Dispose() }
 
     # ---- manifest -----------------------------------------------------------
+    # EntryPoint 与 uap10:* 两个标记同时保留，是刻意为之：
+    #   EntryPoint="Windows.FullTrustApplication" —— Windows 10 1809~1903 只认这个；
+    #   uap10:RuntimeBehavior="packagedClassicApp" + TrustLevel="mediumIL" —— 19041 起描述
+    #   「打包的经典桌面应用 + 完全信任」；不写会被当成 appContainer，写注册表 / 起子进程会失败。
+    # uap10 命名空间在旧系统上按 IgnorableNamespaces 被忽略，所以这样写两头都能装。
     Write-Step 'writing AppxManifest.xml'
     $escapedDisplay = [System.Security.SecurityElement]::Escape($DisplayName)
     $manifest = @"
@@ -139,8 +174,9 @@ try {
 <Package
   xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
   xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
+  xmlns:uap10="http://schemas.microsoft.com/appx/manifest/uap/windows10/10"
   xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
-  IgnorableNamespaces="uap rescap">
+  IgnorableNamespaces="uap uap10 rescap">
   <Identity Name="$IdentityName" Publisher="$([System.Security.SecurityElement]::Escape($Publisher))" Version="$msixVersion" ProcessorArchitecture="$Arch" />
   <Properties>
     <DisplayName>$escapedDisplay</DisplayName>
@@ -155,7 +191,8 @@ try {
     <Resource Language="en-US" />
   </Resources>
   <Applications>
-    <Application Id="App" Executable="hcmcl-tauri.exe" EntryPoint="Windows.FullTrustApplication">
+    <Application Id="App" Executable="hcmcl-tauri.exe" EntryPoint="Windows.FullTrustApplication"
+                 uap10:RuntimeBehavior="packagedClassicApp" uap10:TrustLevel="mediumIL">
       <uap:VisualElements
         DisplayName="$escapedDisplay"
         Description="$escapedDisplay"
@@ -216,7 +253,12 @@ try {
         $cer = [System.IO.Path]::ChangeExtension($msix, '.cer')
         Export-Certificate -Cert $cert -FilePath $cer -Type CERT | Out-Null
         Write-Step "public certificate -> $cer"
-        Write-Warning 'The certificate is self-signed and per-run. Trust the .cer before sideloading; for Microsoft Store, replace Publisher with the Partner Center identity and let Microsoft sign.'
+        if ($Store) {
+            # 商店发布时会用 Microsoft 证书覆盖这份签名；.cer 只用于本机 Add-AppxPackage 验收。
+            Write-Step 'store package ready: upload the .msixbundle built by package-msix-bundle.ps1'
+        } else {
+            Write-Warning 'The certificate is self-signed and per-run. Trust the .cer before sideloading; for Microsoft Store, replace Publisher with the Partner Center identity and let Microsoft sign.'
+        }
     }
 
     Write-Step "done: $((Get-Item -LiteralPath $msix).Length) bytes"

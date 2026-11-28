@@ -1,7 +1,7 @@
 # HCMCL / HCMCLL 进度与接续计划
 
 > 更新时间：2026-11-27，Asia/Shanghai（UTC+08:00）。此前迁移、真实 Electron 覆盖安装及用户数据补迁记录见第 1–29 节；HUD 阴影、AI 悬浮球与 `0.8.0-dev2` 见第 30 节；`0.8.0-dev3` 的三项修复见第 33–35 节；实例遍历预算与资源扫描降级、液态玻璃与中文安装器、后端三语文案、小文件下载与安装白名单、全链路下载瓶颈、可更新分栏批量更新、首次入库与三系统打包见第 36–42 节；**Android 全链路见第 43–55 节**（43 打通与 x86 出包、44 路径误判、47 平台边界、48 内置运行时、49 图形层、50 触控层、51 移动端启动尺寸、52 卡住可观测性与运行时调研、53 多 Java 运行时、54 启动参数与布局管理、55 游戏内输入与运行时管理）；**0.8.0 正式版与三平台打包见第 56 节**（本节另有同号「PE 版独立目录」小节，编号重复未调整），Store 提交参数与文档同步见第 57 节，**启动速度优化与 `0.8.1-dev1` 见第 58 节**，
-页面级按需加载与 Windows x64 出包见第 59 节，外壳整体下移的显示修复（`0.8.1-dev2`）见第 60 节，**背景色自定义与 `0.8.2-dev1` 见第 61 节，启动检查移入载入界面（`0.8.2-dev2`）见第 62 节，`0.8.2` 正式版与全平台 CI / MSIX 流水线见第 63 节**。**当前版本 `0.8.2`（versionCode 9850）**；`v0.8.2` 标签的 CI 已跑通（run 46086149263，22 分钟），
+页面级按需加载与 Windows x64 出包见第 59 节，外壳整体下移的显示修复（`0.8.1-dev2`）见第 60 节，**背景色自定义与 `0.8.2-dev1` 见第 61 节，启动检查移入载入界面（`0.8.2-dev2`）见第 62 节，`0.8.2` 正式版与全平台 CI / MSIX 流水线见第 63 节，**Microsoft Store 上架链路与 `0.8.3` 见第 64 节**。**当前版本 `0.8.3`（versionCode 9860）**；`v0.8.2` 标签的 CI 已跑通（run 46086149263，22 分钟），
 草稿 Release 汇总 19 个产物（Windows 9 / Linux 5 / macOS 2 + 3 张 `.cer`），**尚未点「发布」**；旧的 `0.8.0` 草稿仍在。完整原生窗口、DPI、鼠标穿透、socket、组网、真实账号与游戏行为仍未验收。当前根项目版本以 [package.json](<package.json>) 为准。
 >
 > **整体仍在迁移与补齐阶段，尚未完成全功能验收。** 下文分别标明源码落盘、本地测试通过、平台限制和未验证事项，不以文件存在、分支数量或旧包代替产品完成。
@@ -1701,6 +1701,93 @@ crate 通过自带 umbrella 导入库链接同一批符号，不需要额外 .li
 
 验证：`cargo build --release`（**不设 `LIB`、不带任何垫片**）在本机链接通过 ——
 这正是此前必须加垫片的那一步。`.local/sdk-shim` 从此不再是构建前提。
+
+---
+
+## 64. Microsoft Store 上架链路（0.8.3，2026-11-28，UTC+08:00）
+
+目标：把已有的 MSIX 从「自签侧载包」变成**能提交 Partner Center 的包**，同时补上包形态下必须
+换掉的两处行为。分发形态从两种变三种，差异集中在安装目录、AppData 与更新三件事上。
+
+### 64.1 清单：补 uap10 的两个属性
+
+原来只有 `EntryPoint="Windows.FullTrustApplication"`。那是 Windows 10 2004 之前的写法；
+19041 起要同时声明 `uap10:RuntimeBehavior="packagedClassicApp"` 与 `uap10:TrustLevel="mediumIL"`，
+否则进程被当作 appContainer，表现是启动即崩、写注册表失败。现在两套标记并存：
+`uap10` 进 `IgnorableNamespaces`，旧系统按未知命名空间忽略，两头的机器都能装。
+
+`rescap:Capability Name="runFullTrust"` 与 `TargetDeviceFamily Name="Windows.Desktop"`
+（MinVersion 10.0.17763.0）保持不变。
+
+### 64.2 身份：从 Partner Center 注入
+
+`package-msix.ps1` 新增 `-Store`：拒绝侧载默认值（`top.johnnyblog.hcmcl` / `CN=HungerCat`）、
+要求 `CN=` 前缀、强制签名（本机 `Add-AppxPackage` 验收需要签名，商店发布时会用 Microsoft 证书覆盖）。
+
+CI 从仓库 Variables 读三值：`STORE_IDENTITY_NAME` / `STORE_PUBLISHER` /
+`STORE_PUBLISHER_DISPLAY_NAME`。未配置时整段跳过（商店是可选的发布通道，不该挡住常规产物）。
+payload 与侧载包完全相同，只换 Identity，所以不需要重复编译。
+
+### 64.3 bundle 与 .msixupload
+
+新增 `scripts/package-msix-bundle.ps1`：校验三架构 Identity 三项一致（不一致时 makeappx 的报错
+只有一句「包不匹配」，不说是哪一项）、架构不重复、版本与请求一致，然后 `makeappx bundle`，
+再 `makeappx unbundle` 回读确认能解析，最后把 bundle 压成 zip 改名 `.msixupload`。
+
+两个坑：
+
+- **bundle 只能用 `unbundle` 校验**。`makeappx unpack` 报
+  `0x80080203 The file is not a valid app package because it is missing a required footprint file`。
+- **`.ps1` 含中文必须存 UTF-8 BOM**。Windows PowerShell 5.1 读无 BOM 的 UTF-8 会按 ANSI 解码，
+  注释里的字节被解成引号，整个脚本报「表达式或语句中包含意外的标记」。本轮两个脚本都因此失败过一次。
+
+### 64.4 运行时：包形态下关掉自更新
+
+新增 `src-tauri/src/packaged.rs`，用 `GetCurrentPackageFullName`（kernel32，Win8 起稳定导出）
+判定是否以包身份运行。`services.rs` 的 `update_call` 在**联网之前**拦截：
+
+- `update:check` → `update_check_value(&current, None)`，即「无新版本」，不去自建更新源查；
+- `update:download` / `update:downloadAndRun` → 返回错误，提示走 Microsoft Store 更新。
+
+原因不只是商店政策：商店版下载 NSIS 覆盖安装，会在 `WindowsApps` 之外多装一份免安装副本，
+两个形态争同一份用户数据。
+
+### 64.5 三种形态的实际差异（写进文档，因为它会变成用户提问）
+
+| 形态 | 安装目录 | `%APPDATA%` | 更新 |
+| --- | --- | --- | --- |
+| 免安装 / NSIS | 可写 | 真实目录 | 自建更新源 |
+| MSIX | 只读 | 重定向到 `%LOCALAPPDATA%\Packages\<PFN>\LocalCache\Roaming` | 商店 |
+
+代码侧只需要保证「不往 exe 旁边写」（现状只有 `storage.rs` 读 `portable.flag`，只读不建）。
+AppData 重定向是系统行为，代价是商店版与 NSIS 版设置/账号互不可见、卸载连同数据删除、
+下载的 Java 运行时重装后要重下；默认游戏目录在文档下，不受影响。
+
+### 64.6 验证
+
+- 本机：x64 商店包 `makeappx pack` + 自签成功（20,202,115 B）；三架构（同一 x64 exe，仅验机制）
+  合成 bundle 60,607,920 B、`.msixupload` 60,401,656 B，`unbundle` 回读 3 个包齐全。
+- 清单解包核对：`uap10:RuntimeBehavior` / `uap10:TrustLevel` / `EntryPoint` / `runFullTrust` /
+  `TargetDeviceFamily` 全部按预期落盘。
+- 新增 `scripts/test-msix-store.mjs` **33/0**：清单要素、商店身份守卫、bundle 校验方式、
+  CI 商店通道独立于 Release、`update_call` 的拦截在联网之前、两个 `.ps1` 的 BOM。
+- `cargo check --lib` 通过；`cargo test --lib packaged::` 1/0（未打包宿主判定为非包）。
+
+### 64.7 未验证
+
+- **没有真实提交过**：没有 Partner Center 的 Identity 值，所以没跑过上传与认证。
+- **没有 `Add-AppxPackage` 安装过商店包**：只做了结构校验；安装后的启动、WebView2、
+  随包 easytier 拉起、AppData 重定向的实际落点都未实测。
+- 未跑 WACK；商店列表素材（截图、隐私政策、支持联系方式）不在仓库范围。
+- 上面 60 MB 的 bundle 是三份 20 MB 包拼出来的，符合预期，但没有在真机按架构验证选择逻辑。
+
+### 64.8 已知风险
+
+- 产品名与图标含 "Minecraft"，认证可能以商标为由质询；商店显示名需自行弱化。
+- `runFullTrust` 是受限能力，提交时要写清用途（读写任意游戏目录、拉 java / easytier、原生媒体 API）。
+- 若某架构的联机内核构建失败，该架构的包不含 `easytier/`，等于对外承诺了不存在的功能。
+
+操作手册见 [`docs/store-submission.md`](./docs/store-submission.md)。
 
 
 

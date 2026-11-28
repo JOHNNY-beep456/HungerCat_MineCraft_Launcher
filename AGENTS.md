@@ -12,7 +12,7 @@
 | 技术栈 | 主产品为 Tauri v2 + Rust + React/TypeScript；**Electron 版已归档到 `HCMCL_old/`（2026-11-14），不再随根构建**，仅作对照；Lite 为独立产品 |
 | 样式 | **单文件** `src/renderer/src/index.css`（4000+ 行）+ Tailwind 工具类；皮肤靠 `[data-skin]` 切换 |
 | 服务端 | PHP，位于 `server/`，**gitignore，不入库**，手动部署 |
-| 当前版本 | 以 `package.json` 为准；当前 `0.8.2`（正式版，Android versionCode 9850），批次进度及验证时间点见 `plan.md` 第 43–63 节 |
+| 当前版本 | 以 `package.json` 为准；当前 `0.8.3`（Android versionCode 9860），批次进度及验证时间点见 `plan.md` 第 43–63 节 |
 
 ```bash
 npm run dev                # Tauri 开发（热更新）
@@ -514,6 +514,44 @@ node scripts/fix-artifact-integrity.mjs --check   # 只检查，有 Low 则退�
   设置页置灰与 `store.tsx` 是否下发 `data-custom-bg` 都走它，不要在别处再写一份判断。
 - **CSS 规则必须排在壁纸规则之前**：`:root[data-theme][data-skin][data-custom-bg='on'] .app-background`
   与壁纸规则特异性相同，同特异性靠来源顺序决胜，壁纸必须能压住自定义色。
+
+---
+
+### 4.9 MSIX / Microsoft Store：清单、身份与三种形态的差异
+
+同一个 exe 现在有三种分发形态，行为**必须不同**，判断口只有一个：`packaged::is_packaged()`
+（`src-tauri/src/packaged.rs`，`GetCurrentPackageFullName`）。
+
+| 形态 | 安装目录 | `%APPDATA%` | 更新 |
+| --- | --- | --- | --- |
+| 免安装 / NSIS | 可写 | 真实目录 | 自建更新源 + 下载安装器 |
+| MSIX（商店 / 侧载） | **只读**（`WindowsApps`） | 重定向到 `%LOCALAPPDATA%\Packages\<PFN>\LocalCache\Roaming` | **只能走商店** |
+
+四条红线：
+
+- **不要往 exe 旁边写任何东西**。现在只有 `storage.rs` 读 `portable.flag`（只读不建）；新增日志 / 缓存 /
+  配置一律走 `app_data_dir()`。写 `WindowsApps` 在侧载包上直接失败，认证也会扣分。
+- **包形态下必须关掉自更新**。`services.rs` 的 `update_call` 已改为：`update:check` 返回
+  `latest: null`、下载通道返回错误。改这段时保持「判定在联网之前」，否则仍会去自建更新源查版本。
+  理由不只是政策：覆盖安装会在 `WindowsApps` 之外再落一份免安装副本，两份争同一份用户数据。
+- **清单要同时写两套标记**：`EntryPoint="Windows.FullTrustApplication"`（Win10 1809~1903 认这个）
+  加 `uap10:RuntimeBehavior="packagedClassicApp"` + `uap10:TrustLevel="mediumIL"`（19041+ 认这个，
+  缺了会被当成 appContainer，启动即崩、写注册表失败）。`uap10` 要进 `IgnorableNamespaces`。
+- **Identity 只能来自 Partner Center**：`package-msix.ps1 -Store` 会拒绝侧载默认值
+  （`top.johnnyblog.hcmcl` / `CN=HungerCat`）并要求 `CN=` 前缀。CI 从仓库 Variables 读三值，
+  未配置时整段跳过。
+
+打包链路的两个具体坑：
+
+- **bundle 的校验用 `makeappx unbundle`**，不是 `unpack` —— 后者只认单个包，对 bundle 报
+  `0x80080203 missing a required footprint file`。`.msixupload` 就是「bundle（可带 `.appxsym`）的 zip
+  改后缀」，Partner Center 直接接受。
+- **`.ps1` 含中文时必须存成 UTF-8 BOM**。Windows PowerShell 5.1 读无 BOM 的 UTF-8 会按 ANSI 解码，
+  注释里的字节可能被解成引号，整个脚本报「表达式或语句中包含意外的标记」。`scripts/test-msix-store.mjs`
+  会检查这一点，别把 BOM 删掉（`package-msix.ps1` / `package-msix-bundle.ps1` 都带 BOM）。
+
+商店包**不进 GitHub Release**：Release 是给直接下载用户的，那里是自签侧载包；商店产物只作为
+Actions 产物（`hcmcl-store-upload`）交付。完整流程见 [`docs/store-submission.md`](./docs/store-submission.md)。
 
 ---
 
