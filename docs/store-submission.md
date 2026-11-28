@@ -20,6 +20,19 @@
 > `Publisher` 不是 `CN=HungerCat`。侧载包用 `CN=HungerCat` 只是因为自签证书自己说了算；
 > 商店会拿 `Publisher` 和你的账号绑定关系做校验，不一致会在上传阶段直接拒。
 
+### 本应用已预留的标识（2026-11-28）
+
+| 字段 | 值 |
+| --- | --- |
+| `Package/Identity/Name` | `RedJohnny.HungerCatMineCraftLauncher` |
+| `Package/Identity/Publisher` | `CN=E9CE09F2-51DA-4625-99C7-6028EC9CB95B` |
+| `Package/Properties/PublisherDisplayName` | `Red Johnny` |
+| Package Family Name | `RedJohnny.HungerCatMineCraftLauncher_he7bfwf2e5h7w` |
+| Store ID | `9P40L8SDKHLO` |
+
+即包内显示名（`DisplayName`）仍是预留名 `HungerCat MineCraft Launcher`，与 Identity 三者不要混用：
+显示名可以带空格，`Identity/@Name` 不行。
+
 把三个值配成仓库变量（Settings → Secrets and variables → Actions → **Variables**）：
 
 ```
@@ -210,9 +223,12 @@ WACK（Windows App Certification Kit，随 Windows SDK 安装）能提前跑一�
 
 ## 8. 当前状态（据实记录）
 
-- 打包链路已在本机验证：x64 商店包 `makeappx pack` + 签名成功，三架构合成 `.msixbundle`
-  并经 `unbundle` 回读校验通过，`.msixupload` 生成成功。
-- **尚未真正向 Partner Center 提交过**：没有账号侧的 Identity 值，也就没有跑过一次真实上传与认证。
+- 已预留名称 `HungerCat MineCraft Launcher`，Identity 见 §1。
+- 打包链路已在本机验证：用真实商店 Identity 打出的 x64 包经 `makeappx pack` + 签名成功，
+  解包核对 `Identity/@Name` `@Publisher` `PublisherDisplayName` 三项与 Partner Center 一致。
+- 三架构合成 `.msixbundle` / `.msixupload` 的机制已在测试身份下跑通（`unbundle` 回读 3 包齐全），
+  真实三架构包需由 CI 产出。
+- **尚未真正提交**：没有走过上传与认证。
 - **没有在本机 `Add-AppxPackage` 安装过商店包**：只做了结构校验；安装后的启动、WebView2、
   随包 easytier 拉起、AppData 重定向的实际落点，都还没实测。
-- 商店列表素材（截图、隐私政策、支持联系方式）不在仓库范围内。
+- 未跑 WACK；商店列表素材（截图、隐私政策、支持联系方式）不在仓库范围内。
